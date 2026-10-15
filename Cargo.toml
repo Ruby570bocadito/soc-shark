@@ -1,0 +1,27 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/common",
+    "crates/capture-core",
+    "crates/dissectors",
+    "crates/flow-aggregator",
+    "crates/soc-engine",
+    "crates/filter-dsl",
+    "crates/storage-index",
+    "daemon",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["soc-shark contributors"]
+repository = "https://github.com/soc-shark/soc-shark"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+
+[profile.test]
+opt-level = 1

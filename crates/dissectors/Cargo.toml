@@ -1,0 +1,11 @@
+[package]
+name = "socshark-dissectors"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "soc-shark: dissectors zero-copy de protocolos L2-L7"
+
+[dependencies]
+socshark-common = { path = "../common" }
+socshark-capture-core = { path = "../capture-core" }

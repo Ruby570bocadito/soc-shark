@@ -1,0 +1,47 @@
+/* soc_dark.css — paleta semántica del visor SOC (fase 4).
+   Fuente única de verdad: los mismos colores que emite el CLI vía
+   socshark-common::ansi (rojo=alerta, ámbar=anomalía, gris=ruido, cian=info). */
+
+:root {
+  /* Superficies */
+  --bg:            #0d1117;
+  --bg-elevated:   #161b22;
+  --bg-hover:      #1c2128;
+  --border:        #2d333b;
+
+  /* Texto */
+  --fg:            #e6edf3;
+  --fg-muted:      #8b949e;
+
+  /* Semántica SOC */
+  --risk-critical: #e5484d;   /* riesgo ≥ 60 · CRITICAL */
+  --risk-high:     #f5a623;   /* HIGH · riesgo ≥ 30 */
+  --risk-medium:   #d29922;   /* MEDIUM */
+  --risk-low:      #4cc2ff;   /* LOW / info */
+  --noise:         #6b7280;   /* ruido de fondo: ARP/mDNS/NTP (dimming) */
+  --ok:            #3fb950;
+
+  /* Acentos de tabla */
+  --row-selected:  #14314a;
+  --row-alert-bg:  rgba(229, 72, 77, 0.08);
+  --row-noise-bg:  rgba(107, 114, 128, 0.06);
+
+  --font-mono: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+  --font-ui:   "Inter", system-ui, sans-serif;
+}
+
+.flow-row[data-risk="critical"] { color: var(--risk-critical); background: var(--row-alert-bg); font-weight: 600; }
+.flow-row[data-risk="high"]     { color: var(--risk-high); }
+.flow-row[data-risk="medium"]   { color: var(--risk-medium); }
+.flow-row[data-noise="true"]    { color: var(--noise); background: var(--row-noise-bg); opacity: 0.55; }
+
+.radar-alert[data-severity="CRITICAL"]::before { content: "🚨 "; color: var(--risk-critical); }
+.radar-alert[data-severity="HIGH"]::before     { content: "🚨 "; color: var(--risk-high); }
+.radar-alert[data-severity="MEDIUM"]::before   { content: "⚠️ ";  color: var(--risk-medium); }
+.radar-alert[data-severity="LOW"]::before      { content: "ℹ️ ";  color: var(--risk-low); }
+
+.artifact[data-masquerade="true"]::after {
+  content: " ¡MASQUERADE!";
+  color: var(--risk-critical);
+  font-weight: 700;
+}
