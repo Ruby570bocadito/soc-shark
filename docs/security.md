@@ -59,23 +59,51 @@ verificables con grep y exigidas en revisión):
 4. **Sin recursión en datos.** La resolución de nombres DNS es iterativa con
    tope de saltos; no hay estructuras recursivas alimentadas por entrada.
 
-### Plan de fuzzing (Fase 2)
+### Fuzzing (implementado en Fase 2)
 
-Los parsers son objetivos ideales para `cargo-fuzz`:
+CI ejecuta en cada build el **fuzzer determinista en proceso**
+(`socshark dev fuzz --seed S --iterations N`): splitmix64 propio sin
+dependencias muta el corpus del escenario demo (volteo de bits, sustitución
+de bytes, truncados, basura final, zeroizado de rangos, intercambio de
+posiciones y empalmes entre tramas, además de mentiras de `orig_len`) y
+hace pasar cada lote por el pipeline completo: *dissector → agregador con
+reensamblado → expiración con relojes arbitrarios → enriquecimiento SOC →
+evaluación DSL*. La propiedad verificada es *no panic, no hang* sobre toda
+la superficie, no solo los parsers. El corpus es reproducible: un fallo
+imprime semilla e iteración (`socshark dev fuzz --seed <S> --iterations
+<N+1>` lo reconstruye).
+
+Como siguiente nivel de cobertura, `cargo-fuzz`/libFuzzer (cobertura guiada,
+instrucciones en CONTRIBUTING.md) cubriría los objetivos por componente:
 
 - `fuzz_parse_dns(payload)`, `fuzz_parse_ipv4(payload)`,
   `fuzz_parse_tcp(payload)`, `fuzz_parse_udp(payload)`,
-  `fuzz_parse_ethernet(frame)`: objetivo *no crash, no hang* en cualquier
-  entrada.
-- `fuzz_pcap(bytes)`: el lector completo con archivos corruptos (seeds del
-  generador de la suite).
+  `fuzz_parse_ethernet(frame)`.
+- `fuzz_pcap(bytes)`: el lector completo con archivos corruptos.
 - `fuzz_filter(input)`: el parser del DSL con entrada arbitraria (un DSL es
   también superficie de ataque si se le pegan expresiones hostiles desde un
   SIEM).
 
 Corpus inicial: el generador `socshark-testgen` produce tramas válidas que
-sirven de seeds de alta calidad. El gate de CI se añadirá junto con el
-objetivo de fuzz en Fase 2.
+sirven de seeds de alta calidad (ya integradas en el fuzzer determinista).
+
+### Captura en vivo: superficie adicional
+
+El backend en vivo (ADR-009) introduce dos superficies propias, ambas
+acotadas:
+
+- **FFI libpcap vía dlopen.** Solo se cargan sonames estándar de libpcap y
+  únicamente se resuelven símbolos de la API estable, con firmas auditadas
+  contra `pcap/pcap.h`. Si la biblioteca falta o está rota, la apertura
+  falla con error controlado; no hay rutas de pánico asociadas al FFI. El
+  handle se usa desde un único hilo y `Drop` libera en orden garantizado
+  (`pcap_freecode` → `pcap_close` → `dlclose`).
+- **Privilegios de captura.** Solo el backend de captura necesita
+  CAP_NET_RAW (o root, o `setcap cap_net_raw+ep`); el resto del pipeline
+  corre sin privilegios y en Fase 3 se separará en proceso propio
+  (daemon privilegiado + engine sin privilegios). El filtro BPF se compila
+  con `pcap_compile` y baja al kernel: el tráfico filtrado no llega
+  siquiera al userspace, reduciendo la superficie expuesta a los parsers.
 
 ## Superficie de ataque de la propia herramienta
 

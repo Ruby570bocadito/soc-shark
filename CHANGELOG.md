@@ -3,6 +3,56 @@
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/)
 y [SemVer](https://semver.org/lang/es/).
 
+## [0.4.0] — 2026-10-16
+
+### Añadido (Fase 2 completa: captura en vivo, pool, fuzzing)
+
+- **Captura en vivo sobre libpcap sin dependencia en tiempo de compilación**
+  (ADR-009): FFI propio en `socshark-capture/src/live.rs` que carga libpcap
+  con `dlopen` al abrir la interfaz (sonames `libpcap.so.0.8` / `so.1` /
+  `so` / `libpcap` en macOS). Sin `libpcap-dev` para compilar y sin crates
+  nuevos: si la biblioteca falta, error limpio con instrucciones de
+  instalación. Soporta snaplen, modo promiscuo, *immediate mode*, timeout de
+  lectura (ticks para el barrido de expiración), **pushdown BPF**
+  (`pcap_compile` + `pcap_setfilter`), contadores del kernel (`pcap_stats`)
+  y `socshark daemon --list` vía `pcap_findalldevs`.
+- **`socshark daemon`**: bucle de captura en vivo real (antes, stub
+  informativo). Disección secuencial → agregador con `drain_expired` cada
+  `--flush-secs` → enriquecimiento SOC con contexto persistente → JSONL
+  incremental (`--json -` para tuberías) y alertas por stderr según
+  `--min-risk`/`--show-noise`. Límites `--duration`/`--max-packets` para
+  sesiones acotadas y demostraciones.
+- **Pool de dissectors concurrente** (ADR-010): `socshark capture
+  --workers N` disecciona lotes de 256 paquetes en N hilos y vuelca los
+  resultados al agregador en orden estricto. Test E2E garantiza JSONL
+  **byte a byte idéntico** al modo secuencial. El payload pasa a
+  `Cow<[u8]>`: cero copias en secuencial, una copia solo cuando hay
+  paralelismo. Workers murieron → degradación controlada, sin pánico.
+- **Fuzzing determinista en proceso**: `socshark dev fuzz --seed S
+  --iterations N`. splitmix64 sin dependencias genera el corpus mutando el
+  escenario demo (volteo de bits, truncados, basura, zeroizado,
+  intercambios y empalmes entre tramas + mentiras de `orig_len`); cada
+  iteración recorre *dissector → agregador (con reensamblado) → expiración
+  → SOC → filtro DSL*. Un panic imprime semilla e iteración para
+  reproducir. Integrado en CI (50 000 iteraciones por build).
+- Primitivas de fuzzing en `socshark-testgen::fuzz` (`FuzzRng`,
+  `mutate_frame`, `splice_frames`) reutilizables por tests.
+
+### Corregido
+
+- `socshark-soc` (`summarize.rs`): un mensaje DNS con `QDCOUNT=0`
+  (malformado pero parseable) panicaba con index-out-of-bounds al
+  construir el resumen humano. **El fuzzer lo atrapó en su primera
+  ejecución**; corregido y el caso queda cubierto por el corpus.
+
+### Cambiado
+
+- `CaptureSource::next_packet` (documentación del contrato): en captura en
+  vivo `Ok(None)` es un *tick* de timeout, no fin de fuente; `Err` es lo
+  único fatal. Nuevo error `CaptureError::Live`.
+- CI: paso de fuzzing tras el build release.
+- `PipelineConfig` gana `workers` (1 = secuencial).
+
 ## [0.3.0] — 2026-10-15
 
 ### Añadido (Fase 2, parcial: 4/7 según `docs/roadmap.md`)

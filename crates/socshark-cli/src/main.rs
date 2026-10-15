@@ -2,7 +2,9 @@
 
 use clap::Parser;
 use socshark_cli::cli::{Cli, Cmd, DevCmd};
+use socshark_cli::daemon::{self, DaemonOptions};
 use socshark_cli::follow;
+use socshark_cli::fuzz::{self, FuzzOptions};
 use socshark_cli::output;
 use socshark_cli::pipeline::{run_capture, run_follow};
 use socshark_cli::tui;
@@ -26,10 +28,16 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             max_flows,
             idle_timeout,
             top,
+            workers,
         } => {
+            if workers == 0 {
+                eprintln!("error: --workers debe ser ≥ 1");
+                std::process::exit(2);
+            }
             let cfg = PipelineConfig {
                 max_flows,
                 idle_timeout_secs: idle_timeout,
+                workers,
                 ..PipelineConfig::default()
             };
             let out = run_capture(&read, filter.as_deref(), show_noise, &cfg)?;
@@ -90,17 +98,35 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             }
         }
 
-        Cmd::Daemon { iface } => {
-            // Stub de la Fase 2: documenta el plan y no hace nada más.
-            eprintln!("[!] La captura en vivo ({iface}) requiere libpcap/AF_XDP.");
-            eprintln!(
-                "    Plan: daemon con CAP_NET_RAW (libpcap → AF_XDP) + módulos eBPF en Fase 3."
-            );
-            eprintln!("    Ver docs/roadmap.md y docs/ebpf-design.md.");
-            eprintln!(
-                "    Por ahora: socshark capture -r archivo.pcap · socshark tui -r archivo.pcap"
-            );
-            Ok(())
+        Cmd::Daemon {
+            iface,
+            list,
+            bpf,
+            json,
+            min_risk,
+            show_noise,
+            flush_secs,
+            report_secs,
+            duration,
+            max_packets,
+        } => {
+            if list {
+                return daemon::list_interfaces();
+            }
+            let opts = DaemonOptions {
+                iface,
+                bpf,
+                json,
+                min_risk,
+                show_noise,
+                flush_secs,
+                report_secs,
+                duration_secs: duration,
+                max_packets,
+                max_flows: 50_000,
+                idle_timeout_secs: 120,
+            };
+            daemon::run_daemon(&opts)
         }
 
         Cmd::Dev { cmd } => match cmd {
@@ -113,6 +139,23 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     out.display()
                 );
                 eprintln!("    Prueba: socshark capture -r {}", out.display());
+                Ok(())
+            }
+            DevCmd::Fuzz {
+                iterations,
+                seed,
+                report_every,
+            } => {
+                eprintln!("[*] Fuzzing determinista: {iterations} iteraciones, semilla {seed:#x}");
+                let stats = fuzz::run_fuzz(&FuzzOptions {
+                    iterations,
+                    seed,
+                    report_every,
+                })?;
+                eprintln!(
+                    "[+] Fuzz OK: {} tramas · {} diseccionadas · {} exportadas · {} evaluaciones DSL",
+                    stats.frames, stats.parsed, stats.exported, stats.dsl_evals
+                );
                 Ok(())
             }
         },

@@ -5,7 +5,7 @@
 Wireshark responde a la pregunta *«¿qué hay en este paquete?»*. **soc-shark responde a *«¿qué está pasando en mi red y qué me debería preocupar?»*.** Ese es el cambio de paradigma que guía todo el proyecto: sesiones en lugar de paquetes, significado en lugar de hex, alertas en lugar de scrolling manual.
 
 [![CI](https://github.com/soc-shark/soc-shark/actions/workflows/ci.yml/badge.svg)](https://github.com/soc-shark/soc-shark/actions/workflows/ci.yml)
-![Estado](https://img.shields.io/badge/fase-2%20de%204-blue)
+![Estado](https://img.shields.io/badge/fase-2%20de%204%20completa-blue)
 ![Licencia](https://img.shields.io/badge/licencia-MIT-green)
 
 ---
@@ -21,6 +21,9 @@ Wireshark responde a la pregunta *«¿qué hay en este paquete?»*. **soc-shark 
 | **Detección pasiva y fingerprinting** | JA4/JA4+, HASSH, entropía, beaconing | Fase 3 |
 | **IPv6 completo** | Dissector con extensiones, claves de flujo v4/v6 y literales v6 en el DSL | **Implementado** |
 | **Follow Stream** | Reensamblado TCP por dirección: orden, retransmisiones, huecos, hexdump | **Implementado** |
+| **Captura en vivo (libpcap)** | Daemon con pushdown BPF al kernel, sin dependencia en tiempo de compilación (dlopen) | **Implementado** |
+| **Pool de dissectors concurrente** | Disección por lotes en N hilos, salida idéntica al modo secuencial | **Implementado** |
+| **Fuzzing determinista en CI** | Corpus mutado sobre parsers + agregador + SOC + DSL, reproducible por semilla | **Implementado** |
 | **TUI interactiva (Ratatui)** | Lista Flow-First + panel de alertas + filtro DSL en vivo | **Implementado** |
 | **Paradigma Flow-First** | 1 línea = 1 sesión; expansión bajo demanda | **Núcleo implementado** |
 | **Mini-IDS heurístico** | Túnel DNS, escaneos SYN, puertos inseguros | **Implementado** |
@@ -28,9 +31,9 @@ Wireshark responde a la pregunta *«¿qué hay en este paquete?»*. **soc-shark 
 | **Smart Noise Dimming** | NTP/mDNS/SSDP marcados como ruido y atenuados | **Implementado** |
 | **Export SIEM** | JSONL → ECS / Wazuh / TheHive | Fase 4 (JSONL ya disponible) |
 
-## Estado actual: Fase 1 completa ✅ · Fase 2 en curso (4/7)
+## Estado actual: Fase 1 completa ✅ · Fase 2 completa (implementación) ✅
 
-El pipeline completo funciona de extremo a extremo sobre archivos pcap: **lectura → disección (Ethernet/IPv4/IPv6/TCP/UDP/DNS) → agregación de flujos bidireccionales → enriquecimiento SOC → filtro DSL → tabla/TUI/JSONL/follow**. 94 tests automatizados cubren parsers (incluido el barrido anti-panic), agregador, reensamblado, DSL, capa SOC e integración.
+El pipeline funciona de extremo a extremo sobre archivos **y en vivo**: **lectura/libpcap → disección (Ethernet/IPv4/IPv6/TCP/UDP/DNS, secuencial o en pool de N hilos) → agregación de flujos bidireccionales → enriquecimiento SOC → filtro DSL → tabla/TUI/JSONL/follow/daemon**. 105 tests automatizados cubren parsers (barrido anti-panic), pool concurrente, agregador, reensamblado, DSL, capa SOC, backend de captura e integración; el fuzzing determinista recorre millones de tramas mutadas en cada build.
 
 ### Inicio rápido
 
@@ -93,8 +96,16 @@ socshark follow -r captura.pcap --flow "93.184.216.34:443" --hex
 # Explorar la captura con la TUI (Flow-First + alertas + filtro DSL)
 socshark tui -r captura.pcap
 
-# Captura en vivo (stub informativo hasta tener backend libpcap/AF_XDP)
-socshark daemon --iface eth0
+# Disección en paralelo (la salida es idéntica al modo secuencial)
+socshark capture -r captura.pcap --workers 4
+
+# Captura en vivo: listar interfaces y monitorizar con pushdown BPF
+socshark daemon --list
+socshark daemon -i eth0 --bpf "tcp port 443" --json flujos.jsonl
+socshark daemon -i eth0 --min-risk 30 --flush-secs 5   # alertas por stderr
+
+# Fuzzing determinista (el mismo motor que corre en CI)
+socshark dev fuzz --seed 42 --iterations 20000
 ```
 
 ## Estructura del repositorio
@@ -103,13 +114,13 @@ socshark daemon --iface eth0
 soc-shark/
 ├── crates/
 │   ├── socshark-core/         # EnrichedFlow, paquetes crudos, configuración
-│   ├── socshark-capture/      # Trait CaptureSource + lector pcap (Rust puro)
-│   ├── socshark-dissectors/   # Ethernet, IPv4, TCP, UDP, DNS + pipeline L7
+│   ├── socshark-capture/      # CaptureSource + lector pcap + captura en vivo (FFI libpcap/dlopen)
+│   ├── socshark-dissectors/   # Ethernet, IPv4/6, TCP, UDP, DNS + pool concurrente
 │   ├── socshark-flow/         # Agregador de flujos bidireccionales
 │   ├── socshark-filter/       # DSL de filtrado (lexer, parser, evaluador)
 │   ├── socshark-soc/          # Ruido, DNS pasivo, riesgo, resúmenes humanos
-│   ├── socshark-testgen/      # Constructores de tramas + escenario demo
-│   └── socshark-cli/          # Binario `socshark` + tests de integración
+│   ├── socshark-testgen/      # Constructores de tramas + demo + primitivas de fuzzing
+│   └── socshark-cli/          # Binario `socshark` (capture/daemon/follow/tui/fuzz) + tests
 ├── docs/                      # Documentación completa (índice en docs/index.md)
 │   ├── architecture.md        # Visión general y decisiones técnicas
 │   ├── pipeline.md            # Las 4 etapas del pipeline
@@ -129,15 +140,21 @@ soc-shark/
 
 ## Calidad
 
-- **94 tests** unitarios y de integración (`cargo test --workspace`),
-  incluido el barrido anti-panic y el reensamblado con segmentos fuera
-  de orden.
+- **105 tests** unitarios y de integración (`cargo test --workspace`),
+  incluido el barrido anti-panic, el reensamblado con segmentos fuera de
+  orden y el test de igualdad JSONL entre el pool de 4 hilos y el camino
+  secuencial.
+- **Fuzzing determinista en CI**: `socshark dev fuzz` muta el corpus demo
+  (bit flips, truncados, empalmes, mentiras de snaplen) y lo pasa por el
+  pipeline completo; un fallo se reproduce con la semilla impresa. En un
+  portátil medio: ~1 millón de tramas por segundo en release.
 - **`cargo clippy -D warnings`** y **`cargo fmt --check`** en CI, sin excepciones.
 - **Parsers sin `panic`**: todo acceso a bytes está acotado; los paquetes
   malformados (incluidos los crafted por un atacante) producen `None`, nunca un crash.
 - **Dependencias mínimas**: `serde`, `serde_json`, `thiserror`, `clap`,
   `anyhow` y —tras la feature `tui`, desactivable— `ratatui` + `crossterm`.
-  Nada de libpcap, OpenSSL ni runtimes externos en Fase 1/2.
+  La captura en vivo usa FFI propio sobre libpcap cargada con `dlopen`:
+  ni cabeceras ni enlazado en tiempo de compilación (ADR-009).
 
 ## Ética y uso responsable
 

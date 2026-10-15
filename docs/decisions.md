@@ -195,3 +195,68 @@ conserva el trabajo original bajo el tag `v0.1.0-base`.
 **Consecuencias.** Base de código homogénea, testeada (70 tests) y
 alineada con la visión de producto; el coste, asumido, es rehacer por fases
 funcionalidad que la v0.1 ya adelantó sin contrato de diseño estable.
+
+---
+
+## ADR-009 — Captura en vivo: FFI propio sobre libpcap con `dlopen`
+
+**Estado:** aceptada (Fase 2).
+
+**Contexto.** La captura en vivo exige hablar con el stack de captura del
+sistema. Las opciones eran: (a) depender del crate `pcap` (rompería el
+congelamiento de dependencias de ADR-003 y añadiría `-sys` con enlazado en
+tiempo de compilación), (b) usar sockets crudos AF_PACKET vía `libc` (otro
+crate, más código de bajo nivel y sin pushdown BPF portable), o (c) declarar
+nuestro propio FFI contra libpcap. Además, el entorno de desarrollo no tiene
+`libpcap-dev`, así que cualquier dependencia de enlazado rompería los builds
+por defecto.
+
+**Decisión.** `socshark-capture/src/live.rs` declara las firmas de la API
+estable de libpcap (`pcap_create/activate/next_ex/compile/setfilter/stats/
+findalldevs/...`) y carga la biblioteca con `dlopen` al abrir la interfaz,
+probando los sonames habituales (`libpcap.so.0.8`, `libpcap.so.1`,
+`libpcap.so`, `libpcap` en macOS). Consecuencias de diseño: cero
+dependencias nuevas y ningún requisito de compilación; el binario por
+defecto funciona en cualquier máquina y la captura en vivo se resuelve al
+ejecutar (si falta la biblioteca, error limpio con instrucciones de
+instalación). El backend es unix LP64; otras plataformas reciben un stub
+con `LiveUnavailable`. Los punteros de función se resuelven con `dlsym` y
+se tipan contra firmas auditadas; `LiveCapture` es `Send` (un solo hilo de
+lectura) y libera `pcap_freecode`/`pcap_close`/`dlclose` en orden garantizado.
+
+**Consecuencias.** La superficie FFI es nuestra responsabilidad: cualquier
+error de firma es un fallo silencioso, mitigado con un conjunto mínimo de
+funciones estables, tests de degradación limpia y el fuzzer del pipeline
+(no del FFI). El coste de indirección de `dlsym` es una vez por apertura.
+A cambio, distribuir soc-shark no exige binarios por distribución ni
+paquetes `-dev`.
+
+---
+
+## ADR-010 — Paralelismo de disección por lotes con entrega ordenada
+
+**Estado:** aceptada (Fase 2).
+
+**Contexto.** La disección es la etapa CPU-intensiva y es una función pura
+(`RawPacket → Option<DissectedPacket>`), ideal para paralelizar. Pero el
+agregador es secuencial y *sensible al orden*: la dirección fwd/rev, los
+timestamps de first/last seen y el reensamblado dependen del orden de
+llegada. Un pool ingenuo que entregue en orden de finalización alteraría
+los flujos (y las alertas) de forma no determinista entre ejecuciones.
+
+**Decisión.** Paralelismo **por lotes**: el lector acumula lotes de 256
+paquetes, los reparte round-robin entre N workers y vuelca los resultados
+al agregador estrictamente en el orden de envío, almacenando en búfer los
+lotes adelantados. El paralelismo se da *dentro* del lote; el orden global
+queda intacto, de modo que `--workers 4` produce JSONL byte a byte idéntico
+a `--workers 1` (test E2E de igualdad). Para cruzar hilos, `DissectedPacket`
+lleva el payload como `Cow<[u8]>`: `Borrowed` en el camino secuencial
+(zero-copy de ADR-006 intacto) y `Owned` solo cuando el pool copia. Los
+workers son desechables y su muerte (p. ej., tras un error inesperado)
+degrada a "lote no diseccionado" sin pánico.
+
+**Consecuencias.** La latencia por lote acota el paralelismo efectivo a
+tráficos con lotes llenos (en archivos, irrelevante; en vivo el daemon usa
+disección secuencial porque la cadencia de alerta manda). A cambio:
+determinismo verificable, sin locks en el agregador, y una sola línea de
+configuración (`workers`) para escalar en máquinas grandes.

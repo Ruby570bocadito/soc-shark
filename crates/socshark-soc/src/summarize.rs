@@ -75,13 +75,17 @@ fn summarize_dns(flow: &EnrichedFlow, out: &mut String) {
             ));
         }
         Some(dns) => {
-            let q = &dns.queries[0];
-            out.push_str(&format!(
-                "DNS {}: consulta {} ({})",
-                dir,
-                q.name,
-                dns_type_str(q.qtype)
-            ));
+            // Un mensaje con QDCOUNT=0 (malformado pero parseable, visto por
+            // el fuzzer) no lleva consultas: se describe sin qname.
+            match dns.queries.first() {
+                Some(q) => out.push_str(&format!(
+                    "DNS {}: consulta {} ({})",
+                    dir,
+                    q.name,
+                    dns_type_str(q.qtype)
+                )),
+                None => out.push_str(&format!("DNS {}: consulta sin qname", dir)),
+            }
         }
         None => out.push_str(&format!("DNS {dir}")),
     }

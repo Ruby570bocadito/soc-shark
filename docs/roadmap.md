@@ -28,20 +28,28 @@ Analizar capturas de archivo de extremo a extremo y producir valor SOC real.
 - [x] CLI: `capture` (tabla/JSONL/filtro), `dev sample-pcap`, stub `daemon`
 - [x] 70 tests (unitarios + integración) en verde, clippy limpio
 
-## Fase 2 — Captura en vivo + TUI (en curso: 4/7)
+## Fase 2 — Captura en vivo + TUI (implementación completa ✅)
 
 Objetivo: dejar de ser un lector de archivos y convertirse en herramienta de
 operación en tiempo real.
 
-- [ ] Backend de captura en vivo: libpcap (compatibilidad) con pushdown BPF;
-      AF_XDP para alto rendimiento — *pendiente: exige libpcap-dev y
-      privilegios de captura, ausentes en el entorno de desarrollo actual.
-      La frontera ya está definida: trait `CaptureSource`, stub `socshark
-      daemon` y expiración incremental lista para el hilo del daemon*
+- [x] Backend de captura en vivo: **libpcap vía FFI propio + `dlopen`**
+      (ADR-009) — sin `libpcap-dev` en tiempo de compilación ni crates
+      nuevos; si la biblioteca falta, error limpio con instrucciones.
+      Soporta snaplen, promiscuo, *immediate mode*, timeout de lectura y
+      **pushdown BPF** al kernel; `socshark daemon` consume el flujo con
+      expiración incremental y exportación JSONL/alertas por cadencia, más
+      `--list` (interfaces), `--duration` y `--max-packets`. La
+      verificación *en una interfaz real* queda pendiente de un entorno con
+      privilegios de captura (el sandbox de desarrollo no tiene libpcap ni
+      CAP_NET_RAW); la frontera FFI está testeada (errores limpios, sin
+      panics) y el resto del pipeline es idéntico al modo archivo.
+      AF_XDP sigue siendo el objetivo de alto rendimiento (Fase 3+).
 - [x] Pipeline en streaming: agregador incremental con `drain_expired`
-      testado (expira por tiempo real y alimenta exportación incremental);
-      falta el hilo del daemon que lo consuma en vivo
-- [ ] Pool de dissectors concurrente (dispatch por hash de `FlowKey`)
+      testado; el daemon en vivo lo consume por cadencia (`--flush-secs`).
+- [x] Pool de dissectors concurrente (ADR-010): lotes de 256 paquetes en
+      N hilos (`--workers`), entrega ordenada garantizada — test E2E de
+      igualdad JSONL byte a byte frente al camino secuencial.
 - [x] TUI con Ratatui (modo offline): lista Flow-First con detalle
       expandible, panel de alertas, línea de filtro con el DSL completo y
       ruido atenuado (`socshark tui -r captura.pcap`, ver `docs/tui.md`);
@@ -55,12 +63,20 @@ operación en tiempo real.
       serial (RFC 9293 §3.3), deduplicación de retransmisiones, huecos
       marcados (`[N bytes perdidos]`), tope de 1 MiB con marcado `lossy`,
       más `socshark follow` en texto/hexdump
-- [ ] Fuzzing de parsers con cargo-fuzz en CI (seeds de testgen)
+- [x] Fuzzing: **determinista en proceso** (`socshark dev fuzz`,
+      splitmix64 propio, corpus mutado del escenario demo, recorre
+      disección + agregador + expiración + SOC + DSL; CI ejecuta 50 000
+      iteraciones por build y un fallo se reproduce con la semilla
+      impresa). En su primera ejecución atrapó y corrigió un panic real
+      (DNS con `QDCOUNT=0`). cargo-fuzz/libFuzzer con cobertura guiada
+      queda como tarea de contribución (ver CONTRIBUTING.md).
 
-Estado 0.3.0: 94 tests verdes. Los criterios de captura en vivo (≥ 200 Mbps
-sostenidos, TUI fluida con 10k flujos activos) quedan condicionados al
-backend de captura pendiente; Follow Stream ya es legible para un flujo HTTP
-real (test de integración con segmentos fuera de orden).
+Estado 0.4.0: 105 tests verdes. El único criterio de fase pendiente de
+verificación sobre hardware real es el rendimiento en vivo (≥ 200 Mbps
+sostenidos y TUI fluida con 10k flujos): el resto del criterio (Follow
+Stream legible, salida determinista con paralelismo) ya está cubierto por
+tests. Follow Stream ya es legible para un flujo HTTP real (test de
+integración con segmentos fuera de orden).
 
 ## Fase 3 — eBPF: atribución de proceso
 

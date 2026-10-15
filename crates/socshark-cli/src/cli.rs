@@ -14,9 +14,12 @@ use std::path::PathBuf;
   socshark capture -r demo.pcap
   socshark capture -r demo.pcap --json flujos.jsonl
   socshark capture -r demo.pcap -f \"flow.risk >= 30\"
-  socshark capture -r demo.pcap -f \"ip.version == 6\"
+  socshark capture -r demo.pcap -f \"ip.version == 6\" --workers 4
   socshark follow -r demo.pcap --flow \"93.184.216.34:443\"
   socshark tui -r demo.pcap
+  socshark daemon --list
+  socshark daemon -i eth0 --bpf \"tcp port 443\" --json flujos.jsonl
+  socshark dev fuzz --seed 42 --iterations 20000
 
 Documentación completa: docs/index.md"
 )]
@@ -51,12 +54,43 @@ pub enum Cmd {
         /// Flujos a mostrar en la tabla resumen.
         #[arg(long, default_value_t = 20)]
         top: usize,
+        /// Hilos de disección (> 1 activa el pool concurrente; la salida es
+        /// idéntica al modo secuencial).
+        #[arg(long, default_value_t = 1)]
+        workers: usize,
     },
-    /// Captura en vivo desde una interfaz (Fase 2; hoy imprime el plan).
+    /// Captura en vivo desde una interfaz (libpcap vía dlopen).
     Daemon {
         /// Interfaz de red a monitorizar.
         #[arg(short, long, default_value = "eth0")]
         iface: String,
+        /// Enumera las interfaces capturables y sale.
+        #[arg(long)]
+        list: bool,
+        /// Filtro BPF con pushdown al kernel (sintaxis pcap).
+        #[arg(long)]
+        bpf: Option<String>,
+        /// Escribe los flujos expirados como JSONL incremental (`-` = stdout).
+        #[arg(long)]
+        json: Option<PathBuf>,
+        /// Riesgo mínimo (0-100) para anunciar alertas por stderr.
+        #[arg(long, default_value_t = 30)]
+        min_risk: u32,
+        /// Anuncia también flujos clasificados como ruido de fondo.
+        #[arg(long = "show-noise")]
+        show_noise: bool,
+        /// Segundos entre barridos de expiración de flujos.
+        #[arg(long, default_value_t = 5)]
+        flush_secs: u64,
+        /// Segundos entre líneas de estado por stderr.
+        #[arg(long, default_value_t = 30)]
+        report_secs: u64,
+        /// Detiene el daemon tras N segundos (útil para pruebas y demo).
+        #[arg(long)]
+        duration: Option<u64>,
+        /// Detiene el daemon tras N paquetes capturados.
+        #[arg(long)]
+        max_packets: Option<u64>,
     },
     /// Sigue el stream TCP de un flujo reensamblándolo (Fase 2).
     Follow {
@@ -97,6 +131,18 @@ pub enum DevCmd {
         /// Ruta de salida del pcap.
         #[arg(short, long, default_value = "demo.pcap")]
         out: PathBuf,
+    },
+    /// Fuzzing determinista en proceso (parsers + agregador + SOC + DSL).
+    Fuzz {
+        /// Número de iteraciones (cada una procesa un lote mutado).
+        #[arg(long, default_value_t = 10_000)]
+        iterations: usize,
+        /// Semilla del generador: la misma semilla reproduce el mismo corpus.
+        #[arg(long, default_value_t = 0xFACADE)]
+        seed: u64,
+        /// Iteraciones entre informes de progreso por stderr.
+        #[arg(long, default_value_t = 2_000)]
+        report_every: usize,
     },
 }
 

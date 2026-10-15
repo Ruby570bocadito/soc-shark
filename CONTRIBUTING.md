@@ -72,3 +72,37 @@ se editan; se superseden.
 Conventional Commits (`feat:`, `fix:`, `docs:`, `test:`, `refactor:`) con la
 descripción en español. Los cambios de motor incluyen en el cuerpo qué tests
 cubren el cambio y por qué.
+
+## Fuzzing
+
+Cada build de CI ejecuta el fuzzer determinista en proceso: el corpus
+derivado del escenario demo se muta (bits, truncados, empalmes, longitudes
+mentirosas) y se pasa por el pipeline completo; cualquier panic rompe el
+build y se reproduce con la semilla impresa:
+
+```bash
+cargo build --release
+./target/release/socshark dev fuzz --seed 42 --iterations 50000
+# Un fallo imprime:
+# [!] FUZZ FALLÓ — reproducible con: socshark dev fuzz --seed <S> --iterations <N+1>
+```
+
+Reglas para el contribuidor:
+
+- Un panic nuevo en parsers/agregador/SOC/DSL debe reproducirse con `dev
+  fuzz` (añade o ajusta el caso si la mutación lo dispara solo a veces) y
+  corregirse acotando el acceso, no capturando el panic.
+- Antes de proponer un disector nuevo, corre una sesión larga local
+  (`--iterations 500000`) con tu disector en el camino: es la puerta de
+  entrada de tramas hostiles.
+
+**cargo-fuzz (objetivo de contribución).** El fuzzer determinista muta a
+ciega; libFuzzer guía por cobertura. Si quieres añadirlo:
+
+1. `cargo install cargo-fuzz` y `rustup install nightly`.
+2. Crea `fuzz/` con `cargo fuzz init` y objetivos por componente
+   (`fuzz_parse_dns`, `fuzz_parse_ipv4/6`, `fuzz_parse_tcp/udp`,
+   `fuzz_parse_ethernet`, `fuzz_pcap`, `fuzz_filter`), usando como seeds
+   las tramas de `socshark-testgen` (`sample_pcap_packets`).
+3. No lo integres en el CI estable: es un paso nocturno separado o una
+   tarea programada; el fuzzer determinista sigue siendo el gate obligatorio.

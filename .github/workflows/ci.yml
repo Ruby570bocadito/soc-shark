@@ -34,3 +34,6 @@ jobs:
 
       - name: Build release
         run: cargo build --release
+
+      - name: Fuzzing determinista en proceso (parsers + agregador + SOC + DSL)
+        run: ./target/release/socshark dev fuzz --iterations 50000 --seed 42 --report-every 0

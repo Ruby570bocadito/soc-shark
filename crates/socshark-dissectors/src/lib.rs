@@ -5,23 +5,29 @@
 //!   comprobaciones de longitud); un paquete malformado produce `None`,
 //!   nunca un crash. Esto es crítico porque los parsers procesan datos
 //!   controlables por un atacante.
-//! - **Zero-copy del payload**: los parsers devuelven slices prestados
-//!   ([`DissectedPacket::payload`]); solo se copian los metadatos pequeños
-//!   y las cadenas DNS necesarias para el enriquecimiento.
+//! - **Zero-copy del payload por defecto**: los parsers devuelven slices
+//!   prestados ([`DissectedPacket::payload`], `Cow::Borrowed`); solo se
+//!   copian los metadatos pequeños y las cadenas DNS necesarias para el
+//!   enriquecimiento. El pool concurrente ([`pool`]) es la única etapa que
+//!   copia el payload (`Cow::Owned`), y solo cuando se le pide paralelismo.
 //! - **Funciones puras**: `&[u8] -> Option<(Info, &[u8])>`, fáciles de
-//!   testear y de portar al pool concurrente de Fase 2+.
+//!   testear y de portar al pool concurrente.
 //!
-//! Fase 2 añade IPv6 completo (con cabeceras de extensión). Queda para
-//! fases posteriores: el pool de workers concurrentes y dissectors
+//! Fase 2 añade IPv6 completo (con cabeceras de extensión) y el pool de
+//! workers concurrentes. Queda para fases posteriores: dissectors
 //! registrables (incluidos plugins WASM, ver `docs/wasm-plugins.md`).
 
 pub mod dns;
 pub mod ethernet;
 pub mod ipv4;
 pub mod ipv6;
+pub mod pool;
 pub mod tcp;
 pub mod udp;
 
+pub use pool::DissectionPool;
+
+use std::borrow::Cow;
 use std::net::IpAddr;
 
 use socshark_core::{L7Protocol, LinkType, RawPacket, Transport};
@@ -56,11 +62,13 @@ pub struct DissectedPacket<'a> {
     pub dns: Option<DnsInfo>,
     /// Protocolo de aplicación detectado (dissector DNS o heurística L7).
     pub l7: L7Protocol,
-    /// Payload de nivel 4 (post TCP/UDP), sin copiar.
-    pub payload: &'a [u8],
+    /// Payload de nivel 4 (post TCP/UDP). En el camino secuencial es
+    /// `Cow::Borrowed` (zero-copy); el pool concurrente entrega
+    /// `Cow::Owned` para poder cruzar hilos.
+    pub payload: Cow<'a, [u8]>,
 }
 
-impl DissectedPacket<'_> {
+impl<'a> DissectedPacket<'a> {
     /// IP de origen (v4 o v6) si el paquete es IP.
     pub fn src_ip(&self) -> Option<IpAddr> {
         if let Some(i) = self.ipv4.as_ref() {
@@ -76,6 +84,24 @@ impl DissectedPacket<'_> {
             Some(IpAddr::V4(i.dst))
         } else {
             self.ipv6.as_ref().map(|i| IpAddr::V6(i.dst))
+        }
+    }
+
+    /// Convierte el paquete diseccionado en propietario (`'static`) para
+    /// poder enviarlo entre hilos: copia el payload y clona los metadatos.
+    /// Es la operación que hace posible el pool concurrente ([`pool`]).
+    pub fn into_owned(self) -> DissectedPacket<'static> {
+        DissectedPacket {
+            eth: self.eth,
+            ipv4: self.ipv4,
+            ipv6: self.ipv6,
+            ip_version: self.ip_version,
+            transport: self.transport,
+            tcp: self.tcp,
+            udp: self.udp,
+            dns: self.dns,
+            l7: self.l7,
+            payload: Cow::Owned(self.payload.into_owned()),
         }
     }
 }
@@ -133,7 +159,7 @@ impl DissectorPipeline {
             udp: None,
             dns: None,
             l7: L7Protocol::Unknown,
-            payload: &[],
+            payload: Cow::Borrowed(&[]),
         };
 
         let (sport, dport, payload) = match transport {
@@ -153,7 +179,7 @@ impl DissectorPipeline {
             // y queda visible en la tabla.
             _ => (0u16, 0u16, l4),
         };
-        pkt.payload = payload;
+        pkt.payload = Cow::Borrowed(payload);
 
         pkt.dns = self.try_dns(transport, sport, dport, payload);
         pkt.l7 = if pkt.dns.is_some() {

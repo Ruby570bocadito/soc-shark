@@ -386,7 +386,7 @@ impl FlowAggregator {
             if let Some(sp) = acc.streams.as_mut() {
                 if !dp.payload.is_empty() {
                     let dir = if forward { &mut sp.fwd } else { &mut sp.rev };
-                    dir.push(t.seq, dp.payload);
+                    dir.push(t.seq, &dp.payload);
                 }
             }
         }

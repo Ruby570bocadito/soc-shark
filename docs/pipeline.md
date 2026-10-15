@@ -70,12 +70,18 @@ contra servicios que no escuchan donde "deberían". El DNS soporta compresión
 de nombres con límites anti-bucle (16 saltos, 32 etiquetas) y DNS sobre TCP
 con prefijo de longitud.
 
-**Objetivo (Fase 2+).** Pool de N workers: los paquetes se despachan por
-hash de `FlowKey` a un worker fijo (mismo flujo = mismo worker = sin
-sincronización por paquete), cada worker mantiene sus dissectors sin estado
-y su cola MPSC. Los dissectors de terceros (plugins WASM) se registran en
-este pool; su sandbox está diseñado en [wasm-plugins.md](wasm-plugins.md).
-La firma de `dissect` no cambia: el pool es un detalle de ejecución.
+**Paralelismo (Fase 2, implementado).** Pool de N workers
+(`socshark capture --workers N`) con despacho **por lotes y entrega
+ordenada** (ADR-010): lotes de 256 paquetes se reparten round-robin entre
+workers y vuelven al agregador en el orden de envío, así que el resultado
+es idéntico al secuencial (verificado E2E). El payload pasa de slice
+prestado a `Cow`: cero copias en secuencial, una copia solo con
+paralelismo. La variante por hash de `FlowKey` (mismo flujo = mismo worker,
+sin barrera de lote) queda como evolución natural cuando el en vivo
+necesite paralelismo por flujo; los dissectors de terceros (plugins WASM)
+se registrarán en este pool
+([wasm-plugins.md](wasm-plugins.md)). La firma de `dissect` no cambia: el
+pool es un detalle de ejecución.
 
 ## 4. Stream Reassembler & Indexer
 

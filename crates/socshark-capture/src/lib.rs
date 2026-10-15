@@ -1,11 +1,16 @@
 //! socshark-capture: abstracción de fuentes de captura de paquetes.
 //!
 //! Fase 1: lector de archivos pcap clásicos, implementado en Rust puro (no
-//! requiere libpcap instalado). Fase 2: captura en vivo (libpcap primero,
-//! AF_XDP después) detrás del mismo trait [`CaptureSource`].
+//! requiere libpcap instalado). Fase 2: captura en vivo ([`live`]) con FFI
+//! propio sobre libpcap cargada con `dlopen` — sin dependencias nuevas ni
+//! cabeceras en tiempo de compilación — detrás del mismo trait
+//! [`CaptureSource`].
 //!
 //! Contrato de [`CaptureSource`]:
 //! - `next_packet` devuelve `Ok(None)` al agotarse la fuente (EOF limpio).
+//!   **En captura en vivo** `Ok(None)` es un *tick* (venció el timeout de
+//!   lectura sin tráfico): el consumidor decide si significa fin (archivos)
+//!   o continuidad (daemon). Los errores reales llegan como `Err`.
 //! - Los paquetes llegan en orden de archivo; el agregador tolera
 //!   reordenamientos leves (out-of-order) por su manejo de timestamps.
 //! - `link_type` informa a los dissectors sobre la capa 2 a usar.
@@ -23,7 +28,9 @@ pub enum CaptureError {
     Io(#[from] std::io::Error),
     #[error("pcap inválido: {0}")]
     InvalidPcap(String),
-    #[error("captura en vivo no disponible todavía: {0}")]
+    #[error("captura en vivo: {0}")]
+    Live(String),
+    #[error("captura en vivo no disponible: {0}")]
     LiveUnavailable(String),
 }
 
@@ -37,4 +44,5 @@ pub trait CaptureSource {
     fn link_type(&self) -> LinkType;
 }
 
+pub use live::{list_ifaces, LiveCapture, LiveCaptureConfig, LiveIface};
 pub use pcap_file::PcapFileReader;

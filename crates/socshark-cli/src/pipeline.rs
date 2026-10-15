@@ -6,10 +6,14 @@ use anyhow::{Context, Result};
 use socshark_capture::{CaptureSource, PcapFileReader};
 use socshark_core::config::PipelineConfig;
 use socshark_core::EnrichedFlow;
-use socshark_dissectors::DissectorPipeline;
+use socshark_dissectors::{DissectionPool, DissectorPipeline};
 use socshark_filter::parse as parse_filter;
 use socshark_flow::{FlowAggregator, PipelineStats, ReassembledStream};
 use socshark_soc::{enrich_all, SocContext};
+
+/// Paquetes por lote cuando el pool concurrente está activo (compromiso
+/// entre paralelismo y latencia; ver ADR-010).
+const POOL_CHUNK: usize = 256;
 
 /// Resultado completo de una ejecución de `socshark capture`.
 pub struct CaptureOutput {
@@ -31,6 +35,11 @@ pub struct CaptureOutput {
 /// (3) enriquecer con la capa SOC usando el contexto completo,
 /// (4) aplicar el filtro DSL, (5) excluir ruido salvo petición explícita.
 ///
+/// Con `cfg.workers > 1` la disección corre en el pool concurrente por
+/// lotes; la entrega al agregador es estrictamente ordenada, así que el
+/// resultado es idéntico al camino secuencial (verificado por test E2E que
+/// compara el JSONL de ambas rutas).
+///
 /// El progreso se informa por `stderr`; el resultado se devuelve completo
 /// para que la capa de salida decida formato y destino.
 pub fn run_capture(
@@ -48,9 +57,42 @@ pub fn run_capture(
     let dissectors = DissectorPipeline::new();
 
     eprintln!("[*] Leyendo {} (enlace: {link:?})", pcap_path.display());
-    while let Some(pkt) = reader.next_packet().context("error leyendo paquetes")? {
-        if let Some(dp) = dissectors.dissect(&pkt, link) {
-            aggregator.on_packet(pkt.ts_micros, pkt.data.len(), &dp);
+
+    if cfg.workers > 1 {
+        // Camino paralelo: lotes de POOL_CHUNK paquetes diseccionados en
+        // N hilos y volcados al agregador en orden de llegada al lote.
+        let mut pool = DissectionPool::spawn(cfg.workers, POOL_CHUNK)
+            .map_err(|e| anyhow::anyhow!("pool de dissectors: {e}"))?;
+        eprintln!(
+            "[*] Pool de disección: {} hilos × {} paquetes/lote",
+            cfg.workers, POOL_CHUNK
+        );
+        let mut chunk: Vec<socshark_core::RawPacket> = Vec::with_capacity(POOL_CHUNK);
+        let mut meta: Vec<(u64, usize)> = Vec::with_capacity(POOL_CHUNK); // (ts, len)
+        loop {
+            match reader.next_packet().context("error leyendo paquetes")? {
+                Some(pkt) => {
+                    meta.push((pkt.ts_micros, pkt.data.len()));
+                    chunk.push(pkt);
+                    if chunk.len() == POOL_CHUNK {
+                        feed_chunk(&mut pool, link, &mut chunk, &mut meta, &mut aggregator);
+                    }
+                }
+                None => {
+                    if !chunk.is_empty() {
+                        feed_chunk(&mut pool, link, &mut chunk, &mut meta, &mut aggregator);
+                    }
+                    break;
+                }
+            }
+        }
+        // El Drop del pool cierra los canales y hace join de los hilos.
+    } else {
+        // Camino secuencial (zero-copy estricto del payload).
+        while let Some(pkt) = reader.next_packet().context("error leyendo paquetes")? {
+            if let Some(dp) = dissectors.dissect(&pkt, link) {
+                aggregator.on_packet(pkt.ts_micros, pkt.data.len(), &dp);
+            }
         }
     }
 
@@ -84,6 +126,28 @@ pub fn run_capture(
         pcap_path: pcap_path.to_path_buf(),
         passive_dns_entries: ctx.passive_dns.len(),
     })
+}
+
+/// Envía un lote al pool y vuelca los resultados al agregador en el orden
+/// original de los paquetes (determinismo, ADR-010).
+fn feed_chunk(
+    pool: &mut DissectionPool,
+    link: socshark_core::LinkType,
+    chunk: &mut Vec<socshark_core::RawPacket>,
+    meta: &mut Vec<(u64, usize)>,
+    aggregator: &mut FlowAggregator,
+) {
+    let results = pool.process(link, std::mem::take(chunk));
+    debug_assert_eq!(
+        results.len(),
+        meta.len(),
+        "el pool respeta el orden del lote"
+    );
+    for (dp, (ts, len)) in results.into_iter().zip(meta.drain(..)) {
+        if let Some(dp) = dp {
+            aggregator.on_packet(ts, len, &dp);
+        }
+    }
 }
 
 /// Localiza un flujo por su id (coincidencia de subcadena) y devuelve el

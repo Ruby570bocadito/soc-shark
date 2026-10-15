@@ -26,6 +26,11 @@ pub struct PipelineConfig {
     /// (`socshark follow`). Añade hasta 1 MiB de memoria por dirección
     /// activa, así que va desactivado por defecto.
     pub collect_streams: bool,
+    /// Número de hilos de disección (`> 1` activa el pool concurrente de
+    /// `socshark-dissectors::pool`). El resultado es idéntico al camino
+    /// secuencial (ADR-010: lotes con entrega ordenada); con 1 no se copia
+    /// payload (zero-copy estricto).
+    pub workers: usize,
 }
 
 impl Default for PipelineConfig {
@@ -38,6 +43,7 @@ impl Default for PipelineConfig {
             dns_tunnel_min_len: 30,
             scan_syn_threshold: 4,
             collect_streams: false,
+            workers: 1,
         }
     }
 }

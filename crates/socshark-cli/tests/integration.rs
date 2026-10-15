@@ -246,3 +246,39 @@ fn follow_reensambla_stream_http_con_segmentos_desordenados() {
 
     std::fs::remove_file(&path).ok();
 }
+
+// ------------------------------------------------- Fase 2: pool concurrente
+
+#[test]
+fn el_pool_concurrente_produce_la_misma_salida_que_el_camino_secuencial() {
+    // Contrato de determinismo del pool (ADR-010): con workers > 1 la
+    // disección corre en hilos, pero la agregación es ordenada, así que los
+    // flujos exportados (JSON) deben ser idénticos byte a byte.
+    let path = demo_pcap("pool");
+
+    let seq_cfg = PipelineConfig::default();
+    let seq = run_capture(&path, None, true, &seq_cfg).unwrap();
+
+    let par_cfg = PipelineConfig {
+        workers: 4,
+        ..PipelineConfig::default()
+    };
+    let par = run_capture(&path, None, true, &par_cfg).unwrap();
+
+    assert_eq!(seq.stats, par.stats, "las estadísticas deben coincidir");
+    assert_eq!(seq.flows.len(), par.flows.len());
+
+    let json_seq: Vec<String> = seq
+        .flows
+        .iter()
+        .map(|f| serde_json::to_string(f).unwrap())
+        .collect();
+    let json_par: Vec<String> = par
+        .flows
+        .iter()
+        .map(|f| serde_json::to_string(f).unwrap())
+        .collect();
+    assert_eq!(json_seq, json_par, "JSONL idéntico entre workers 1 y 4");
+
+    std::fs::remove_file(&path).ok();
+}

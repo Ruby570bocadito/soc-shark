@@ -12,6 +12,8 @@ use std::io::Write as _;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::path::Path;
 
+pub mod fuzz;
+
 // ---------------------------------------------------------------- checksums
 
 fn ones_sum(bytes: &[u8]) -> u64 {

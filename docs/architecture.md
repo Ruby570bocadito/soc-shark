@@ -75,8 +75,8 @@ describe cómo está organizado el código para sostener ese plan.
 | Crate | Responsabilidad | Depende de |
 |---|---|---|
 | `socshark-core` | `EnrichedFlow`, `RawPacket`, `LinkType`, `PipelineConfig`, helpers DNS | — |
-| `socshark-capture` | Trait `CaptureSource`, lector pcap clásico, stub de captura en vivo | core |
-| `socshark-dissectors` | Parsers Ethernet/IPv4/IPv6/TCP/UDP/DNS, `DissectorPipeline`, heurística L7 | core |
+| `socshark-capture` | Trait `CaptureSource`, lector pcap clásico y captura en vivo (FFI libpcap/dlopen, ADR-009) | core |
+| `socshark-dissectors` | Parsers Ethernet/IPv4/IPv6/TCP/UDP/DNS, `DissectorPipeline`, heurística L7, pool concurrente | core |
 | `socshark-flow` | `FlowAggregator`: claves canónicas, contadores, expiración, reensamblado TCP, export | core, dissectors |
 | `socshark-filter` | DSL: lexer, parser por precedencia, evaluador sobre flujos | core |
 | `socshark-soc` | Ruido de fondo, DNS pasivo, riesgo/mini-IDS, resúmenes humanos | core |
@@ -96,9 +96,10 @@ imposible si solo mirara un paquete.
 - **Lenguaje: Rust** (edition 2021, MSRV 1.75). Motivación completa en
   ADR-001: rendimiento comparable a C/C++ con las garantías de memoria que
   exige software que procesa datos hostiles a línea caliente.
-- **Captura en Fase 1: archivos pcap clásicos** con lector propio. La captura
-  en vivo llegará en Fase 2 con libpcap (compatibilidad) y AF_XDP
-  (rendimiento); el trait `CaptureSource` ya abstrae ambas.
+- **Captura en Fase 1: archivos pcap clásicos** con lector propio. En Fase 2
+  la captura en vivo va sobre libpcap cargada con `dlopen` (FFI propio,
+  sin dependencias en tiempo de compilación, ADR-009) y AF_XDP llegará
+  después para alto rendimiento; el trait `CaptureSource` abstrae ambas.
 - **eBPF: aya** en Fase 3 (Rust puro, sin BCC ni clang en el host del
   usuario). Diseño en [ebpf-design.md](ebpf-design.md).
 - **Interfaz: CLI hoy; TUI (Ratatui) en Fase 2; GUI (Tauri + WebGL) en
