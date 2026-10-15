@@ -61,6 +61,8 @@ mod tests {
             dns: None,
             dst_geo_asn: None,
             ja4_fingerprint: None,
+            tls_sni: None,
+            interval_stats: None,
             is_background_noise: false,
             human_summary: String::new(),
             risk_score: 55,

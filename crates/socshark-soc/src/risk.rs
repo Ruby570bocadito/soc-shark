@@ -9,6 +9,12 @@
 //! - `R2` Escaneo SYN puro entre flujos → T1046.
 //! - `R3` Telnet (23/tcp) en texto claro → T1021.
 //! - `R4` Bases de datos expuestas (3306/5432/1433/6379/27017).
+//!
+//! Reglas Fase 3:
+//! - `R5` Beaconing por regularidad de intervalos → T1071: los intervalos
+//!   entre paquetes del iniciador (ver `IntervalStats`) son demasiado
+//!   regulares para tráfico humano y caen en la ventana típica de un
+//!   malware que "llama a casa" con un sleep programado.
 
 use socshark_core::{Alert, EnrichedFlow, L7Protocol, Severity, Transport};
 
@@ -121,6 +127,33 @@ pub fn assess(flow: &mut EnrichedFlow, scan_hits: u32, cfg: &PipelineConfig) {
         });
     }
 
+    // R5: beaconing por regularidad de intervalos — MITRE T1071.
+    // Solo tráfico no-ruido (NTP/mDNS son regulares por diseño) y con los
+    // umbrales configurables: ventana de intervalo y regularidad (CV).
+    if !flow.is_background_noise {
+        if let Some(stats) = &flow.interval_stats {
+            let mean_secs = stats.mean_micros as f64 / 1_000_000.0;
+            if stats.intervals >= cfg.beacon_min_intervals
+                && mean_secs >= cfg.beacon_min_interval_secs as f64
+                && mean_secs <= cfg.beacon_max_interval_secs as f64
+                && stats.cv() <= cfg.beacon_max_cv
+            {
+                score += 20;
+                let jitter_pct = 100.0 * stats.cv();
+                flow.alerts.push(Alert {
+                    id: "BEACONING".into(),
+                    name: "Comunicación periódica (beacon)".into(),
+                    severity: Severity::Medium,
+                    detail: format!(
+                        "intervalo medio {:.1}s con jitter ±{:.1}% en {} intervalos",
+                        mean_secs, jitter_pct, stats.intervals
+                    ),
+                    mitre: Some("T1071".into()),
+                });
+            }
+        }
+    }
+
     flow.risk_score = score.min(100) as u8;
 }
 
@@ -181,6 +214,63 @@ mod tests {
         assess(&mut f, 99, &cfg); // scan (30) + telnet (35): sin tope serían 65,
                                   // con más reglas podría pasar: debe saturar
         assert!(f.risk_score <= 100);
+    }
+
+    #[test]
+    fn beacon_regular_de_30s_alerta_con_periodo_estimado() {
+        let cfg = PipelineConfig::default();
+        let mut f = flujo_basico(6, 45000, 8080);
+        // Beacon perfecto: 9 intervalos de 30 s → media 30.0 s, CV 0.
+        f.interval_stats = Some(socshark_core::IntervalStats {
+            intervals: 9,
+            mean_micros: 30_000_000,
+            std_micros: 200_000, // ±0.67%: jitter de reloj realista
+        });
+        assess(&mut f, 0, &cfg);
+        let alert = f
+            .alerts
+            .iter()
+            .find(|a| a.id == "BEACONING")
+            .expect("el beacon regular debe alertar");
+        assert_eq!(alert.mitre.as_deref(), Some("T1071"));
+        assert!(alert.detail.contains("30.0s"), "detalle: {}", alert.detail);
+        assert!(f.risk_score >= 20);
+    }
+
+    #[test]
+    fn trafico_humano_y_mantenimiento_no_alertan_beacon() {
+        let cfg = PipelineConfig::default();
+
+        // Intervalos irregulares (navegación humana): CV alto.
+        let mut humano = flujo_basico(6, 45001, 443);
+        humano.interval_stats = Some(socshark_core::IntervalStats {
+            intervals: 12,
+            mean_micros: 12_000_000,
+            std_micros: 9_000_000, // CV 0.75
+        });
+        assess(&mut humano, 0, &cfg);
+        assert!(!humano.alerts.iter().any(|a| a.id == "BEACONING"));
+
+        // NTP (ruido de fondo): regular por diseño pero marcado como ruido.
+        let mut ntp = flujo_basico(17, 123, 123);
+        ntp.is_background_noise = true;
+        ntp.interval_stats = Some(socshark_core::IntervalStats {
+            intervals: 20,
+            mean_micros: 1_024_000_000, // poll NTP típico (17 min): fuera de ventana
+            std_micros: 1_000,
+        });
+        assess(&mut ntp, 0, &cfg);
+        assert!(!ntp.alerts.iter().any(|a| a.id == "BEACONING"));
+
+        // Intervalo por debajo del mínimo (retransmisiones/push interactivo).
+        let mut rapido = flujo_basico(6, 45002, 443);
+        rapido.interval_stats = Some(socshark_core::IntervalStats {
+            intervals: 10,
+            mean_micros: 50_000, // 50 ms
+            std_micros: 100,
+        });
+        assess(&mut rapido, 0, &cfg);
+        assert!(!rapido.alerts.iter().any(|a| a.id == "BEACONING"));
     }
 
     fn qname_dns(name: &str) -> socshark_core::DnsSummary {

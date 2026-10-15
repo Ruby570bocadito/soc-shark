@@ -71,7 +71,7 @@ operación en tiempo real.
       (DNS con `QDCOUNT=0`). cargo-fuzz/libFuzzer con cobertura guiada
       queda como tarea de contribución (ver CONTRIBUTING.md).
 
-Estado 0.4.0: 105 tests verdes. El único criterio de fase pendiente de
+Estado 0.5.0: 121 tests verdes. El único criterio de fase pendiente de
 verificación sobre hardware real es el rendimiento en vivo (≥ 200 Mbps
 sostenidos y TUI fluida con 10k flujos): el resto del criterio (Follow
 Stream legible, salida determinista con paralelismo) ya está cubierto por
@@ -81,21 +81,41 @@ integración con segmentos fuera de orden).
 ## Fase 3 — eBPF: atribución de proceso
 
 Objetivo: la característica diferencial. Diseño completo en
-[ebpf-design.md](ebpf-design.md).
+[ebpf-design.md](ebpf-design.md). Las piezas puras (verificables con el
+toolchain estándar y sin privilegios) están ya implementadas; los probes con
+aya exigen nightly + `bpf-linker` + CAP_BPF y se implementan contra un
+entorno Linux privilegiado.
 
-- [ ] Crate `socshark-ebpf-common` con tipos compartidos probe/userspace
+- [x] Crate `socshark-ebpf-common` con tipos compartidos probe/userspace:
+      `ConnectEvent`, `SocketStateEvent` y `UdpSendEvent` como `#[repr(C)]`,
+      sin dependencias y compilable `no_std` (target `bpfel-unknown-none`);
+      layout y helpers testados
 - [ ] Probes `tcp_v4_connect`, `inet_sock_set_state`, `udp_sendmsg` con aya
+      (pendiente de entorno con CAP_BPF; los eventos que emiten ya están
+      definidos y testeados)
 - [ ] Daemon separado con CAP_NET_RAW/CAP_BPF publicando por gRPC/UDS
 - [ ] Correlación cookie-de-socket → (pid, exe, uid) en el Enricher
 - [ ] Columnas Proceso/Usuario en la TUI + campo en el JSONL
-- [ ] Fingerprinting JA4 del handshake TLS (sobre el reensamblado de F2)
-- [ ] Detección de beaconing por regularidad de intervalos (T1071)
+- [x] Fingerprinting JA4 del handshake TLS (spec FoxIO oficial): parser de
+      ClientHello que reconstruye el mensaje aunque cruce segmentos/registros
+      (acotado a 16 KiB), SHA-256 propio sin dependencias (ADR-011),
+      validación contra los vectores canónicos del spec en CI; huella en
+      `ja4_fingerprint`, SNI en `tls_sni` (y `resolved_domain` desde SNI),
+      campos DSL `tls.ja4` / `tls.sni`. QUIC/DTLS queda para después
+- [x] Detección de beaconing por regularidad de intervalos (T1071):
+      `IntervalStats` por flujo (ventana de 32 intervalos, tolerante a
+      reordenamiento), regla `R5` con umbrales configurables (≥ 6 intervalos,
+      media 5 s-1 h, CV ≤ 0.15, excluye ruido); el beacon demo de 30 s alerta
+      en 3 minutos con periodo estimado exacto (±0%) — dentro del criterio
+      de < 5 min y ±2%
 - [ ] Descifrado TLS por uprobes con opt-in explícito (detrás de flag, con
       banner legal y auditoría)
 
 Criterios: flujo iniciado por `curl` muestra `process_name=/usr/bin/curl`
-antes de que el primer paquete llegue al dissector; beaconing simulado con
-sleep fijo de 30 s se alerta en < 5 min con periodo estimado ±2%.
+antes de que el primer paquete llegue al dissector (pendiente de entorno
+privilegiado); beaconing simulado con sleep fijo de 30 s se alerta en
+< 5 min con periodo estimado ±2% — **cubierto por el test E2E** del
+escenario demo (alerta a los 3 min, periodo 30.0 s ±0%).
 
 ## Fase 4 — GUI, plugins y export
 

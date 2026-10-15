@@ -28,9 +28,9 @@ fn pipeline_end_to_end_sin_ruido() {
     assert!(out.flows.iter().all(|f| !f.is_background_noise));
 
     // Escenario esperado: 1 DNS + 1 TLS + 1 túnel DNS + 5 escaneo + 1 SSH
-    // + 1 HTTP + 1 DNS-IPv6 (Fase 2) = 11 flujos.
+    // + 1 HTTP + 1 DNS-IPv6 (Fase 2) + 1 beacon UDP (Fase 3) = 12 flujos.
     let ids: Vec<String> = out.flows.iter().map(|f| f.flow_id.0.clone()).collect();
-    assert_eq!(out.flows.len(), 11, "flujos obtenidos: {ids:#?}");
+    assert_eq!(out.flows.len(), 12, "flujos obtenidos: {ids:#?}");
 
     // Túnel DNS detectado con su mapeo MITRE.
     let tunel = out
@@ -72,6 +72,37 @@ fn pipeline_end_to_end_sin_ruido() {
     assert_eq!(http.resolved_domain.as_deref(), Some("example.com"));
     assert!(http.human_summary.contains("destino: example.com"));
 
+    // ---- Fase 3: JA4 + SNI del ClientHello completo del escenario ----
+    assert_eq!(
+        tls.ja4_fingerprint.as_deref(),
+        Some("t13d0208h2_777cda164f4b_af51ac0c444f"),
+        "huella JA4 del ClientHello del escenario demo"
+    );
+    assert_eq!(
+        tls.tls_sni.as_deref(),
+        Some("store.ejemplo-corporativo.com")
+    );
+
+    // ---- Fase 3: beaconing por regularidad de intervalos ----
+    let beacon = out
+        .flows
+        .iter()
+        .find(|f| f.alerts.iter().any(|a| a.id == "BEACONING"))
+        .expect("el beacon de 30 s debe alertar BEACONING");
+    let bal = beacon.alerts.iter().find(|a| a.id == "BEACONING").unwrap();
+    assert_eq!(bal.mitre.as_deref(), Some("T1071"));
+    assert!(bal.detail.contains("30.0s"), "detalle: {}", bal.detail);
+    let stats = beacon
+        .interval_stats
+        .expect("el beacon debe llevar estadística de intervalos");
+    assert_eq!(stats.intervals, 7);
+    // Criterio de fase: periodo estimado con ±2% de error.
+    assert!(
+        (stats.mean_micros as i64 - 30_000_000).abs() <= 600_000,
+        "periodo estimado: {} µs",
+        stats.mean_micros
+    );
+
     // Serialización JSONL estable (clave flow_id presente).
     let js = serde_json::to_string(&out.flows[0]).unwrap();
     assert!(js.contains("\"flow_id\""));
@@ -84,9 +115,9 @@ fn filtro_dsl_y_ruido() {
     let path = demo_pcap("filtro");
     let cfg = PipelineConfig::default();
 
-    // Con ruido: 11 + NTP + mDNS = 13.
+    // Con ruido: 12 + NTP + mDNS = 14.
     let todo = run_capture(&path, None, true, &cfg).unwrap();
-    assert_eq!(todo.flows.len(), 13);
+    assert_eq!(todo.flows.len(), 14);
     assert!(todo.flows.iter().any(|f| f.is_background_noise));
 
     // DSL: solo el flujo TLS toca el 443.
@@ -101,7 +132,27 @@ fn filtro_dsl_y_ruido() {
 
     // DSL: riesgo alto.
     let por_riesgo = run_capture(&path, Some("flow.risk >= 30"), false, &cfg).unwrap();
-    assert_eq!(por_riesgo.flows.len(), 6); // 5 escaneo + 1 túnel
+    assert_eq!(por_riesgo.flows.len(), 6); // 5 escaneo + 1 túnel (el beacon vale 20)
+
+    // DSL Fase 3: huella JA4 y SNI del escenario.
+    let por_ja4 = run_capture(
+        &path,
+        Some("tls.ja4 == \"t13d0208h2_777cda164f4b_af51ac0c444f\""),
+        false,
+        &cfg,
+    )
+    .unwrap();
+    assert_eq!(por_ja4.flows.len(), 1);
+    assert!(por_ja4.flows[0].tls_sni.is_some());
+
+    let por_sni = run_capture(
+        &path,
+        Some("tls.sni contains \"ejemplo-corporativo\""),
+        false,
+        &cfg,
+    )
+    .unwrap();
+    assert_eq!(por_sni.flows.len(), 1);
 
     std::fs::remove_file(&path).ok();
 }

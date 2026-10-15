@@ -1,0 +1,13 @@
+[package]
+name = "socshark-ebpf-common"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Tipos compartidos entre los probes eBPF y el userspace de soc-shark (Fase 3)"
+
+[dependencies]
+# Intencionalmente vacío: este crate se compila también para el target
+# `bpfel-unknown-none` (programas eBPF con aya), donde no hay std ni crates
+# externos disponibles. Solo `core`.

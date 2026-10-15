@@ -13,14 +13,13 @@ SIEM: los `alerts[].mitre` del JSONL llevan exactamente estos IDs.
 | **T1046** | Network Service Discovery / Scanning | `PORT-SCAN` | ≥ 4 SYNs sin ACK hacia el mismo (src, dst, puerto) — tracker entre flujos | **Implementado (F1)** |
 | **T1021** | Remote Services | `INSECURE-PORT` | Conexión a telnet 23/tcp (credenciales en claro) | **Implementado (F1)** |
 | — (hardening) | Network Service Scanning (objetivo expuesto) | `EXPOSED-DB` | Conexión directa a 3306/5432/1433/6379/27017 | **Implementado (F1)** |
+| **T1071** | Application Layer Protocol (genérico) | `BEACONING` | Intervalos entre paquetes del iniciador con CV ≤ 0.15, ≥ 6 intervalos, media entre 5 s y 1 h (excluye ruido atenuado) | **Implementado (F3)** |
 
 ## Cobertura diseñada (fases 3-4)
 
 | ID | Técnica | Detección prevista | Señal concreta | Fase |
 |---|---|---|---|---|
-| **T1071.001** | Application Layer Protocol: Web | Fingerprinting JA4/JA4+ del handshake TLS | huella del ClientHello comparada con listas públicas de malware | F3 |
-| **T1071.004** | Application Layer Protocol: DNS | Beaconing DNS | regularidad de intervalos entre consultas al mismo dominio (regularidad ≥ 0.9, ≥ 8 muestras) | F3 |
-| **T1071** | Application Layer Protocol (genérico) | Beaconing de flujos | periodicidad de conexiones por (src, dst, puerto) con jitter bajo | F3 |
+| **T1071.001** | Application Layer Protocol: Web | Fingerprinting JA4/JA4+ del handshake TLS | huella del ClientHello comparada con listas públicas de malware (la huella ya se calcula desde F3: `tls.ja4`) | F4 |
 | **T1043** (histórico) / C2 común | — | Conexiones a IOC | IP/dominio en listas Feodo/Tor offline | F4 |
 | **T1036** | Masquerading: masquerade file type | Carving + magic bytes | nombre declarado ≠ tipo real del contenido reconstruido | F4 |
 | **T1040** | Network Sniffing | (nota) | soc-shark *habilita* la detección del resto; no se autodetecta en F1-F4 | n/a |

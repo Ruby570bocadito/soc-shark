@@ -40,7 +40,7 @@ field    = ident , { "." , ident } ;
 - Solo se acepta `campo op valor` (no `valor op campo`): es la convención de
   tcpdump/Wireshark y mantiene la inferencia de tipos trivial.
 
-## Campos soportados (Fase 1)
+## Campos soportados (Fase 1 + 3)
 
 | Campo | Tipo | Descripción |
 |---|---|---|
@@ -55,12 +55,16 @@ field    = ident , { "." , ident } ;
 | `dns.answer` | IP/cadena (multi) | Direcciones o targets de las respuestas |
 | `net.l7` (`l7`, `proto`) | cadena | `DNS`, `TLS`, `HTTP`, `SSH`, `NTP`, `DHCP`, `?` |
 | `net.transport` (`transport`) | cadena | `TCP`, `UDP`, `ICMP`, `OTRO` |
-| `net.domain` (`domain`) | cadena | Dominio resuelto (DNS pasivo) |
+| `net.domain` (`domain`) | cadena | Dominio resuelto (DNS pasivo, y desde F3 también el SNI del ClientHello si no hubo DNS) |
+| `tls.ja4` | cadena | Huella JA4 del ClientHello (Fase 3; vacío en flujos sin TLS) |
+| `tls.sni` | cadena | Nombre de servidor declarado por el cliente (Fase 3) |
 | `flow.packets`, `flow.bytes` | num | Totales de ambas direcciones |
 | `flow.risk` (`flow.risk_score`) | num | Riesgo 0-100 |
 | `flow.noise` | bool | Ruido de fondo |
 | `flow.alerts` | num | Número de alertas |
 | `flow.state` | cadena | `activo`, `inactivo`, `cerrado` |
+| `flow.interval_mean_secs` | num | Intervalo medio entre paquetes del iniciador en segundos (Fase 3; vacío con < 3 paquetes) |
+| `flow.interval_cv` | num | Coeficiente de variación de los intervalos: 0 = reloj perfecto (Fase 3) |
 | `process.name`, `process.pid` | cadena/num | Atribución eBPF (siempre vacíos hasta Fase 3; ya cableados) |
 
 ## Semántica de operadores

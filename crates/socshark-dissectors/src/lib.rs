@@ -23,6 +23,7 @@ pub mod ipv4;
 pub mod ipv6;
 pub mod pool;
 pub mod tcp;
+pub mod tls;
 pub mod udp;
 
 pub use pool::DissectionPool;
@@ -37,6 +38,7 @@ pub use ethernet::{parse_ethernet, EthernetInfo};
 pub use ipv4::{parse_ipv4, Ipv4Info};
 pub use ipv6::{parse_ipv6, Ipv6Info};
 pub use tcp::{parse_tcp, TcpFlags, TcpInfo};
+pub use tls::{parse_client_hello, ClientHello, ClientHelloCapture};
 pub use udp::{parse_udp, UdpInfo};
 
 /// Formatea una MAC como `aa:bb:cc:dd:ee:ff`.

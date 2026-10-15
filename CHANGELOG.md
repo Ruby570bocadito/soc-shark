@@ -3,6 +3,47 @@
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/)
 y [SemVer](https://semver.org/lang/es/).
 
+## [0.5.0] — 2026-10-16
+
+### Añadido (Fase 3, piezas puras: JA4, beaconing, tipos eBPF)
+
+- **Huella JA4 del ClientHello TLS** según la especificación oficial de
+  FoxIO: nuevo módulo `socshark-dissectors::tls` con parser de ClientHello
+  (tolera mensajes que cruzan segmentos TCP y registros TLS, acotado a
+  16 KiB, sin panics ante entrada malformada) y cálculo completo de
+  `t{ver}{sni}{ciphers}{exts}{alpn}_{hash ciphers}_{hash exts+sigalgs}`
+  (GREASE ignorado en todo, SNI/ALPN excluidos del hash de extensiones,
+  signature algorithms en orden de aparición, ALPN con fallback hexadecimal
+  para valores no alfanuméricos). El SHA-256 necesario es implementación
+  propia (~80 líneas, ADR-011): cero dependencias nuevas. Validado en CI
+  contra los vectores canónicos del spec (`t13d1516h2_8daaf6152771_
+  e5627efa2ab1`) y los vectores NIST del SHA-256.
+- **SNI del ClientHello** en el campo `tls_sni` del flujo; el enriquecimiento
+  lo usa como `resolved_domain` cuando no hubo DNS observable. Campos DSL
+  nuevos: `tls.ja4` y `tls.sni` (`==`, `contains`).
+- **Detección de beaconing (T1071)**: nueva estadística `IntervalStats` por
+  flujo (ventana acotada de 32 intervalos entre paquetes del iniciador,
+  tolerante a reordenamiento de captura) y regla `R5` del mini-IDS: alerta
+  `BEACONING` con periodo estimado y jitter cuando ≥ 6 intervalos, media
+  entre 5 s y 1 h y CV ≤ 0.15 (todo configurable en `PipelineConfig`); el
+  ruido de fondo (NTP, mDNS) queda excluido por diseño. Criterio de fase
+  cubierto: el beacon demo de 30 s alerta a los 3 min con periodo ±0%.
+- **Crate `socshark-ebpf-common`** (Fase 3): tipos compartidos
+  probe/userspace `ConnectEvent`, `SocketStateEvent` y `UdpSendEvent` como
+  `#[repr(C)]`, sin dependencias y compilable `no_std` (target
+  `bpfel-unknown-none`); tamaños, offsets y helpers (`comm_to_str`,
+  `tgid_of`) testados. Los probes con aya requieren entorno privilegiado
+  (CAP_BPF) y quedan pendientes de él.
+- Escenario demo ampliado (29 paquetes, 12 flujos): ClientHello TLS completo
+  y realista (produce huella JA4 estable `t13d0208h2_777cda164f4b_af51ac0c444f`
+  y SNI) y beacon UDP cada 30 s hacia un C2 simulado (dispara `BEACONING`).
+- Docs: `soc-features.md` (JA4 + beaconing), `soc-mitre-mapping.md`
+  (T1071 implementado), `data-model.md`, `filter-dsl.md`,
+  `ebpf-design.md` (estado real), ADR-011.
+- 121 tests (antes 105): vectores JA4/SHA-256, captura del hello partida en
+  segmentos, extractor acotado, beaconing positivo/negativo, DSL Fase 3 y
+  E2E con huella + beaconing sobre el escenario demo.
+
 ## [0.4.0] — 2026-10-16
 
 ### Añadido (Fase 2 completa: captura en vivo, pool, fuzzing)

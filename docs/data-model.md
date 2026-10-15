@@ -65,7 +65,9 @@ reciben datos inmutables.
 | `resolved_domain` | `Option<String>` | Dominio de `dst_ip`: el qname propio si el flujo ES DNS; el lookup de la base de DNS pasivo si no. | Capa SOC (F1) |
 | `dns` | `Option<DnsSummary>` | Resumen completo del intercambio DNS del flujo: preguntas, respuestas (A/AAAA/CNAME/NS/PTR), TTLs y rcode. | Agregador + SOC (F1) |
 | `dst_geo_asn` | `Option<String>` | ASN/GeoIP del destino (bases offline Feodo/Tor/MaxMind). | Threat intel (F4) |
-| `ja4_fingerprint` | `Option<String>` | Huella JA4 del handshake TLS del cliente. | Reassembler (F3) |
+| `ja4_fingerprint` | `Option<String>` | Huella JA4 del ClientHello TLS del cliente (spec FoxIO; SHA-256 propio, ADR-011). P. ej. `t13d0208h2_777cda164f4b_af51ac0c444f`. | Agregador (F3) |
+| `tls_sni` | `Option<String>` | Nombre de servidor que el cliente declara en el SNI del ClientHello; alimenta `resolved_domain` si no hubo DNS observable. | Agregador (F3) |
+| `interval_stats` | `Option<IntervalStats>` | Media/desviación de los intervalos entre paquetes del iniciador (ventana de 32 intervalos); base de `BEACONING` y consultable vía `flow.interval_mean_secs` / `flow.interval_cv`. | Agregador (F3) |
 
 ### Capa semántica (la cara visible del analista)
 

@@ -117,6 +117,30 @@ pub fn get_fields(flow: &EnrichedFlow, path: &FieldPath) -> Vec<FieldValue> {
             .map(FieldValue::Str)
             .into_iter()
             .collect(),
+        // Fase 3: huella y SNI del ClientHello TLS.
+        "tls.ja4" => flow
+            .ja4_fingerprint
+            .clone()
+            .map(FieldValue::Str)
+            .into_iter()
+            .collect(),
+        "tls.sni" => flow
+            .tls_sni
+            .clone()
+            .map(FieldValue::Str)
+            .into_iter()
+            .collect(),
+        // Fase 3: estadística de intervalos (beaconing).
+        "flow.interval_mean_secs" => flow
+            .interval_stats
+            .map(|s| FieldValue::Num(s.mean_micros as f64 / 1_000_000.0))
+            .into_iter()
+            .collect(),
+        "flow.interval_cv" => flow
+            .interval_stats
+            .map(|s| FieldValue::Num(s.cv()))
+            .into_iter()
+            .collect(),
         "flow.bytes" => vec![FieldValue::Num((flow.bytes + flow.bytes_rev) as f64)],
         "flow.packets" => vec![FieldValue::Num((flow.packets + flow.packets_rev) as f64)],
         "flow.risk" | "flow.risk_score" => vec![FieldValue::Num(flow.risk_score as f64)],
@@ -284,5 +308,46 @@ mod tests {
         assert!(eval(&parse("flow.risk > 40").unwrap(), &f));
         assert!(eval(&parse("flow.packets >= 7").unwrap(), &f));
         assert!(!eval(&parse("flow.risk < 40").unwrap(), &f));
+    }
+
+    #[test]
+    fn campos_tls_ja4_y_sni_fase_3() {
+        let f = flow_from(
+            r#"{
+                "flow_id": "tcp/10.0.0.1:52000-93.184.216.34:443",
+                "state": "Idle", "transport": "Tcp", "l7_protocol": "Tls",
+                "src_ip": "10.0.0.1", "src_port": 52000,
+                "dst_ip": "93.184.216.34", "dst_port": 443,
+                "first_seen_micros": 0, "last_seen_micros": 1, "duration_micros": 1,
+                "packets": 2, "bytes": 500, "packets_rev": 2, "bytes_rev": 900,
+                "tcp_flags": {"syn":1,"ack":0,"fin":0,"rst":0,"psh":0,"urg":0},
+                "human_summary": "", "risk_score": 0,
+                "alerts": [], "extracted_files": [],
+                "ja4_fingerprint": "t13d1516h2_8daaf6152771_e5627efa2ab1",
+                "tls_sni": "ejemplo.com",
+                "interval_stats": {"intervals": 6, "mean_micros": 30000000, "std_micros": 200000}
+            }"#,
+        );
+        assert!(eval(&parse("tls.sni contains \"ejemplo\"").unwrap(), &f));
+        assert!(eval(&parse("tls.sni == \"ejemplo.com\"").unwrap(), &f));
+        // La huella canónica del spec coincide completa.
+        assert!(eval(
+            &parse("tls.ja4 == \"t13d1516h2_8daaf6152771_e5627efa2ab1\"").unwrap(),
+            &f
+        ));
+        // Y por prefijo vía contains.
+        assert!(eval(
+            &parse("tls.ja4 contains \"8daaf6152771\"").unwrap(),
+            &f
+        ));
+
+        // Beaconing: intervalo medio 30 s, CV ~0.7%.
+        assert!(eval(&parse("flow.interval_mean_secs > 29").unwrap(), &f));
+        assert!(eval(&parse("flow.interval_cv < 0.01").unwrap(), &f));
+        // Flujos sin estadística no coinciden (semántica de campo ausente).
+        assert!(!eval(
+            &parse("flow.interval_cv < 0.01").unwrap(),
+            &crate::tests::flujo_tls()
+        ));
     }
 }

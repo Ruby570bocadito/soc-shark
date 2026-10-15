@@ -184,7 +184,8 @@ definición del producto y acumuló módulos que las fases aún no sostienen
 regla *std-only* que penalizaba la serialización y la CLI. El resultado era
 difícil de mantener y de explicar.
 
-**Decisión.** Se reescribe el workspace con ocho crates `socshark-*`
+**Decisión.** Se reescribe el workspace con crates `socshark-*` (ocho al reescribir;
+nueve desde la Fase 3 con `socshark-ebpf-common`)
 (core → capture → dissectors → flow → soc → filter, más testgen y cli),
 se adoptan las cinco dependencias externas de ADR-003 y se redocumenta el
 proyecto desde cero ([index.md](index.md)). El código de la v0.1 que aún no
@@ -260,3 +261,30 @@ tráficos con lotes llenos (en archivos, irrelevante; en vivo el daemon usa
 disección secuencial porque la cadencia de alerta manda). A cambio:
 determinismo verificable, sin locks en el agregador, y una sola línea de
 configuración (`workers`) para escalar en máquinas grandes.
+
+---
+
+## ADR-011 — SHA-256 propio para JA4 (sin dependencias criptográficas)
+
+**Estado:** aceptada (Fase 3).
+
+**Contexto.** La huella JA4 exige SHA-256 de las listas de ciphers y
+extensiones del ClientHello. Las opciones eran añadir una crate de hashing
+(`sha2`, madura y auditada) o implementar el algoritmo en el workspace. El
+contexto importa: no es una primitiva de seguridad (no protege secretos ni
+firma nada), es un resumen público y determinista sobre una lista de
+números de 16 bits.
+
+**Decisión.** Implementación propia de ~80 líneas en
+`socshark-dissectors::tls` (FIPS 180-4, revisable línea a línea), validada
+en CI con los vectores oficiales de NIST (cadena vacía, "abc", fronteras de
+bloque a 55 y 64 bytes) **y** con los vectores canónicos de la
+especificación JA4 de FoxIO (`8daaf6152771` y `e5627efa2ab1`), que además
+ejercitan todo el pipeline de normalización (orden hex, ceros, GREASE). Se
+mantiene así la regla de dependencias congeladas (ADR-003) intacta.
+
+**Consecuencias.** Si JA4 dejara de bastar y hubiera que cifrar/firmar con
+SHA-256, se sustituye por una crate auditada en ese momento (el módulo está
+aislado detrás de `sha256()` y `sha256_12()`). El coste de mantenimiento es
+mínimo: el algoritmo lleva congelado desde 2001 y los tests de vectores
+detectan cualquier regresión.

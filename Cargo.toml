@@ -7,12 +7,13 @@ members = [
     "crates/socshark-flow",
     "crates/socshark-filter",
     "crates/socshark-soc",
+    "crates/socshark-ebpf-common",
     "crates/socshark-testgen",
     "crates/socshark-cli",
 ]
 
 [workspace.package]
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 license = "MIT"
 authors = ["soc-shark contributors"]
@@ -27,6 +28,7 @@ socshark-dissectors = { path = "crates/socshark-dissectors" }
 socshark-flow = { path = "crates/socshark-flow" }
 socshark-filter = { path = "crates/socshark-filter" }
 socshark-soc = { path = "crates/socshark-soc" }
+socshark-ebpf-common = { path = "crates/socshark-ebpf-common" }
 socshark-testgen = { path = "crates/socshark-testgen" }
 
 # Dependencias externas (mínimas a propósito: ver docs/decisions.md)

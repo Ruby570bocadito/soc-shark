@@ -36,7 +36,10 @@ pub fn enrich_all(ctx: &mut SocContext, flows: &mut [EnrichedFlow], cfg: &Pipeli
 
     // Pasada 2: enriquecer cada flujo con el contexto completo.
     for flow in flows.iter_mut() {
-        // resolved_domain: el qname propio si ES un flujo DNS; lookup pasivo si no.
+        // resolved_domain: el qname propio si ES un flujo DNS; lookup pasivo
+        // si no; como último recurso el SNI que el propio cliente declaró en
+        // el ClientHello (Fase 3) — es la fuente más directa de "a qué
+        // dominio habla este flujo" cuando no hubo DNS observado.
         if flow.l7_protocol == L7Protocol::Dns {
             if let Some(qname) = flow
                 .dns
@@ -48,6 +51,10 @@ pub fn enrich_all(ctx: &mut SocContext, flows: &mut [EnrichedFlow], cfg: &Pipeli
             }
         } else if let Some(domain) = ctx.passive_dns.resolve(flow.dst_ip) {
             flow.resolved_domain = Some(domain.clone());
+        } else if flow.resolved_domain.is_none() {
+            if let Some(sni) = flow.tls_sni.clone() {
+                flow.resolved_domain = Some(sni);
+            }
         }
 
         if cfg.detect_noise {

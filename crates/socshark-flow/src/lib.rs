@@ -19,14 +19,19 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 
 use socshark_core::{
-    DnsAnswerSummary, DnsQuerySummary, DnsSummary, EnrichedFlow, FlowId, FlowState, L7Protocol,
-    TcpFlagCounts, Transport,
+    DnsAnswerSummary, DnsQuerySummary, DnsSummary, EnrichedFlow, FlowId, FlowState, IntervalStats,
+    L7Protocol, TcpFlagCounts, Transport,
 };
-use socshark_dissectors::{DissectedPacket, DnsInfo};
+use socshark_dissectors::{ClientHelloCapture, DissectedPacket, DnsInfo};
 
 /// Tope de bytes recolectados por dirección y flujo para el reensamblado.
 /// Lo que exceda el tope se descarta y se marca el stream como `lossy`.
 pub const MAX_STREAM_BYTES: u64 = 1024 * 1024;
+
+/// Timestamps en dirección iniciador que se retienen por flujo para las
+/// estadísticas de intervalos (33 muestras = 32 intervalos; a un beacon de
+/// 30 s cubre ~16 minutos, más que suficiente para estimar el periodo).
+const MAX_TIMES_FWD: usize = 33;
 
 /// Clave canónica de flujo bidireccional: los extremos se ordenan para que
 /// A→B y B→A compartan clave.
@@ -202,6 +207,11 @@ struct FlowAccum {
     l7: L7Protocol,
     dns: Option<DnsSummary>,
     streams: Option<StreamPair>,
+    /// Captura acotada del ClientHello del iniciador (Fase 3, JA4).
+    hello: ClientHelloCapture,
+    /// Timestamps (µs) de los primeros paquetes en dirección iniciador
+    /// (Fase 3, beaconing). No mantiene orden: se ordena al exportar.
+    times_fwd: Vec<u64>,
 }
 
 impl FlowAccum {
@@ -246,6 +256,8 @@ impl FlowAccum {
             } else {
                 None
             },
+            hello: ClientHelloCapture::default(),
+            times_fwd: Vec::new(),
         }
     }
 
@@ -373,6 +385,11 @@ impl FlowAggregator {
             acc.last_seen = ts_micros;
         }
 
+        // Ventana acotada de timestamps del iniciador (Fase 3, beaconing).
+        if forward && acc.times_fwd.len() < MAX_TIMES_FWD {
+            acc.times_fwd.push(ts_micros);
+        }
+
         if let Some(t) = dp.tcp.as_ref() {
             let f = t.flags;
             acc.flags.syn += f.syn as u32;
@@ -388,6 +405,12 @@ impl FlowAggregator {
                     let dir = if forward { &mut sp.fwd } else { &mut sp.rev };
                     dir.push(t.seq, &dp.payload);
                 }
+            }
+
+            // Captura del ClientHello (Fase 3, JA4): solo la dirección del
+            // iniciador; la máquina de estados rechaza no-TLS por si sola.
+            if forward && !dp.payload.is_empty() {
+                acc.hello.feed(&dp.payload);
             }
         }
 
@@ -483,6 +506,11 @@ impl FlowAggregator {
                 server_lossy,
             }
         });
+        let interval_stats = interval_stats_of(&acc.times_fwd);
+        let (ja4_fingerprint, tls_sni) = match acc.hello.hello() {
+            Some(ch) => (Some(ch.ja4()), ch.sni.clone()),
+            None => (None, None),
+        };
         let flow = EnrichedFlow {
             flow_id: acc.key.flow_id(),
             state,
@@ -513,7 +541,9 @@ impl FlowAggregator {
             resolved_domain: None,
             dns: acc.dns,
             dst_geo_asn: None,
-            ja4_fingerprint: None,
+            ja4_fingerprint,
+            tls_sni,
+            interval_stats,
             is_background_noise: false,
             human_summary: String::new(),
             risk_score: 0,
@@ -522,6 +552,35 @@ impl FlowAggregator {
         };
         (flow, streams)
     }
+}
+
+/// Estadística de intervalos sobre los timestamps del iniciador.
+///
+/// Se ordena (tolerancia a reordenamiento de la captura) y se calculan los
+/// deltas consecutivos; con menos de 3 paquetes (2 intervalos) no hay
+/// estadística útil y se devuelve `None`.
+fn interval_stats_of(times_fwd: &[u64]) -> Option<IntervalStats> {
+    if times_fwd.len() < 3 {
+        return None;
+    }
+    let mut ts = times_fwd.to_vec();
+    ts.sort_unstable();
+    let deltas: Vec<u64> = ts.windows(2).map(|w| w[1] - w[0]).collect();
+    let n = deltas.len() as f64;
+    let mean = deltas.iter().sum::<u64>() as f64 / n;
+    let var = deltas
+        .iter()
+        .map(|&d| {
+            let x = d as f64 - mean;
+            x * x
+        })
+        .sum::<f64>()
+        / n;
+    Some(IntervalStats {
+        intervals: deltas.len() as u32,
+        mean_micros: mean.round() as u64,
+        std_micros: var.sqrt().round() as u64,
+    })
 }
 
 #[cfg(test)]

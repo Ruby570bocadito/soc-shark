@@ -2,10 +2,13 @@
 
 La característica que ningún analizador clásico tiene: **saber qué proceso,
 binario y usuario originó cada conexión**, directamente en la tabla de
-flujos, sin instrumentar la aplicación. Este documento es el diseño completo
-de la Fase 3: qué probes, cómo se correlaciona, y con qué límites. Estado
-actual: **no implementado**; el modelo de datos ya reserva los campos
-(`process_name`, `pid`, `user`) para que la integración sea rellenar datos.
+flujos, sin instrumentar la aplicación. Estado actual: los **tipos
+compartidos probe/userspace ya existen y están testeados** (crate
+`socshark-ebpf-common`, `#[repr(C)]` sin dependencias y compatible
+`no_std`) y el modelo de datos reserva los campos (`process_name`, `pid`,
+`user`) para que la integración sea rellenar datos. Los probes con aya
+requieren toolchain nightly (`bpf-linker`) y privilegios CAP_BPF/CAP_PERFMON;
+se implementan contra un entorno Linux privilegiado.
 
 ## Objetivo
 
@@ -109,6 +112,7 @@ maduro), CAP_BPF+CAP_PERFMON (o root en kernels antiguos), BTF presente
 
 ```rust
 /// Evento compartido entre probe y userspace (crate socshark-ebpf-common).
+/// IMPLEMENTADO: ver crates/socshark-ebpf-common (repr(C), testado).
 #[repr(C)]
 pub struct ConnectEvent {
     pub cookie: u64,
@@ -122,6 +126,13 @@ pub struct ConnectEvent {
     pub comm: [u8; 16],   // task->comm (truncado por el kernel)
 }
 ```
+
+El formato real del crate añade `pid_tgid` como `u64` combinado
+(`(tgid << 32) | tid`, según el propio registro del kernel) y helpers
+`comm_to_str`/`tgid_of`/`tid_of`. Junto a `ConnectEvent` existen ya
+`SocketStateEvent` (tracepoint `inet_sock_set_state`) y `UdpSendEvent`
+(`udp_sendmsg`), con `EVENT_FORMAT_VERSION` como contrato de compatibilidad
+probe ↔ daemon.
 
 El daemon resuelve `comm → ruta completa del binario` leyendo
 `/proc/<pid>/exe` **en el momento del evento** (antes de que el proceso

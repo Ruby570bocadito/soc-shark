@@ -198,6 +198,35 @@ pub struct TcpFlagCounts {
     pub urg: u32,
 }
 
+/// Estadística compacta de los intervalos entre paquetes de una dirección
+/// de un flujo (Fase 3): base de la detección de beaconing por regularidad.
+///
+/// Se calcula sobre una ventana acotada de los primeros paquetes en
+/// dirección iniciador (la del beacon); el detector SOC la consume desde
+/// [`EnrichedFlow::interval_stats`]. Estar en el modelo permite filtrar por
+/// ello en el DSL (`flow.interval_cv`, `flow.interval_mean_secs`) y
+/// persistirlo en el JSONL sin volumen añadido.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct IntervalStats {
+    /// Número de intervalos observados (≥ 2 para tener valor estadístico).
+    pub intervals: u32,
+    /// Media de los intervalos, en microsegundos.
+    pub mean_micros: u64,
+    /// Desviación estándar poblacional de los intervalos, en microsegundos.
+    pub std_micros: u64,
+}
+
+impl IntervalStats {
+    /// Coeficiente de variación (std/mean): 0.0 = reloj perfecto, valores
+    /// ≥ ~0.3 = tráfico humano/cola TCP, no beacon programado.
+    pub fn cv(&self) -> f64 {
+        if self.mean_micros == 0 {
+            return f64::INFINITY;
+        }
+        self.std_micros as f64 / self.mean_micros as f64
+    }
+}
+
 /// La unidad central de información de soc-shark: un flujo de red enriquecido.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EnrichedFlow {
@@ -256,6 +285,15 @@ pub struct EnrichedFlow {
     /// Huella JA4 del handshake TLS (Fase 3; hoy None).
     #[serde(default)]
     pub ja4_fingerprint: Option<String>,
+    /// Nombre del servidor indicado por el cliente en el SNI del
+    /// ClientHello (Fase 3). Es la visión del dominio que el cliente
+    /// mismo declara, útil incluso sin DNS pasivo.
+    #[serde(default)]
+    pub tls_sni: Option<String>,
+    /// Estadística de intervalos entre paquetes del iniciador (Fase 3;
+    /// alimenta la detección de beaconing y el DSL).
+    #[serde(default)]
+    pub interval_stats: Option<IntervalStats>,
 
     // ---- Capa semántica SOC ----
     /// True si es tráfico de fondo (mDNS, NTP, ...) que la UI debe atenuar.

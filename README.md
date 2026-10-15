@@ -18,7 +18,7 @@ Wireshark responde a la pregunta *«¿qué hay en este paquete?»*. **soc-shark 
 | **TLS 1.3 transparente** | Descifrado vía uprobes a `SSL_read/SSL_write`, sin `SSLKEYLOGFILE` | Diseño — Fase 3+ |
 | **Plugins WASM en sandbox** | Dissectors seguros escritos por la comunidad, sin riesgo de RCE | Diseño (`docs/wasm-plugins.md`) — Fase 4 |
 | **Decodificador CyberChef integrado** | Pipelines Base64→XOR→Zlib→JSON sobre payloads | Fase 4 |
-| **Detección pasiva y fingerprinting** | JA4/JA4+, HASSH, entropía, beaconing | Fase 3 |
+| **Detección pasiva y fingerprinting** | JA4 (spec FoxIO), SNI, entropía, beaconing (T1071) | **Implementado (JA4 + beaconing)** |
 | **IPv6 completo** | Dissector con extensiones, claves de flujo v4/v6 y literales v6 en el DSL | **Implementado** |
 | **Follow Stream** | Reensamblado TCP por dirección: orden, retransmisiones, huecos, hexdump | **Implementado** |
 | **Captura en vivo (libpcap)** | Daemon con pushdown BPF al kernel, sin dependencia en tiempo de compilación (dlopen) | **Implementado** |
@@ -26,14 +26,14 @@ Wireshark responde a la pregunta *«¿qué hay en este paquete?»*. **soc-shark 
 | **Fuzzing determinista en CI** | Corpus mutado sobre parsers + agregador + SOC + DSL, reproducible por semilla | **Implementado** |
 | **TUI interactiva (Ratatui)** | Lista Flow-First + panel de alertas + filtro DSL en vivo | **Implementado** |
 | **Paradigma Flow-First** | 1 línea = 1 sesión; expansión bajo demanda | **Núcleo implementado** |
-| **Mini-IDS heurístico** | Túnel DNS, escaneos SYN, puertos inseguros | **Implementado** |
-| **DNS pasivo** | Dominio ↔ IP observados, etiqueta el resto de flujos | **Implementado** |
+| **Mini-IDS heurístico** | Túnel DNS, escaneos SYN, puertos inseguros, beaconing | **Implementado** |
+| **DNS pasivo** | Dominio ↔ IP observados, etiqueta el resto de flujos (+ SNI del ClientHello desde F3) | **Implementado** |
 | **Smart Noise Dimming** | NTP/mDNS/SSDP marcados como ruido y atenuados | **Implementado** |
 | **Export SIEM** | JSONL → ECS / Wazuh / TheHive | Fase 4 (JSONL ya disponible) |
 
-## Estado actual: Fase 1 completa ✅ · Fase 2 completa (implementación) ✅
+## Estado actual: Fases 1-2 completas ✅ · Fase 3 en curso (piezas puras implementadas)
 
-El pipeline funciona de extremo a extremo sobre archivos **y en vivo**: **lectura/libpcap → disección (Ethernet/IPv4/IPv6/TCP/UDP/DNS, secuencial o en pool de N hilos) → agregación de flujos bidireccionales → enriquecimiento SOC → filtro DSL → tabla/TUI/JSONL/follow/daemon**. 105 tests automatizados cubren parsers (barrido anti-panic), pool concurrente, agregador, reensamblado, DSL, capa SOC, backend de captura e integración; el fuzzing determinista recorre millones de tramas mutadas en cada build.
+El pipeline funciona de extremo a extremo sobre archivos **y en vivo**: **lectura/libpcap → disección (Ethernet/IPv4/IPv6/TCP/UDP/DNS/TLS, secuencial o en pool de N hilos) → agregación de flujos bidireccionales (JA4 + SNI + estadística de intervalos) → enriquecimiento SOC → filtro DSL → tabla/TUI/JSONL/follow/daemon**. 121 tests automatizados cubren parsers (barrido anti-panic), JA4 (vectores oficiales FoxIO + NIST), pool concurrente, agregador, reensamblado, DSL, capa SOC (incluido beaconing T1071), backend de captura e integración; el fuzzing determinista recorre millones de tramas mutadas en cada build.
 
 ### Inicio rápido
 
@@ -60,13 +60,15 @@ cargo build --release
 ./target/release/socshark capture -r demo.pcap
 ```
 
-Salida real de la demo (21 paquetes → 11 flujos relevantes, ruido excluido):
+Salida real de la demo (29 paquetes → 12 flujos relevantes, ruido excluido):
 
 ```text
-═══ soc-shark · 11 flujos (demo.pcap) ═══
+═══ soc-shark · 12 flujos (demo.pcap) ═══
 FLUJO                                                        L7        PAQ      BYTES  RIESGO  ALERTAS
-tcp/93.184.216.34:443-192.168.1.10:52000                     TLS         7      406 B       0  -
+udp/192.168.1.30:53100-198.51.100.23:8080                    ?           8      848 B      20  BEACONING
+tcp/93.184.216.34:443-192.168.1.10:52000                     TLS         7      583 B       0  -
 udp/2001:4860:4860::8888:53-fd00::10:53010                   DNS         2      216 B       0  -
+udp/8.8.8.8:53-192.168.1.10:53001                            DNS         2      158 B       0  -
 udp/8.8.8.8:53-192.168.1.30:53002                            DNS         1      137 B      45  DNS-TUNNELING
 tcp/93.184.216.34:80-192.168.1.20:40111                      HTTP        1      101 B       0  -
 tcp/192.168.1.1:22-192.168.1.30:40001                        ?           1       54 B      30  PORT-SCAN
@@ -77,11 +79,18 @@ tcp/192.168.1.1:22-192.168.1.30:40001                        ?           1      
   qname 'az3k9...chfdgs.tun.evil.example' (77 caracteres, entropía 5.09 ≥ 3.50) · MITRE T1048.003
 ▸ (media) Posible escaneo de puertos · tcp/192.168.1.1:22-192.168.1.30:40001 ·
   5 SYNs sin respuesta hacia 192.168.1.1:22 · MITRE T1046
+▸ (media) Comunicación periódica (beacon) · udp/192.168.1.30:53100-198.51.100.23:8080 ·
+  intervalo medio 30.0s con jitter ±0.0% en 7 intervalos · MITRE T1071
 
-Estadísticas: 21 paquetes leídos · 21 diseccionados · 0 descartados · 13 flujos
+Estadísticas: 29 paquetes leídos · 29 diseccionados · 0 descartados · 14 flujos
 ```
 
-El flujo `udp/2001:4860:4860::8888:53-...` es el intercambio **DNS sobre IPv6**
+El flujo TLS lleva la **huella JA4** del ClientHello (`t13d0208h2_777cda164f4b_af51ac0c444f`)
+y el **SNI** declarado por el cliente (`store.ejemplo-corporativo.com`) —
+consultables en JSONL y con `tls.ja4` / `tls.sni` en el DSL. El flujo del
+beacon hacia `198.51.100.23:8080` dispara la alerta **BEACONING** (T1071)
+por regularidad de intervalos (Fase 3). El flujo
+`udp/2001:4860:4860::8888:53-...` es el intercambio **DNS sobre IPv6**
 que incluye la demo desde la Fase 2 (respuesta AAAA incluida).
 
 ### Comandos
@@ -129,6 +138,7 @@ soc-shark/
 │   ├── socshark-flow/         # Agregador de flujos bidireccionales
 │   ├── socshark-filter/       # DSL de filtrado (lexer, parser, evaluador)
 │   ├── socshark-soc/          # Ruido, DNS pasivo, riesgo, resúmenes humanos
+│   ├── socshark-ebpf-common/  # Tipos compartidos probe/userspace eBPF (repr(C), no_std)
 │   ├── socshark-testgen/      # Constructores de tramas + demo + primitivas de fuzzing
 │   └── socshark-cli/          # Binario `socshark` (capture/daemon/follow/tui/fuzz) + tests
 ├── docs/                      # Documentación completa (índice en docs/index.md)
@@ -150,7 +160,7 @@ soc-shark/
 
 ## Calidad
 
-- **105 tests** unitarios y de integración (`cargo test --workspace`),
+- **121 tests** unitarios y de integración (`cargo test --workspace`),
   incluido el barrido anti-panic, el reensamblado con segmentos fuera de
   orden y el test de igualdad JSONL entre el pool de 4 hilos y el camino
   secuencial.

@@ -415,14 +415,96 @@ pub const WEB6: Ipv6Addr = Ipv6Addr::new(0x2606, 0x2800, 0x220, 0x1, 0, 0, 0, 0x
 pub const TUNNEL_QNAME: &str =
     "az3k9t2wq7xm5vb8n4rj6yp1chfdgsaz3k9t2wq7xm5vb8n4rj6yp1chfdgs.tun.evil.example";
 
+/// Servidor C2 simulado del beacon (TEST-NET-2, doc RFC 5737).
+pub const C2: Ipv4Addr = Ipv4Addr::new(198, 51, 100, 23);
+
+/// Registro TLS con un ClientHello completo y realista (Fase 3).
+///
+/// TLS 1.3 (supported_versions sobre legacy 1.2), SNI, ALPN, signature
+/// algorithms, key share y grupos. Es lo que un cliente moderno envía y
+/// produce una huella JA4 estable para el escenario demo.
+pub fn client_hello(sni: &str, alpn: &[u8]) -> Vec<u8> {
+    // Extensiones (formato: tipo u16 + longitud u16 + datos).
+    let name = sni.as_bytes();
+    let mut sni_ext = Vec::new();
+    sni_ext.extend_from_slice(&((name.len() + 3) as u16).to_be_bytes());
+    sni_ext.push(0); // host_name
+    sni_ext.extend_from_slice(&(name.len() as u16).to_be_bytes());
+    sni_ext.extend_from_slice(name);
+
+    let mut alpn_ext = Vec::new();
+    alpn_ext.extend_from_slice(&((alpn.len() + 1) as u16).to_be_bytes());
+    alpn_ext.push(alpn.len() as u8);
+    alpn_ext.extend_from_slice(alpn);
+
+    let sig: [u8; 16] = [
+        0x04, 0x03, 0x08, 0x04, 0x04, 0x01, 0x05, 0x03, 0x08, 0x05, 0x05, 0x01, 0x08, 0x06, 0x06,
+        0x01,
+    ];
+    let mut sig_ext = (sig.len() as u16).to_be_bytes().to_vec();
+    sig_ext.extend_from_slice(&sig);
+
+    let sv_ext: Vec<u8> = vec![4, 0x03, 0x04, 0x03, 0x03]; // TLS 1.3 y 1.2
+    let groups_ext: Vec<u8> = vec![4, 0x00, 0x1d, 0x00, 0x17]; // x25519, secp256r1
+    let mut ks_ext: Vec<u8> = vec![64, 0x00, 0x1d, 0x00, 0x20]; // cabecera del key_share
+                                                                // `repeat_n` es de Rust 1.82; el MSRV del workspace es 1.75 (ADR-001).
+    #[allow(clippy::manual_repeat_n)]
+    ks_ext.extend(std::iter::repeat(0x11).take(32));
+
+    let exts: [(u16, Vec<u8>); 8] = [
+        (0x0000, sni_ext),
+        (0x0010, alpn_ext),
+        (0x000d, sig_ext),
+        (0x002b, sv_ext),
+        (0x000a, groups_ext),
+        (0x0033, ks_ext),
+        (0x002d, vec![1]), // psk_key_exchange_modes
+        (0x0017, vec![]),  // extended_master_secret
+    ];
+    let mut ext_blob = Vec::new();
+    for (t, d) in &exts {
+        ext_blob.extend_from_slice(&t.to_be_bytes());
+        ext_blob.extend_from_slice(&(d.len() as u16).to_be_bytes());
+        ext_blob.extend_from_slice(d);
+    }
+
+    // Cuerpo del handshake: version + random + sid + ciphers + compression + exts.
+    let mut body = vec![0x03, 0x03]; // legacy_version TLS 1.2
+    body.extend_from_slice(&[0xaa; 32]); // random (fijo para reproducibilidad)
+    body.push(0x00); // session_id vacío
+    let ciphers: [u8; 4] = [0x13, 0x01, 0xc0, 0x2b]; // AES128GCM-SHA256, ECDHE-ECDSA-AES128
+    body.extend_from_slice(&(ciphers.len() as u16).to_be_bytes());
+    body.extend_from_slice(&ciphers);
+    body.push(0x01); // 1 método de compresión
+    body.push(0x00); // null
+    body.extend_from_slice(&(ext_blob.len() as u16).to_be_bytes());
+    body.extend_from_slice(&ext_blob);
+
+    // Mensaje handshake + registro TLS. Convención TLS real: la longitud del
+    // mensaje handshake NO incluye su propia cabecera de 4 bytes; la del
+    // registro SÍ incluye esa cabecera.
+    let mut out = vec![0x16, 0x03, 0x01];
+    let rec_len = body.len() + 4;
+    out.extend_from_slice(&(rec_len as u16).to_be_bytes());
+    out.push(0x01); // ClientHello
+    let hs = (body.len() as u32).to_be_bytes();
+    out.extend_from_slice(&hs[1..4]);
+    out.extend_from_slice(&body);
+    out
+}
+
 /// Escenario demo completo: tráfico variado con eventos SOC interesantes.
 ///
 /// Devuelve `(timestamp_micros, trama)` lista para [`write_pcap`]. Contiene:
-/// 1. Resolución DNS legítima de `example.com` + sesión TLS hacia ella.
+/// 1. Resolución DNS legítima de `example.com` + sesión TLS con ClientHello
+///    realista (produce huella JA4 y SNI desde la Fase 3).
 /// 2. Ruido de fondo: NTP y mDNS.
 /// 3. Posible túnel DNS (qname largo de alta entropía, TXT al resolver).
 /// 4. Escaneo SYN hacia el gateway (5 SYNs, puertos origen distintos).
 /// 5. Banner SSH y petición HTTP en texto claro.
+/// 6. DNS sobre IPv6 (Fase 2).
+/// 7. Beacon UDP cada 30 s hacia un C2 simulado (Fase 3: alerta BEACONING
+///    por regularidad de intervalos, MITRE T1071).
 pub fn sample_pcap_packets() -> Vec<(u64, Vec<u8>)> {
     let t0 = 1_700_000_000_000_000u64; // 2023-11-14T22:13:20Z
     let mut p: Vec<(u64, Vec<u8>)> = Vec::new();
@@ -453,11 +535,10 @@ pub fn sample_pcap_packets() -> Vec<(u64, Vec<u8>)> {
         ),
     ));
 
-    // 2) Sesión TLS: handshake simplificado + cierre limpio (FIN/FIN-ACK).
+    // 2) Sesión TLS: handshake con ClientHello realista (JA4/SNI, Fase 3)
+    //    + cierre limpio (FIN/FIN-ACK).
     let (sp, seq0) = (52000u16, 1000u32);
-    let client_hello: &[u8] = &[
-        0x16, 0x03, 0x01, 0x00, 0x2f, 0x01, 0x00, 0x00, 0x2b, 0x03, 0x03, 0xaa, 0xbb, 0xcc,
-    ];
+    let client_hello = client_hello("store.ejemplo-corporativo.com", b"h2");
     let server_hello: &[u8] = &[
         0x16, 0x03, 0x03, 0x00, 0x31, 0x02, 0x00, 0x00, 0x2d, 0x03, 0x03, 0xdd, 0xee, 0xff,
     ];
@@ -520,7 +601,7 @@ pub fn sample_pcap_packets() -> Vec<(u64, Vec<u8>)> {
             seq0 + 1,
             5001,
             flags::PSH_ACK,
-            client_hello,
+            &client_hello,
         ),
     ));
     p.push((
@@ -680,6 +761,27 @@ pub fn sample_pcap_packets() -> Vec<(u64, Vec<u8>)> {
         ),
     ));
 
+    // 9) Beacon UDP (Fase 3): el equipo comprometido (HOST_C, el mismo del
+    //    túnel DNS y el escaneo) "llama a casa" cada 30 s al C2 simulado.
+    //    8 datagramas = 7 intervalos de 30 s exactos → alerta BEACONING
+    //    (T1071) con periodo estimado 30.0 s. Sin handshake: sesión larga
+    //    preestablecida, como hacen los beacons reales.
+    let beacon_payload: Vec<u8> = (0..64u8).collect();
+    for i in 0..8u16 {
+        p.push((
+            t0 + 10_000_000 + i as u64 * 30_000_000,
+            frame_udp(
+                MAC_HOST_C,
+                MAC_ROUTER,
+                HOST_C,
+                C2,
+                53100,
+                8080,
+                &beacon_payload,
+            ),
+        ));
+    }
+
     p
 }
 
@@ -693,10 +795,23 @@ mod tests {
     fn escenario_demo_genera_paquetes_validos() {
         let pkts = sample_pcap_packets();
         // 2 DNS + 7 TLS + 2 ruido + 1 túnel + 5 escaneo + 1 SSH + 1 HTTP
-        // + 2 DNS-IPv6 = 21.
-        assert_eq!(pkts.len(), 21);
+        // + 2 DNS-IPv6 + 8 beacon = 29.
+        assert_eq!(pkts.len(), 29);
         // Todas las tramas deben ser >= 34 bytes (eth + ip mínimo).
         assert!(pkts.iter().all(|(_, d)| d.len() >= 34));
+    }
+
+    #[test]
+    fn client_hello_del_demo_parsea_completo() {
+        let hello = client_hello("demo.example", b"h2");
+        // Cabecera de registro de 5 bytes: tipo handshake 0x16 y longitud coherente.
+        assert_eq!(hello[0], 0x16);
+        let rec_len = u16::from_be_bytes([hello[3], hello[4]]) as usize;
+        assert_eq!(hello.len(), 5 + rec_len);
+        // El mensaje declara su longitud completa: el parser del dissector
+        // debe poder cerrar la captura con un único segmento.
+        let hs_len = ((hello[6] as usize) << 16) | ((hello[7] as usize) << 8) | hello[8] as usize;
+        assert_eq!(hello.len(), 9 + hs_len);
     }
 
     #[test]

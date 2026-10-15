@@ -108,15 +108,55 @@ C2 activos, Tor exit nodes), y comparación de `ja4_fingerprint` contra
 listas públicas de malware. Toda coincidencia es una alerta `INFO`/`MEDIUM`
 con la fuente citada, nunca una decisión automática de bloqueo.
 
-## Detección de beaconing (Fase 3 — diseñado)
+## Huella JA4 y SNI del ClientHello (Fase 3 — implementado)
 
-Algoritmo previsto sobre los `first_seen/last_seen` de los flujos por
-(destino, puerto): agrupar intervalos entre conexiones de un mismo origen,
-calcular regularidad (desviación estándar / media) y exigir mínimos de
-muestras (≥ 8) y duración (≥ 30 min). Regularidad > 0.9 con jitter bajo es
-el perfil de un implante con sleep fijo; el ruido humano no cumple ninguno
-de los dos. Se emitirá como `T1071` (Application Layer Protocol) con el
-periodo estimado en el detalle ("cada ~60.2s ±1.3s").
+Con cada flujo TCP cuyo iniciador envía un ClientHello TLS, el agregador
+reconstruye el mensaje (acotado a 16 KiB, tolera que cruce segmentos y
+registros) y calcula la huella **JA4** de FoxIO según su especificación
+oficial: versión TLS, SNI, recuentos sin GREASE, hash de ciphers ordenados y
+hash de extensiones (sin SNI/ALPN) más signature algorithms en orden de
+aparición. El SHA-256 necesario es implementación propia (~80 líneas, ADR-011):
+sin dependencias criptográficas para un resumen público.
+
+- `ja4_fingerprint` p. ej. `t13d0208h2_777cda164f4b_af51ac0c444f`: identifica
+  la librería/binario cliente aunque el tráfico vaya cifrado, y permite
+  hunting contra bases públicas de huellas (ja4db) — Fase 4.
+- `tls_sni`: el dominio que el propio cliente declara. El enriquecimiento lo
+  usa como `resolved_domain` cuando no hubo DNS observable, así el flujo TLS
+  siempre tiene dominio legible si el cliente lo envió.
+- DSL: `tls.ja4 == "t13d0208h2_..."`, `tls.ja4 contains "8daaf6152771"`,
+  `tls.sni contains "ejemplo"`.
+- La huella se valida en CI contra los vectores canónicos del spec FoxIO
+  (`t13d1516h2_8daaf6152771_e5627efa2ab1`), además de los vectores NIST del
+  SHA-256.
+
+QUIC/DTLS (`q`/`d` como primer carácter) queda para fases posteriores: exige
+parser QUIC propio.
+
+## Detección de beaconing (Fase 3 — implementado)
+
+Implementada sobre una estadística de intervalos por flujo y dirección
+iniciador (`IntervalStats`: ventana acotada de 33 timestamps → 32 intervalos,
+media y desviación estándar poblacional, tolerante a reordenamiento de
+captura). La regla `R5` del mini-IDS alerta `BEACONING` (MITRE **T1071**)
+cuando se cumplen TODAS (umbrales configurables en `PipelineConfig`):
+
+- ≥ `beacon_min_intervals` (6) intervalos → un beacon de 30 s alerta a los
+  3 minutos, dentro del criterio de fase (< 5 min).
+- Media de intervalos dentro de [`beacon_min_interval_secs` (5),
+  `beacon_max_interval_secs` (3600)]: por debajo está el tráfico interactivo,
+  por encima los keepalives y los polls de mantenimiento.
+- Coeficiente de variación (std/mean) ≤ `beacon_max_cv` (0.15): el perfil de
+  un sleep programado; el tráfico humano (CV > 0.3) queda fuera.
+- El flujo no es ruido de fondo (NTP/mDNS son regulares por diseño y ya
+  están atenuados).
+
+El detalle de la alerta incluye el periodo estimado y su jitter
+("intervalo medio 30.0s con jitter ±0.0% en 7 intervalos"), y los campos
+`flow.interval_mean_secs` / `flow.interval_cv` son consultables en el DSL.
+La correlación por grupos de flujos hacia el mismo (destino, puerto) y el
+beaconing con jitter aleatorizado (CV deliberadamente alto) quedan como
+evolutivos documentados.
 
 ## Export a SIEM (Fase 4 — diseñado, contrato ya operativo)
 

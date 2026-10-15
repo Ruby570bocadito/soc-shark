@@ -31,6 +31,20 @@ pub struct PipelineConfig {
     /// secuencial (ADR-010: lotes con entrega ordenada); con 1 no se copia
     /// payload (zero-copy estricto).
     pub workers: usize,
+    /// Intervalos consecutivos (≥) necesarios para evaluar beaconing.
+    /// Con 6, un beacon de 30 s se alerta a los 3 minutos (criterio de
+    /// Fase 3: < 5 min).
+    pub beacon_min_intervals: u32,
+    /// Intervalo medio mínimo (segundos) para considerar beaconing: por
+    /// debajo están las retransmisiones y el tráfico interactivo.
+    pub beacon_min_interval_secs: u64,
+    /// Intervalo medio máximo (segundos): por encima están los keepalives
+    /// TCP (2 h) y los polls de mantenimiento (NTP 1024 s).
+    pub beacon_max_interval_secs: u64,
+    /// Coeficiente de variación máximo (std/mean) para considerar los
+    /// intervalos "programados". 0.15 deja fuera el tráfico humano (CV >
+    /// 0.3) y capta beacons con jitter moderado.
+    pub beacon_max_cv: f64,
 }
 
 impl Default for PipelineConfig {
@@ -44,6 +58,10 @@ impl Default for PipelineConfig {
             scan_syn_threshold: 4,
             collect_streams: false,
             workers: 1,
+            beacon_min_intervals: 6,
+            beacon_min_interval_secs: 5,
+            beacon_max_interval_secs: 3600,
+            beacon_max_cv: 0.15,
         }
     }
 }

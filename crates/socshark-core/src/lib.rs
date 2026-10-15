@@ -12,6 +12,7 @@ pub mod packet;
 pub use config::PipelineConfig;
 pub use flow::{
     dns_rcode_str, dns_type_str, Alert, DnsAnswerSummary, DnsQuerySummary, DnsSummary,
-    EnrichedFlow, ExtractedFile, FlowId, FlowState, L7Protocol, Severity, TcpFlagCounts, Transport,
+    EnrichedFlow, ExtractedFile, FlowId, FlowState, IntervalStats, L7Protocol, Severity,
+    TcpFlagCounts, Transport,
 };
 pub use packet::{LinkType, RawPacket};
