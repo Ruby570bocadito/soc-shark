@@ -1,7 +1,0 @@
-[package]
-name = "socshark-common"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-authors.workspace = true
-description = "soc-shark: utilidades compartidas (JSON, SHA-256, Base64, entropia, IP, tiempo, ANSI)"

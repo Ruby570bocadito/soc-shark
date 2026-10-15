@@ -1,0 +1,536 @@
+//! socshark-testgen: constructores de tramas y capturas de prueba.
+//!
+//! Usado por los tests unitarios/de integración de todo el workspace y por
+//! el comando `socshark dev sample-pcap`. Genera tramas Ethernet+IPv4+TCP/UDP
+//! y mensajes DNS con checksums correctos (IPv4 y TCP con pseudo-cabecera)
+//! para que los parsers trabajen con datos realistas.
+//!
+//! Al ser una crate de utilidad no depende de ningún otro crate del
+//! workspace: nada del "código bajo test" puede colarse en los fixtures.
+
+use std::io::Write as _;
+use std::net::Ipv4Addr;
+use std::path::Path;
+
+// ---------------------------------------------------------------- checksums
+
+fn ones_sum(bytes: &[u8]) -> u32 {
+    let mut sum = 0u32;
+    let mut i = 0;
+    while i + 1 < bytes.len() {
+        sum += u16::from_be_bytes([bytes[i], bytes[i + 1]]) as u32;
+        i += 2;
+    }
+    if i < bytes.len() {
+        sum += (bytes[i] as u32) << 8;
+    }
+    sum
+}
+
+fn checksum16(bytes: &[u8]) -> u16 {
+    let mut s = ones_sum(bytes);
+    while s >> 16 != 0 {
+        s = (s & 0xffff) + (s >> 16);
+    }
+    !(s as u16)
+}
+
+// ------------------------------------------------------------ constructores
+
+/// Trama Ethernet completa: eth + ipv4 + l4 (con checksum IP correcto).
+pub fn frame(
+    src_mac: [u8; 6],
+    dst_mac: [u8; 6],
+    src_ip: Ipv4Addr,
+    dst_ip: Ipv4Addr,
+    ttl: u8,
+    l4: &[u8],
+    proto: u8,
+) -> Vec<u8> {
+    let total_len = (20 + l4.len()) as u16;
+    let mut ip = Vec::with_capacity(20 + l4.len());
+    ip.extend_from_slice(&[0x45, 0x00]); // versión 4, IHL 5, DSCP 0
+    ip.extend_from_slice(&total_len.to_be_bytes());
+    ip.extend_from_slice(&[0x00, 0x01]); // id
+    ip.extend_from_slice(&[0x40, 0x00]); // flags DF, offset 0
+    ip.push(ttl);
+    ip.push(proto);
+    ip.extend_from_slice(&[0, 0]); // checksum provisional
+    ip.extend_from_slice(&src_ip.octets());
+    ip.extend_from_slice(&dst_ip.octets());
+    let ck = checksum16(&ip);
+    ip[10..12].copy_from_slice(&ck.to_be_bytes());
+
+    let mut out = Vec::with_capacity(14 + ip.len());
+    out.extend_from_slice(&dst_mac);
+    out.extend_from_slice(&src_mac);
+    out.extend_from_slice(&0x0800u16.to_be_bytes());
+    out.extend_from_slice(&ip);
+    out.extend_from_slice(l4);
+    out
+}
+
+/// Segmento TCP con checksum (pseudo-cabecera incluida, RFC 9293).
+#[allow(clippy::too_many_arguments)]
+pub fn tcp(
+    src_ip: Ipv4Addr,
+    dst_ip: Ipv4Addr,
+    src_port: u16,
+    dst_port: u16,
+    seq: u32,
+    ack: u32,
+    flags: u8,
+    payload: &[u8],
+) -> Vec<u8> {
+    let mut seg = Vec::with_capacity(20 + payload.len());
+    seg.extend_from_slice(&src_port.to_be_bytes());
+    seg.extend_from_slice(&dst_port.to_be_bytes());
+    seg.extend_from_slice(&seq.to_be_bytes());
+    seg.extend_from_slice(&ack.to_be_bytes());
+    seg.extend_from_slice(&[0x50, flags]); // data offset 5 (20 bytes)
+    seg.extend_from_slice(&8192u16.to_be_bytes()); // window
+    seg.extend_from_slice(&[0, 0]); // checksum provisional
+    seg.extend_from_slice(&[0, 0]); // urgent pointer
+    seg.extend_from_slice(payload);
+
+    let mut pseudo = Vec::with_capacity(12 + seg.len());
+    pseudo.extend_from_slice(&src_ip.octets());
+    pseudo.extend_from_slice(&dst_ip.octets());
+    pseudo.extend_from_slice(&[0, 6]); // protocolo TCP
+    pseudo.extend_from_slice(&(seg.len() as u16).to_be_bytes());
+    pseudo.extend_from_slice(&seg);
+    let ck = checksum16(&pseudo);
+    seg[16..18].copy_from_slice(&ck.to_be_bytes());
+    seg
+}
+
+/// Datagrama UDP (checksum 0 = no verificado, válido en IPv4).
+pub fn udp(src_port: u16, dst_port: u16, payload: &[u8]) -> Vec<u8> {
+    let mut seg = Vec::with_capacity(8 + payload.len());
+    seg.extend_from_slice(&src_port.to_be_bytes());
+    seg.extend_from_slice(&dst_port.to_be_bytes());
+    seg.extend_from_slice(&((8 + payload.len()) as u16).to_be_bytes());
+    seg.extend_from_slice(&[0, 0]);
+    seg.extend_from_slice(payload);
+    seg
+}
+
+/// Atajo: trama UDP completa (eth + ip + udp + payload).
+pub fn frame_udp(
+    src_mac: [u8; 6],
+    dst_mac: [u8; 6],
+    src_ip: Ipv4Addr,
+    dst_ip: Ipv4Addr,
+    sport: u16,
+    dport: u16,
+    payload: &[u8],
+) -> Vec<u8> {
+    let l4 = udp(sport, dport, payload);
+    frame(src_mac, dst_mac, src_ip, dst_ip, 64, &l4, 17)
+}
+
+/// Atajo: trama TCP completa.
+#[allow(clippy::too_many_arguments)]
+pub fn frame_tcp(
+    src_mac: [u8; 6],
+    dst_mac: [u8; 6],
+    src_ip: Ipv4Addr,
+    dst_ip: Ipv4Addr,
+    sport: u16,
+    dport: u16,
+    seq: u32,
+    ack: u32,
+    flags: u8,
+    payload: &[u8],
+) -> Vec<u8> {
+    let l4 = tcp(src_ip, dst_ip, sport, dport, seq, ack, flags, payload);
+    frame(src_mac, dst_mac, src_ip, dst_ip, 64, &l4, 6)
+}
+
+// --------------------------------------------------------------------- DNS
+
+/// Codifica un nombre en formato DNS (etiquetas length-prefixed + raíz).
+pub fn encode_dns_name(name: &str) -> Vec<u8> {
+    let mut out = Vec::new();
+    for label in name.split('.') {
+        if label.is_empty() {
+            continue;
+        }
+        out.push(label.len() as u8);
+        out.extend_from_slice(label.as_bytes());
+    }
+    out.push(0);
+    out
+}
+
+/// Mensaje DNS de consulta (una pregunta, RD=1).
+pub fn dns_query(id: u16, name: &str, qtype: u16) -> Vec<u8> {
+    let mut m = Vec::new();
+    m.extend_from_slice(&id.to_be_bytes());
+    m.extend_from_slice(&0x0100u16.to_be_bytes()); // flags: RD
+    m.extend_from_slice(&1u16.to_be_bytes()); // qdcount
+    m.extend_from_slice(&[0, 0, 0, 0, 0, 0]); // an/ns/ar = 0
+    m.extend_from_slice(&encode_dns_name(name));
+    m.extend_from_slice(&qtype.to_be_bytes());
+    m.extend_from_slice(&1u16.to_be_bytes()); // clase IN
+    m
+}
+
+/// Mensaje DNS de respuesta (A con nombre comprimido por puntero 0xc00c).
+///
+/// Genera el patrón de compresión real de los resolvers: el nombre de la
+/// respuesta apunta al nombre de la pregunta (offset 12).
+pub fn dns_response(id: u16, name: &str, qtype: u16, addr: Ipv4Addr) -> Vec<u8> {
+    let mut m = Vec::new();
+    m.extend_from_slice(&id.to_be_bytes());
+    m.extend_from_slice(&0x8180u16.to_be_bytes()); // QR + RD + RA
+    m.extend_from_slice(&1u16.to_be_bytes()); // qd
+    m.extend_from_slice(&1u16.to_be_bytes()); // an
+    m.extend_from_slice(&[0, 0, 0, 0]);
+    m.extend_from_slice(&encode_dns_name(name));
+    m.extend_from_slice(&qtype.to_be_bytes());
+    m.extend_from_slice(&1u16.to_be_bytes());
+    // answer: puntero al nombre de la pregunta (offset 12)
+    m.extend_from_slice(&0xc00cu16.to_be_bytes());
+    m.extend_from_slice(&qtype.to_be_bytes());
+    m.extend_from_slice(&1u16.to_be_bytes());
+    m.extend_from_slice(&300u32.to_be_bytes()); // TTL
+    m.extend_from_slice(&4u16.to_be_bytes()); // rdlength
+    m.extend_from_slice(&addr.octets()); // rdata
+    m
+}
+
+/// Flags TCP útiles para los constructores.
+pub mod flags {
+    pub const FIN: u8 = 0x01;
+    pub const SYN: u8 = 0x02;
+    pub const RST: u8 = 0x04;
+    pub const PSH: u8 = 0x08;
+    pub const ACK: u8 = 0x10;
+    pub const SYN_ACK: u8 = SYN | ACK;
+    pub const FIN_ACK: u8 = FIN | ACK;
+    pub const PSH_ACK: u8 = PSH | ACK;
+}
+
+// ------------------------------------------------------ escritura de pcaps
+
+/// Escribe un pcap clásico little-endian en microsegundos.
+///
+/// `link_type` es el código LINKTYPE (1 = Ethernet).
+pub fn write_pcap(
+    path: impl AsRef<Path>,
+    link_type: u32,
+    packets: &[(u64, Vec<u8>)],
+) -> std::io::Result<()> {
+    let mut f = std::fs::File::create(path)?;
+    let mut buf = Vec::new();
+    buf.extend_from_slice(&0xa1b2c3d4u32.to_le_bytes());
+    buf.extend_from_slice(&2u16.to_le_bytes()); // versión 2.4
+    buf.extend_from_slice(&4u16.to_le_bytes());
+    buf.extend_from_slice(&0i32.to_le_bytes()); // thiszone
+    buf.extend_from_slice(&0u32.to_le_bytes()); // sigfigs
+    buf.extend_from_slice(&65535u32.to_le_bytes()); // snaplen
+    buf.extend_from_slice(&link_type.to_le_bytes());
+    for (ts_micros, data) in packets {
+        let ts_sec = (ts_micros / 1_000_000) as u32;
+        let ts_frac = (ts_micros % 1_000_000) as u32;
+        buf.extend_from_slice(&ts_sec.to_le_bytes());
+        buf.extend_from_slice(&ts_frac.to_le_bytes());
+        buf.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        buf.extend_from_slice(data);
+    }
+    f.write_all(&buf)
+}
+
+// ---------------------------------------------------------- escenario demo
+
+/// MACs e IPs ficticias del escenario (publics para que los tests las usen).
+pub const MAC_ROUTER: [u8; 6] = [0x00, 0x1a, 0x2b, 0x3c, 0x4d, 0x5e];
+pub const MAC_HOST_A: [u8; 6] = [0xaa, 0xbb, 0xcc, 0x00, 0x00, 0x01];
+pub const MAC_HOST_B: [u8; 6] = [0xaa, 0xbb, 0xcc, 0x00, 0x00, 0x02];
+pub const MAC_HOST_C: [u8; 6] = [0xaa, 0xbb, 0xcc, 0x00, 0x00, 0x03];
+
+pub const HOST_A: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 10);
+pub const HOST_B: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 20);
+pub const HOST_C: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 30);
+pub const GATEWAY: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 1);
+pub const DNS_EXT: Ipv4Addr = Ipv4Addr::new(8, 8, 8, 8);
+pub const WEB: Ipv4Addr = Ipv4Addr::new(93, 184, 216, 34);
+pub const NTP: Ipv4Addr = Ipv4Addr::new(17, 253, 0, 1);
+pub const MDNS_MCAST: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 251);
+
+/// qname de alta entropía del túnel DNS demo (60 caracteres, 30 símbolos
+/// distintos repetidos dos veces → entropía ≈ log2(30) ≈ 4.91 bits).
+pub const TUNNEL_QNAME: &str =
+    "az3k9t2wq7xm5vb8n4rj6yp1chfdgsaz3k9t2wq7xm5vb8n4rj6yp1chfdgs.tun.evil.example";
+
+/// Escenario demo completo: tráfico variado con eventos SOC interesantes.
+///
+/// Devuelve `(timestamp_micros, trama)` lista para [`write_pcap`]. Contiene:
+/// 1. Resolución DNS legítima de `example.com` + sesión TLS hacia ella.
+/// 2. Ruido de fondo: NTP y mDNS.
+/// 3. Posible túnel DNS (qname largo de alta entropía, TXT al resolver).
+/// 4. Escaneo SYN hacia el gateway (5 SYNs, puertos origen distintos).
+/// 5. Banner SSH y petición HTTP en texto claro.
+pub fn sample_pcap_packets() -> Vec<(u64, Vec<u8>)> {
+    let t0 = 1_700_000_000_000_000u64; // 2023-11-14T22:13:20Z
+    let mut p: Vec<(u64, Vec<u8>)> = Vec::new();
+
+    // 1) DNS legítimo: example.com → 93.184.216.34.
+    p.push((
+        t0,
+        frame_udp(
+            MAC_HOST_A,
+            MAC_ROUTER,
+            HOST_A,
+            DNS_EXT,
+            53001,
+            53,
+            &dns_query(0x1234, "example.com", 1),
+        ),
+    ));
+    p.push((
+        t0 + 10_000,
+        frame_udp(
+            MAC_ROUTER,
+            MAC_HOST_A,
+            DNS_EXT,
+            HOST_A,
+            53,
+            53001,
+            &dns_response(0x1234, "example.com", 1, WEB),
+        ),
+    ));
+
+    // 2) Sesión TLS: handshake simplificado + cierre limpio (FIN/FIN-ACK).
+    let (sp, seq0) = (52000u16, 1000u32);
+    let client_hello: &[u8] = &[
+        0x16, 0x03, 0x01, 0x00, 0x2f, 0x01, 0x00, 0x00, 0x2b, 0x03, 0x03, 0xaa, 0xbb, 0xcc,
+    ];
+    let server_hello: &[u8] = &[
+        0x16, 0x03, 0x03, 0x00, 0x31, 0x02, 0x00, 0x00, 0x2d, 0x03, 0x03, 0xdd, 0xee, 0xff,
+    ];
+    let ch_end = seq0 + 1 + client_hello.len() as u32;
+    let sh_end = 5001 + server_hello.len() as u32;
+    p.push((
+        t0 + 500_000,
+        frame_tcp(
+            MAC_HOST_A,
+            MAC_ROUTER,
+            HOST_A,
+            WEB,
+            sp,
+            443,
+            seq0,
+            0,
+            flags::SYN,
+            &[],
+        ),
+    ));
+    p.push((
+        t0 + 501_000,
+        frame_tcp(
+            MAC_ROUTER,
+            MAC_HOST_A,
+            WEB,
+            HOST_A,
+            443,
+            sp,
+            5000,
+            seq0 + 1,
+            flags::SYN_ACK,
+            &[],
+        ),
+    ));
+    p.push((
+        t0 + 502_000,
+        frame_tcp(
+            MAC_HOST_A,
+            MAC_ROUTER,
+            HOST_A,
+            WEB,
+            sp,
+            443,
+            seq0 + 1,
+            5001,
+            flags::ACK,
+            &[],
+        ),
+    ));
+    p.push((
+        t0 + 503_000,
+        frame_tcp(
+            MAC_HOST_A,
+            MAC_ROUTER,
+            HOST_A,
+            WEB,
+            sp,
+            443,
+            seq0 + 1,
+            5001,
+            flags::PSH_ACK,
+            client_hello,
+        ),
+    ));
+    p.push((
+        t0 + 504_000,
+        frame_tcp(
+            MAC_ROUTER,
+            MAC_HOST_A,
+            WEB,
+            HOST_A,
+            443,
+            sp,
+            5001,
+            ch_end,
+            flags::PSH_ACK,
+            server_hello,
+        ),
+    ));
+    p.push((
+        t0 + 900_000,
+        frame_tcp(
+            MAC_HOST_A,
+            MAC_ROUTER,
+            HOST_A,
+            WEB,
+            sp,
+            443,
+            ch_end,
+            sh_end,
+            flags::FIN_ACK,
+            &[],
+        ),
+    ));
+    p.push((
+        t0 + 950_000,
+        frame_tcp(
+            MAC_ROUTER,
+            MAC_HOST_A,
+            WEB,
+            HOST_A,
+            443,
+            sp,
+            sh_end,
+            ch_end + 1,
+            flags::FIN_ACK,
+            &[],
+        ),
+    ));
+
+    // 3) Ruido de fondo: NTP y mDNS.
+    p.push((
+        t0 + 1_000_000,
+        frame_udp(MAC_HOST_A, MAC_ROUTER, HOST_A, NTP, 123, 123, &[0u8; 48]),
+    ));
+    p.push((
+        t0 + 1_100_000,
+        frame_udp(
+            MAC_HOST_B,
+            MAC_ROUTER,
+            HOST_B,
+            MDNS_MCAST,
+            5353,
+            5353,
+            &dns_query(0, "_services._dns-sd._udp.local", 12),
+        ),
+    ));
+
+    // 4) Posible túnel DNS: qname largo de alta entropía (TXT) al resolver.
+    p.push((
+        t0 + 2_000_000,
+        frame_udp(
+            MAC_HOST_C,
+            MAC_ROUTER,
+            HOST_C,
+            DNS_EXT,
+            53002,
+            53,
+            &dns_query(0xbeef, TUNNEL_QNAME, 16),
+        ),
+    ));
+
+    // 5) Escaneo SYN: 5 conexiones de un solo SYN al 22 del gateway.
+    for i in 0..5u16 {
+        p.push((
+            t0 + 3_000_000 + i as u64 * 100_000,
+            frame_tcp(
+                MAC_HOST_C,
+                MAC_ROUTER,
+                HOST_C,
+                GATEWAY,
+                40001 + i,
+                22,
+                1,
+                0,
+                flags::SYN,
+                &[],
+            ),
+        ));
+    }
+
+    // 6) Banner SSH.
+    p.push((
+        t0 + 5_000_000,
+        frame_tcp(
+            MAC_HOST_B,
+            MAC_ROUTER,
+            HOST_B,
+            GATEWAY,
+            40110,
+            22,
+            7,
+            9,
+            flags::PSH_ACK,
+            b"SSH-2.0-OpenSSH_8.9p1\r\n",
+        ),
+    ));
+
+    // 7) Petición HTTP en texto claro (hacia la IP que resolvió example.com).
+    p.push((
+        t0 + 5_200_000,
+        frame_tcp(
+            MAC_HOST_B,
+            MAC_ROUTER,
+            HOST_B,
+            WEB,
+            40111,
+            80,
+            11,
+            13,
+            flags::PSH_ACK,
+            b"GET /index.html HTTP/1.1\r\nHost: example.com\r\n\r\n",
+        ),
+    ));
+
+    p
+}
+
+/// Valida los fixtures en tiempo de test (smoke test de los builders).
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::IpAddr;
+
+    #[test]
+    fn escenario_demo_genera_paquetes_validos() {
+        let pkts = sample_pcap_packets();
+        // 2 DNS + 7 TLS + 2 ruido + 1 túnel + 5 escaneo + 1 SSH + 1 HTTP = 19.
+        assert_eq!(pkts.len(), 19);
+        // Todas las tramas deben ser >= 34 bytes (eth + ip mínimo).
+        assert!(pkts.iter().all(|(_, d)| d.len() >= 34));
+    }
+
+    #[test]
+    fn ip_literal_dns_ext() {
+        assert_eq!(DNS_EXT, Ipv4Addr::new(8, 8, 8, 8));
+        assert_eq!(IpAddr::V4(WEB).to_string(), "93.184.216.34");
+    }
+
+    #[test]
+    fn nombre_dns_codificado_roundtrip_manual() {
+        let enc = encode_dns_name("a.b");
+        assert_eq!(enc, vec![1, b'a', 1, b'b', 0]);
+    }
+}

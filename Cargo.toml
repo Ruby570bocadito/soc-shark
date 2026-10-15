@@ -1,14 +1,14 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/common",
-    "crates/capture-core",
-    "crates/dissectors",
-    "crates/flow-aggregator",
-    "crates/soc-engine",
-    "crates/filter-dsl",
-    "crates/storage-index",
-    "daemon",
+    "crates/socshark-core",
+    "crates/socshark-capture",
+    "crates/socshark-dissectors",
+    "crates/socshark-flow",
+    "crates/socshark-filter",
+    "crates/socshark-soc",
+    "crates/socshark-testgen",
+    "crates/socshark-cli",
 ]
 
 [workspace.package]
@@ -17,11 +17,26 @@ edition = "2021"
 license = "MIT"
 authors = ["soc-shark contributors"]
 repository = "https://github.com/soc-shark/soc-shark"
+rust-version = "1.75"
+
+[workspace.dependencies]
+# Crates internos
+socshark-core = { path = "crates/socshark-core" }
+socshark-capture = { path = "crates/socshark-capture" }
+socshark-dissectors = { path = "crates/socshark-dissectors" }
+socshark-flow = { path = "crates/socshark-flow" }
+socshark-filter = { path = "crates/socshark-filter" }
+socshark-soc = { path = "crates/socshark-soc" }
+socshark-testgen = { path = "crates/socshark-testgen" }
+
+# Dependencias externas (mínimas a propósito: ver docs/decisions.md)
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
 
 [profile.release]
 lto = true
 codegen-units = 1
 strip = true
-
-[profile.test]
-opt-level = 1

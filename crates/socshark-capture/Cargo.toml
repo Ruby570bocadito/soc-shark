@@ -1,0 +1,15 @@
+[package]
+name = "socshark-capture"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Fuentes de captura de soc-shark: lector pcap clásico (Rust puro) y stub de captura en vivo"
+
+[dependencies]
+socshark-core = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+socshark-testgen = { workspace = true }

@@ -1,0 +1,14 @@
+[package]
+name = "socshark-dissectors"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Dissectors de soc-shark: Ethernet, IPv4, TCP, UDP y DNS con pipeline de disección"
+
+[dependencies]
+socshark-core = { workspace = true }
+
+[dev-dependencies]
+socshark-testgen = { workspace = true }

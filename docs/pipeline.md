@@ -1,0 +1,118 @@
+# El pipeline en detalle
+
+El pipeline de soc-shark tiene cuatro etapas. Este documento describe, para
+cada una, el **estado actual** (Fase 1, ya implementado y testeado), el
+**objetivo** (Fase 2-4) y las decisiones que sostienen la transición. La
+regla general es: cada etapa ya existe con su frontera de datos definitiva,
+aunque su implementación interna sea hoy la versión secuencial simple.
+
+```text
+FASE 1 (hoy)      pcap ──► leer+disecar+agregar ──► enriquecer ──► filtrar ──► tabla/JSONL
+OBJETIVO          AF_XDP ─► ring ─► enrich(eBPF) ─► pool workers ─► reassemble ─► store
+                   ①Ingestor      ②Enricher        ③Dissector pool  ④Reassembler
+```
+
+## 1. Ingestor
+
+**Hoy (Fase 1).** El trait `CaptureSource` (crate `socshark-capture`) define
+el contrato: `next_packet()` devuelve `Ok(Some(RawPacket))` o `Ok(None)` al
+acabar, y `link_type()` informa de la capa 2. Sobre ese contrato existe el
+lector de **pcap clásico** (`PcapFileReader`): implementación propia en Rust
+puro que soporta los cuatro magics (micro/nanosegundos × big/little-endian),
+valida versiones, acota `incl_len` a 256 MiB para resistir archivos
+corruptos, y distingue EOF limpio en límite de registro de archivo truncado a
+mitad de payload. Los tests cubren los seis comportamientos límite incluyendo
+pcap big-endian y nanosegundos sintéticos.
+
+**Objetivo (Fase 2-3).** Dos backends en vivo detrás del mismo trait:
+
+- *libpcap* (crate `pcap`): compatibilidad inmediata con cualquier Linux y
+  macOS; requiere CAP_NET_RAW o root; soporta *pushdown* de filtros BPF al
+  kernel, que reduce drásticamente el tráfico hacia userspace cuando el
+  analista filtra por host.
+- *AF_XDP* (Linux ≥ 4.18): cola de paquetes del kernel compartida con
+  userspace sin copia por paquete; objetivo > 1 Gbps en hardware modesto.
+
+En Fase 3 el ingestor pasa a ser un **daemon separado** con las capacidades
+del sistema (CAP_NET_RAW, CAP_BPF) y publica paquetes por un anillo lock-free
+en memoria compartida o por gRPC sobre Unix Domain Socket; el resto del
+pipeline corre como proceso sin privilegios. Los detalles de seguridad están
+en [security.md](security.md).
+
+## 2. Enricher
+
+**Hoy (Fase 1).** El enriquecimiento se hace en dos pasadas sobre los flujos
+agregados (`socshark_soc::enrich_all`): la primera alimenta los trackers
+globales (base de DNS pasivo y tracker de escaneos SYN); la segunda etiqueta
+cada flujo con dominio resuelto (`resolved_domain`), marca de ruido
+(`is_background_noise`), riesgo y alertas (`risk_score`, `alerts`) y el
+resumen humano (`human_summary`). Las dos pasadas son necesarias: una señal
+visible solo globalmente (el escaneo repartido en N flujos de un SYN) o que
+depende del orden (la IP que se resuelve *después* de que empieza el flujo
+TCP) solo está disponible cuando ya se ha visto toda la captura.
+
+**Objetivo (Fase 3).** El enricher pasará a estar *en línea*: un mapa
+hash eBPF (LRU) correlaciona la 5-tupla de cada paquete con el PID/binario/
+usuario capturado por los probes en el momento del `connect()`. El campo ya
+existe en el modelo (`process_name`, `pid`, `user` en `EnrichedFlow`) y está
+serializado, así que el cambio es rellenar datos, no modificar el formato.
+Diseño completo en [ebpf-design.md](ebpf-design.md).
+
+## 3. Dissector pool
+
+**Hoy (Fase 1).** Un pipeline secuencial (`DissectorPipeline::dissect`):
+Ethernet (con VLAN 802.1Q) → IPv4 (con verificación de checksum) → TCP/UDP →
+DNS/L7. Los parsers son funciones puras `&[u8] -> Option<(Info, &[u8])>` que
+prestan slices sin copiar el payload. La identificación L7 combina reglas de
+puerto (53 DNS, 123 NTP, 443 TLS, 67/68 DHCP) con sniffing independiente del
+puerto (banners SSH, métodos HTTP, bytes mágicos del record TLS) — útil
+contra servicios que no escuchan donde "deberían". El DNS soporta compresión
+de nombres con límites anti-bucle (16 saltos, 32 etiquetas) y DNS sobre TCP
+con prefijo de longitud.
+
+**Objetivo (Fase 2+).** Pool de N workers: los paquetes se despachan por
+hash de `FlowKey` a un worker fijo (mismo flujo = mismo worker = sin
+sincronización por paquete), cada worker mantiene sus dissectors sin estado
+y su cola MPSC. Los dissectors de terceros (plugins WASM) se registran en
+este pool; su sandbox está diseñado en [wasm-plugins.md](wasm-plugins.md).
+La firma de `dissect` no cambia: el pool es un detalle de ejecución.
+
+## 4. Stream Reassembler & Indexer
+
+**Hoy (Fase 1).** El agregador (`socshark-flow`) convierte paquetes en
+flujos: clave canónica bidireccional (`FlowKey` con extremos ordenados),
+contadores por dirección, contadores de flags TCP, fusión de preguntas y
+respuestas DNS por flujo, expiración por inactividad (`drain_expired`) y
+expulsión bajo presión de memoria (`max_flows`, se descartan los flujos con
+`last_seen` más antiguo para acotar RAM en capturas largas o ataques de
+agotamiento de tabla). La exportación (`finish()`) produce los
+`EnrichedFlow` ordenados por primer avistamiento.
+
+**Objetivo (Fase 2+).** Dos piezas nuevas sobre esta base:
+
+- *Reensamblado TCP*: buffers de segmentos fuera de orden por dirección con
+  recorte de bytes solapados, para Follow Stream y detección que requiera el
+  payload completo (carving, fingerprinting JA4). Algoritmo: lista ordenada
+  por seq con fusión de rangos y control de memoria por flujo.
+- *Indexer*: los `EnrichedFlow` se escriben a un almacén consultable. En
+  disco: DuckDB (consultas analíticas tipo "todos los flujos hacia ASN X con
+  riesgo > 50") o SQLite para la versión ligera. En memoria: estructura
+  ordenada por `last_seen` para la TUI virtualizada. El JSONL actual es la
+  forma ya operativa de este mismo contrato de datos.
+
+## Flujo de datos de extremo a extremo (ejemplo de la demo)
+
+1. `PcapFileReader` entrega 19 tramas Ethernet.
+2. `DissectorPipeline` las disecciona todas (19/19, 0 descartadas): 4 DNS,
+   9 TCP, 2 UDP de ruido, ... y detecta L7: DNS×4, TLS, SSH, HTTP, NTP.
+3. `FlowAggregator` las reduce a **12 flujos** bidireccionales: la respuesta
+   DNS comparte flujo con su pregunta, los 8 paquetes de la sesión TLS son
+   un solo flujo, y cada SYN del escaneo es un flujo distinto (puertos
+   origen diferentes) — exactamente lo que el tracker de escaneos necesita.
+4. `enrich_all` alimenta el DNS pasivo (1 entrada: `example.com` →
+   93.184.216.34), detecta el patrón de escaneo (5 SYNs en seco hacia
+   192.168.1.1:22 desde 192.168.1.30), puntúa y genera alertas con mapeo
+   MITRE, y etiqueta el flujo HTTP hacia 93.184.216.34 con
+   `resolved_domain = example.com` gracias al DNS pasivo.
+5. La CLI excluye el ruido (NTP + mDNS: 2 flujos), aplica el filtro si lo
+   hay, y emite tabla o JSONL.

@@ -1,0 +1,15 @@
+[package]
+name = "socshark-flow"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Agregador de flujos bidireccionales de soc-shark: de paquetes a EnrichedFlow"
+
+[dependencies]
+socshark-core = { workspace = true }
+socshark-dissectors = { workspace = true }
+
+[dev-dependencies]
+socshark-testgen = { workspace = true }

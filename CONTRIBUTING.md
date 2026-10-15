@@ -1,49 +1,74 @@
 # Contribuir a soc-shark
 
 Gracias por tu interés. Reglas rápidas para que el motor siga siendo
-confiable y auditable:
+confiable, auditable y fácil de mantener. Para el contexto completo de cada
+regla, ver [docs/decisions.md](docs/decisions.md) (ADRs) y
+[docs/architecture.md](docs/architecture.md).
 
 ## Principios no negociables
 
-1. **std-only en los crates del motor** (ver `docs/adr/ADR-0001-std-only.md`).
-   Cualquier dependencia nueva requiere un ADR que justifique: superficie de
+1. **Cero panics con entrada de red** (ADR-006). Los parsers usan slicing
+   comprobado (`get`, comparaciones de longitud, `try_into`) y devuelven
+   `Option`/`Result`. Si añades o tocas un disector, incluye el test de
+   truncado masivo (corta la trama en todas las longitudes y verifica que
+   no hay panic) y el de entrada aleatoria.
+2. **Flow-First** (ADR-002). Toda característica —UI, filtros, alertas,
+   exportación— consume `EnrichedFlow`; los paquetes crudos nunca son
+   producto de salida por defecto.
+3. **Dependencias externas mínimas** (ADR-003). Las cinco actuales
+   (`serde`, `serde_json`, `thiserror`, `clap`, `anyhow`) están congeladas;
+   cualquier dependencia nueva exige un ADR que justifique superficie de
    auditoría, tamaño de build y alternativa propia.
-2. **Cero panics con entrada de red.** Los parsers usan slicing comprobado
-   (`get`, comparaciones de longitud) y devuelven `Option`/`Result`. Si
-   añades un disector, incluye el test de truncado masivo (corta la trama
-   en todas las longitudes y verifica que no hay panic) y el de entrada
-   aleatoria.
-3. **Zero-copy**: los dissectors devuelven vistas `&[u8]`; copiar payload
-   solo está permitido en el carving (y documentado).
-4. **Flow-First**: toda característica de UI consume `EnrichedFlow`; no se
-   exponen paquetes sueltos sin contexto.
-5. **Español en comentarios y docs** (coincide con la audiencia del
-   proyecto); identificadores y términos técnicos en inglés.
+4. **DAG estricto de crates.** `socshark-core` no depende de nadie;
+   `socshark-testgen` solo de `std`; la CLI lo junta todo. No introduzcas
+   ciclos ni dependencias transversales "por comodidad".
+5. **Español en docs, comentarios y mensajes de la CLI; identificadores y
+   términos técnicos en inglés** (ADR-007).
+6. **Privilegio mínimo** (ADR-004). Ningún código nuevo puede requerir
+   privilegios de captura salvo el futuro daemon (Fase 2/3), y solo en la
+   frontera de captura.
 
 ## Flujo de trabajo
 
 ```bash
-cargo fmt --all                    # formato antes de commit
+cargo fmt --all                                   # formato antes de commit
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace             # verde obligatorio
-python3 tools/gen_demo_pcap.py     # regenera el demo si tocas dissectors/SOC
-./target/release/soc-shark read examples/demo_soc_incident.pcap --no-color
+cargo test --workspace                            # verde obligatorio
+
+# Regenera y verifica el escenario demo si tocas dissectors/flow/soc:
+./target/release/socshark dev sample-pcap -o demo.pcap
+./target/release/socshark capture -r demo.pcap
 ```
 
-La CI (`.github/workflows/ci.yml`) ejecuta exactamente eso más el smoke
-E2E que exige la detección de beaconing en el demo.
+La CI (`.github/workflows/ci.yml`) ejecuta exactamente `fmt --check`,
+`clippy -D warnings`, `test` y `build --release`. Un PR no se revisa si la
+CI falla.
 
 ## Añadir un disector nuevo
 
-1. Implementa `parse_x(data: &[u8]) -> Option<X<'_>>` con tests de
-   truncado (ver `crates/dissectors/src/layer4/tcp.rs` como plantilla).
-2. Engánchalo en `detect_l7` (`crates/dissectors/src/view.rs`) por puerto
-   + sniffing de contenido.
-3. Añade sus campos al `bridge.rs` del daemon y al `registry.rs` del DSL.
-4. Añade resumen humano en `human_summary.rs` y, si procede, reglas en
-   `soc-engine`.
+1. Implementa el parser en `crates/socshark-dissectors/src/`
+   (por ejemplo `ntp.rs`) con la firma `pub fn parse(data: &[u8]) ->
+   Option<...>` y sus tests de truncado (tomar `dns.rs` como plantilla).
+2. Engánchalo en la heurística L7 de `crates/socshark-dissectors/src/lib.rs`
+   (puerto conocido + sniffing de contenido).
+3. Si produce campos filtrables, añádelos al registro del DSL
+   (`crates/socshark-filter/src/eval.rs`) y documenta la gramática nueva en
+   [docs/filter-dsl.md](docs/filter-dsl.md).
+4. Si es relevante para SOC, añade reglas o ruido de fondo en
+   `crates/socshark-soc/` y mapea la detección a MITRE en
+   [docs/soc-mitre-mapping.md](docs/soc-mitre-mapping.md).
+5. Añade tramas de prueba a `socshark-testgen` (sin dependencias del
+   workspace: los fixtures no deben heredar los bugs del código bajo prueba).
+
+## Decisiones de arquitectura
+
+Cambio que afecte al modelo de datos, al DSL, a los privilegios o a las
+dependencias requiere un ADR nuevo en [docs/decisions.md](docs/decisions.md)
+antes del código: contexto, decisión y consecuencias. Los ADRs aceptados no
+se editan; se superseden.
 
 ## Commits
 
-Conventional Commits (`feat:`, `fix:`, `docs:`, `test:`, `refactor:`) en
-cualquier idioma, descripción clara en el cuerpo para cambios de motor.
+Conventional Commits (`feat:`, `fix:`, `docs:`, `test:`, `refactor:`) con la
+descripción en español. Los cambios de motor incluyen en el cuerpo qué tests
+cubren el cambio y por qué.

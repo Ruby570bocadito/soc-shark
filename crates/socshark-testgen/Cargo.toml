@@ -1,0 +1,10 @@
+[package]
+name = "socshark-testgen"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Constructores de paquetes y escenario demo de soc-shark (tests y `socshark dev sample-pcap`)"
+
+[dependencies]

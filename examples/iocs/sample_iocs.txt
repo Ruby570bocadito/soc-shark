@@ -1,5 +1,0 @@
-# soc-shark: lista de IOCs de ejemplo (IP, CIDR o dominio)
-# Uso: soc-shark read captura.pcap --iocs examples/iocs/sample_iocs.txt
-185.220.101.0/24      # Nodos de salida Tor (bloque demo)
-185.22.1.9            # C2 del escenario demo
-# 2001:db8:bad::/48   # ejemplo IPv6

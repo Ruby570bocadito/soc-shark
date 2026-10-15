@@ -1,0 +1,11 @@
+[package]
+name = "socshark-soc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Capa SOC de soc-shark: ruido de fondo, DNS pasivo, riesgo heurístico y resúmenes humanos"
+
+[dependencies]
+socshark-core = { workspace = true }

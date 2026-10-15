@@ -1,0 +1,28 @@
+[package]
+name = "socshark-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "CLI de soc-shark: procesa pcaps, enriquece flujos y emite tabla/JSONL"
+
+[dependencies]
+socshark-core = { workspace = true }
+socshark-capture = { workspace = true }
+socshark-dissectors = { workspace = true }
+socshark-flow = { workspace = true }
+socshark-filter = { workspace = true }
+socshark-soc = { workspace = true }
+socshark-testgen = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+serde_json = { workspace = true }
+
+[lib]
+name = "socshark_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "socshark"
+path = "src/main.rs"
