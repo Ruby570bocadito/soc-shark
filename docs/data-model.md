@@ -30,6 +30,7 @@ reciben datos inmutables.
 | `state` | `FlowState` | `Active` (recibe tráfico), `Idle` (sin cierre observado) o `Closed` (FIN o RST vistos). | Agregador (F1) |
 | `transport` | `Transport` | `Tcp`, `Udp`, `Icmp` o `Other(nº protocolo IP)`. | Dissector (F1) |
 | `l7_protocol` | `L7Protocol` | `Dns`, `Dhcp`, `Ntp`, `Http`, `Tls`, `Ssh`, `Unknown`. Detectado por puerto + sniffing. | Dissector (F1) |
+| `ip_version` | `u8` | `4` o `6`: familia IP del flujo (Fase 2: IPv6 completo con extensiones). | Dissector (F2) |
 
 ### Extremos
 

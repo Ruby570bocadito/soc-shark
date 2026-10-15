@@ -76,12 +76,12 @@ describe cómo está organizado el código para sostener ese plan.
 |---|---|---|
 | `socshark-core` | `EnrichedFlow`, `RawPacket`, `LinkType`, `PipelineConfig`, helpers DNS | — |
 | `socshark-capture` | Trait `CaptureSource`, lector pcap clásico, stub de captura en vivo | core |
-| `socshark-dissectors` | Parsers Ethernet/IPv4/TCP/UDP/DNS, `DissectorPipeline`, heurística L7 | core |
-| `socshark-flow` | `FlowAggregator`: claves canónicas, contadores, expiración, export | core, dissectors |
+| `socshark-dissectors` | Parsers Ethernet/IPv4/IPv6/TCP/UDP/DNS, `DissectorPipeline`, heurística L7 | core |
+| `socshark-flow` | `FlowAggregator`: claves canónicas, contadores, expiración, reensamblado TCP, export | core, dissectors |
 | `socshark-filter` | DSL: lexer, parser por precedencia, evaluador sobre flujos | core |
 | `socshark-soc` | Ruido de fondo, DNS pasivo, riesgo/mini-IDS, resúmenes humanos | core |
 | `socshark-testgen` | Constructores de tramas con checksums reales + escenario demo | — (solo std) |
-| `socshark-cli` | Orquestación, CLI (clap), salida tabla/JSONL, tests de integración | todos |
+| `socshark-cli` | Orquestación, CLI (clap), TUI (Ratatui, feature `tui`), `follow`, salida tabla/JSONL, tests de integración | todos |
 
 Dos decisiones de grafo merecen explicación. `socshark-testgen` no depende de
 ningún crate del workspace: un fixture que dependiera del código bajo prueba

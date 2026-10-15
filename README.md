@@ -5,7 +5,7 @@
 Wireshark responde a la pregunta *«¿qué hay en este paquete?»*. **soc-shark responde a *«¿qué está pasando en mi red y qué me debería preocupar?»*.** Ese es el cambio de paradigma que guía todo el proyecto: sesiones en lugar de paquetes, significado en lugar de hex, alertas en lugar de scrolling manual.
 
 [![CI](https://github.com/soc-shark/soc-shark/actions/workflows/ci.yml/badge.svg)](https://github.com/soc-shark/soc-shark/actions/workflows/ci.yml)
-![Estado](https://img.shields.io/badge/fase-1%20de%204-blue)
+![Estado](https://img.shields.io/badge/fase-2%20de%204-blue)
 ![Licencia](https://img.shields.io/badge/licencia-MIT-green)
 
 ---
@@ -19,15 +19,18 @@ Wireshark responde a la pregunta *«¿qué hay en este paquete?»*. **soc-shark 
 | **Plugins WASM en sandbox** | Dissectors seguros escritos por la comunidad, sin riesgo de RCE | Diseño (`docs/wasm-plugins.md`) — Fase 4 |
 | **Decodificador CyberChef integrado** | Pipelines Base64→XOR→Zlib→JSON sobre payloads | Fase 4 |
 | **Detección pasiva y fingerprinting** | JA4/JA4+, HASSH, entropía, beaconing | Fase 3 |
+| **IPv6 completo** | Dissector con extensiones, claves de flujo v4/v6 y literales v6 en el DSL | **Implementado** |
+| **Follow Stream** | Reensamblado TCP por dirección: orden, retransmisiones, huecos, hexdump | **Implementado** |
+| **TUI interactiva (Ratatui)** | Lista Flow-First + panel de alertas + filtro DSL en vivo | **Implementado** |
 | **Paradigma Flow-First** | 1 línea = 1 sesión; expansión bajo demanda | **Núcleo implementado** |
 | **Mini-IDS heurístico** | Túnel DNS, escaneos SYN, puertos inseguros | **Implementado** |
 | **DNS pasivo** | Dominio ↔ IP observados, etiqueta el resto de flujos | **Implementado** |
 | **Smart Noise Dimming** | NTP/mDNS/SSDP marcados como ruido y atenuados | **Implementado** |
 | **Export SIEM** | JSONL → ECS / Wazuh / TheHive | Fase 4 (JSONL ya disponible) |
 
-## Estado actual: Fase 1 completa ✅
+## Estado actual: Fase 1 completa ✅ · Fase 2 en curso (4/7)
 
-El pipeline completo funciona de extremo a extremo sobre archivos pcap: **lectura → disección (Ethernet/IPv4/TCP/UDP/DNS) → agregación de flujos bidireccionales → enriquecimiento SOC → filtro DSL → tabla/JSONL**. 70 tests automatizados cubren parsers, agregador, DSL, capa SOC e integración.
+El pipeline completo funciona de extremo a extremo sobre archivos pcap: **lectura → disección (Ethernet/IPv4/IPv6/TCP/UDP/DNS) → agregación de flujos bidireccionales → enriquecimiento SOC → filtro DSL → tabla/TUI/JSONL/follow**. 94 tests automatizados cubren parsers (incluido el barrido anti-panic), agregador, reensamblado, DSL, capa SOC e integración.
 
 ### Inicio rápido
 
@@ -44,16 +47,15 @@ cargo build --release
 ./target/release/socshark capture -r demo.pcap
 ```
 
-Salida real de la demo (19 paquetes → 10 flujos relevantes, ruido excluido):
+Salida real de la demo (21 paquetes → 11 flujos relevantes, ruido excluido):
 
 ```text
-═══ soc-shark · 10 flujos (demo.pcap) ═══
+═══ soc-shark · 11 flujos (demo.pcap) ═══
 FLUJO                                                        L7        PAQ      BYTES  RIESGO  ALERTAS
 tcp/93.184.216.34:443-192.168.1.10:52000                     TLS         7      406 B       0  -
-udp/8.8.8.8:53-192.168.1.10:53001                            DNS         2      158 B       0  -
+udp/2001:4860:4860::8888:53-fd00::10:53010                   DNS         2      216 B       0  -
 udp/8.8.8.8:53-192.168.1.30:53002                            DNS         1      137 B      45  DNS-TUNNELING
 tcp/93.184.216.34:80-192.168.1.20:40111                      HTTP        1      101 B       0  -
-tcp/192.168.1.1:22-192.168.1.20:40110                        SSH         1       77 B       0  -
 tcp/192.168.1.1:22-192.168.1.30:40001                        ?           1       54 B      30  PORT-SCAN
 ...
 
@@ -63,8 +65,11 @@ tcp/192.168.1.1:22-192.168.1.30:40001                        ?           1      
 ▸ (media) Posible escaneo de puertos · tcp/192.168.1.1:22-192.168.1.30:40001 ·
   5 SYNs sin respuesta hacia 192.168.1.1:22 · MITRE T1046
 
-Estadísticas: 19 paquetes leídos · 19 diseccionados · 0 descartados · 12 flujos
+Estadísticas: 21 paquetes leídos · 21 diseccionados · 0 descartados · 13 flujos
 ```
+
+El flujo `udp/2001:4860:4860::8888:53-...` es el intercambio **DNS sobre IPv6**
+que incluye la demo desde la Fase 2 (respuesta AAAA incluida).
 
 ### Comandos
 
@@ -78,10 +83,17 @@ socshark capture -r captura.pcap --json - | jq '.risk_score'
 
 # Filtrar con el DSL (ver docs/filter-dsl.md)
 socshark capture -r captura.pcap -f "tcp.port == 443"
-socshark capture -r captura.pcap -f "dns.qname contains evil || flow.risk >= 50"
+socshark capture -r captura.pcap -f "ip.version == 6 || flow.risk >= 50"
 socshark capture -r captura.pcap -f "!(flow.noise)" --show-noise
 
-# Captura en vivo (stub informativo hasta Fase 2)
+# Seguir un stream TCP reensamblado (texto o hexdump)
+socshark follow -r captura.pcap --flow "93.184.216.34:443"
+socshark follow -r captura.pcap --flow "93.184.216.34:443" --hex
+
+# Explorar la captura con la TUI (Flow-First + alertas + filtro DSL)
+socshark tui -r captura.pcap
+
+# Captura en vivo (stub informativo hasta tener backend libpcap/AF_XDP)
 socshark daemon --iface eth0
 ```
 
@@ -104,6 +116,7 @@ soc-shark/
 │   ├── data-model.md          # EnrichedFlow campo por campo
 │   ├── security.md            # Modelo de privilegios y threat model
 │   ├── filter-dsl.md          # Gramática y campos del DSL
+│   ├── tui.md                 # La TUI Flow-First (atajos, paneles, diseño)
 │   ├── ebpf-design.md         # Diseño eBPF (procesos, TLS, correlación)
 │   ├── wasm-plugins.md        # Diseño del sandbox de plugins
 │   ├── soc-features.md        # Funciones SOC (Flow-First, IDS, SIEM)
@@ -116,12 +129,15 @@ soc-shark/
 
 ## Calidad
 
-- **70 tests** unitarios y de integración (`cargo test --workspace`).
+- **94 tests** unitarios y de integración (`cargo test --workspace`),
+  incluido el barrido anti-panic y el reensamblado con segmentos fuera
+  de orden.
 - **`cargo clippy -D warnings`** y **`cargo fmt --check`** en CI, sin excepciones.
 - **Parsers sin `panic`**: todo acceso a bytes está acotado; los paquetes
   malformados (incluidos los crafted por un atacante) producen `None`, nunca un crash.
-- **Dependencias mínimas**: `serde`, `serde_json`, `thiserror`, `clap`, `anyhow`.
-  Nada de libpcap, OpenSSL ni runtimes externos en Fase 1.
+- **Dependencias mínimas**: `serde`, `serde_json`, `thiserror`, `clap`,
+  `anyhow` y —tras la feature `tui`, desactivable— `ratatui` + `crossterm`.
+  Nada de libpcap, OpenSSL ni runtimes externos en Fase 1/2.
 
 ## Ética y uso responsable
 

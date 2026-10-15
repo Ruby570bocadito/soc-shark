@@ -9,22 +9,27 @@
 //!   ([`DissectedPacket::payload`]); solo se copian los metadatos pequeños
 //!   y las cadenas DNS necesarias para el enriquecimiento.
 //! - **Funciones puras**: `&[u8] -> Option<(Info, &[u8])>`, fáciles de
-//!   testear y de portar al pool concurrente de Fase 2.
+//!   testear y de portar al pool concurrente de Fase 2+.
 //!
-//! Fase 2 añadirá: IPv6, el pool de workers concurrentes y dissectors
+//! Fase 2 añade IPv6 completo (con cabeceras de extensión). Queda para
+//! fases posteriores: el pool de workers concurrentes y dissectors
 //! registrables (incluidos plugins WASM, ver `docs/wasm-plugins.md`).
 
 pub mod dns;
 pub mod ethernet;
 pub mod ipv4;
+pub mod ipv6;
 pub mod tcp;
 pub mod udp;
+
+use std::net::IpAddr;
 
 use socshark_core::{L7Protocol, LinkType, RawPacket, Transport};
 
 pub use dns::{parse_dns, DnsInfo, DnsQuestion, DnsRecord};
 pub use ethernet::{parse_ethernet, EthernetInfo};
 pub use ipv4::{parse_ipv4, Ipv4Info};
+pub use ipv6::{parse_ipv6, Ipv6Info};
 pub use tcp::{parse_tcp, TcpFlags, TcpInfo};
 pub use udp::{parse_udp, UdpInfo};
 
@@ -39,6 +44,12 @@ pub fn fmt_mac(mac: &[u8; 6]) -> String {
 pub struct DissectedPacket<'a> {
     pub eth: Option<EthernetInfo>,
     pub ipv4: Option<Ipv4Info>,
+    /// Presente si el paquete es IPv6 (Fase 2).
+    pub ipv6: Option<Ipv6Info>,
+    /// Versión IP (4 o 6); 0 si el paquete no llegó a interpretarse como IP.
+    pub ip_version: u8,
+    /// Transporte efectivo, ya resuelto desde el protocolo IP.
+    pub transport: Transport,
     pub tcp: Option<TcpInfo>,
     pub udp: Option<UdpInfo>,
     /// Presente si el paquete es DNS (puertos 53/5353/5355 o DNS sobre TCP).
@@ -49,11 +60,31 @@ pub struct DissectedPacket<'a> {
     pub payload: &'a [u8],
 }
 
-/// Pipeline de dissectors de la Fase 1: Ethernet → IPv4 → TCP/UDP → DNS/L7.
+impl DissectedPacket<'_> {
+    /// IP de origen (v4 o v6) si el paquete es IP.
+    pub fn src_ip(&self) -> Option<IpAddr> {
+        if let Some(i) = self.ipv4.as_ref() {
+            Some(IpAddr::V4(i.src))
+        } else {
+            self.ipv6.as_ref().map(|i| IpAddr::V6(i.src))
+        }
+    }
+
+    /// IP de destino (v4 o v6) si el paquete es IP.
+    pub fn dst_ip(&self) -> Option<IpAddr> {
+        if let Some(i) = self.ipv4.as_ref() {
+            Some(IpAddr::V4(i.dst))
+        } else {
+            self.ipv6.as_ref().map(|i| IpAddr::V6(i.dst))
+        }
+    }
+}
+
+/// Pipeline de dissectors: Ethernet → IPv4/IPv6 → TCP/UDP → DNS/L7.
 ///
-/// En Fase 2 esta estructura se convertirá en el registro del pool de
-/// dissectors; la firma de [`DissectorPipeline::dissect`] se mantiene estable
-/// para que el cambio sea transparente para el agregador.
+/// En Fase 2+ esta estructura se convertirá en el registro del pool de
+/// dissectors; la firma de [`DissectorPipeline::dissect`] se mantiene
+/// estable para que el cambio sea transparente para el agregador.
 #[derive(Debug, Clone, Default)]
 pub struct DissectorPipeline;
 
@@ -63,7 +94,8 @@ impl DissectorPipeline {
     }
 
     /// Diseca un paquete crudo. Devuelve `None` si no se puede interpretar:
-    /// Ethernet truncado, ethertype no-IPv4, L4 truncado, etc.
+    /// Ethernet truncado, ethertype no-IP, L3/L4 truncado, fragmento IPv6
+    /// no inicial, etc.
     pub fn dissect<'a>(&self, raw: &'a RawPacket, link: LinkType) -> Option<DissectedPacket<'a>> {
         let (eth, l3) = match link {
             LinkType::Ethernet => {
@@ -71,16 +103,32 @@ impl DissectorPipeline {
                 (Some(info), rest)
             }
             LinkType::RawIp => (None, &raw.data[..]),
-            // SLL, loopback, etc.: fuera de alcance en Fase 1 (documentado).
+            // SLL, loopback, etc.: fuera de alcance (documentado).
             LinkType::Unknown(_) => return None,
         };
 
-        let (ip, l4) = parse_ipv4(l3)?;
-        let transport = Transport::from_ip_proto(ip.protocol);
+        // ¿IPv4 o IPv6? En Ethernet lo dice el ethertype; en IP crudo, el
+        // nibble de versión. Otros ethertypes (ARP, ...) se descartan por ahora.
+        let is_v6 = match &eth {
+            Some(e) => e.ethertype == 0x86dd,
+            None => l3.first().is_some_and(|b| b >> 4 == 6),
+        };
+        let (ipv4, ipv6, transport, l4) = if is_v6 {
+            let (i6, l4) = parse_ipv6(l3)?;
+            let t = Transport::from_ip_proto(i6.next_header);
+            (None, Some(i6), t, l4)
+        } else {
+            let (i4, l4) = parse_ipv4(l3)?;
+            let t = Transport::from_ip_proto(i4.protocol);
+            (Some(i4), None, t, l4)
+        };
 
         let mut pkt = DissectedPacket {
             eth,
-            ipv4: Some(ip),
+            ip_version: if ipv6.is_some() { 6 } else { 4 },
+            ipv4,
+            ipv6,
+            transport,
             tcp: None,
             udp: None,
             dns: None,
@@ -101,8 +149,8 @@ impl DissectorPipeline {
                 pkt.udp = Some(info);
                 (s, d, payload)
             }
-            // ICMP y otros: sin parser L4 en Fase 1; el flujo se registra
-            // con puertos 0 y queda visible en la tabla.
+            // ICMP y otros: sin parser L4; el flujo se registra con puertos 0
+            // y queda visible en la tabla.
             _ => (0u16, 0u16, l4),
         };
         pkt.payload = payload;
@@ -210,6 +258,7 @@ mod tests {
         let tcp = dp.tcp.unwrap();
         assert!(tcp.flags.syn && !tcp.flags.ack);
         assert_eq!(dp.l7, L7Protocol::Tls);
+        assert_eq!(dp.ip_version, 4);
         assert!(dp.ipv4.unwrap().checksum_ok);
     }
 
@@ -245,6 +294,102 @@ mod tests {
         // El nombre viene comprimido (puntero 0xc00c): debe resolverse.
         assert_eq!(ans.name, "example.com");
         assert_eq!(ans.address, Some(std::net::IpAddr::V4(tg::WEB)));
+    }
+
+    // -------------------------------------------------- Fase 2: IPv6
+
+    #[test]
+    fn dns_ipv6_query_y_respuesta_aaaa() {
+        let q = dissect(tg::frame_ipv6_udp(
+            tg::MAC_HOST_A,
+            tg::MAC_ROUTER,
+            tg::HOST_A6,
+            tg::DNS6,
+            53010,
+            53,
+            &tg::dns_query(0x0606, "v6.example.com", 28),
+        ));
+        assert_eq!(q.ip_version, 6);
+        assert_eq!(q.src_ip(), Some(IpAddr::V6(tg::HOST_A6)));
+        assert_eq!(q.dst_ip(), Some(IpAddr::V6(tg::DNS6)));
+        assert_eq!(q.transport, Transport::Udp);
+        assert_eq!(q.dns.as_ref().unwrap().queries[0].name, "v6.example.com");
+
+        let r = dissect(tg::frame_ipv6_udp(
+            tg::MAC_ROUTER,
+            tg::MAC_HOST_A,
+            tg::DNS6,
+            tg::HOST_A6,
+            53,
+            53010,
+            &tg::dns_response_aaaa(0x0606, "v6.example.com", tg::WEB6),
+        ));
+        let ans = &r.dns.unwrap().answers[0];
+        assert_eq!(ans.address, Some(IpAddr::V6(tg::WEB6)));
+    }
+
+    #[test]
+    fn tcp_ipv6_con_sniffing_ssh() {
+        let dp = dissect(tg::frame_ipv6_tcp(
+            tg::MAC_HOST_B,
+            tg::MAC_ROUTER,
+            tg::HOST_A6,
+            tg::WEB6,
+            40010,
+            2222,
+            7,
+            9,
+            tg::flags::PSH_ACK,
+            b"SSH-2.0-OpenSSH_9.6\r\n",
+        ));
+        assert_eq!(dp.ip_version, 6);
+        assert_eq!(dp.transport, Transport::Tcp);
+        assert_eq!(dp.l7, L7Protocol::Ssh);
+        assert_eq!(dp.tcp.unwrap().dst_port, 2222);
+    }
+
+    #[test]
+    fn ethertype_arp_se_descarta() {
+        // ARP: ethertype 0x0806, no IP.
+        let arp = {
+            let mut f = Vec::new();
+            f.extend_from_slice(&tg::MAC_HOST_A);
+            f.extend_from_slice(&tg::MAC_ROUTER);
+            f.extend_from_slice(&0x0806u16.to_be_bytes());
+            f.extend_from_slice(&[0u8; 28]);
+            f
+        };
+        let raw = RawPacket {
+            ts_micros: 0,
+            orig_len: arp.len() as u32,
+            data: arp,
+        };
+        assert!(DissectorPipeline::new()
+            .dissect(&raw, LinkType::Ethernet)
+            .is_none());
+    }
+
+    #[test]
+    fn ip_crudo_detecta_version() {
+        let frame = tg::frame_ipv6_udp(
+            tg::MAC_HOST_A,
+            tg::MAC_ROUTER,
+            tg::HOST_A6,
+            tg::DNS6,
+            53010,
+            53,
+            &tg::dns_query(2, "raw.example", 1),
+        );
+        let raw = RawPacket {
+            ts_micros: 0,
+            orig_len: frame.len() as u32,
+            data: frame[14..].to_vec(), // sin cabecera Ethernet
+        };
+        let dp = DissectorPipeline::new()
+            .dissect(&raw, LinkType::RawIp)
+            .expect("IPv6 crudo debe diseccionarse");
+        assert_eq!(dp.ip_version, 6);
+        assert!(dp.eth.is_none());
     }
 
     #[test]
@@ -331,6 +476,24 @@ mod tests {
                 ts_micros: 0,
                 orig_len: full.len() as u32,
                 data: full[..cut.min(full.len())].to_vec(),
+            };
+            let _ = DissectorPipeline::new().dissect(&raw, LinkType::Ethernet);
+        }
+        // Y también el camino IPv6.
+        let full6 = tg::frame_ipv6_udp(
+            tg::MAC_HOST_A,
+            tg::MAC_ROUTER,
+            tg::HOST_A6,
+            tg::DNS6,
+            53010,
+            53,
+            &tg::dns_query(1, "a.b.example", 1),
+        );
+        for cut in [0usize, 14, 40, 54, 62] {
+            let raw = RawPacket {
+                ts_micros: 0,
+                orig_len: full6.len() as u32,
+                data: full6[..cut.min(full6.len())].to_vec(),
             };
             let _ = DissectorPipeline::new().dissect(&raw, LinkType::Ethernet);
         }

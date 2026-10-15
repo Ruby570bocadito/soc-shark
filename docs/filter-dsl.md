@@ -45,6 +45,7 @@ field    = ident , { "." , ident } ;
 | Campo | Tipo | Descripción |
 |---|---|---|
 | `ip.src`, `ip.dst` | IP | Extremos según primer paquete |
+| `ip.version` | num | Familia del flujo: `4` o `6` (Fase 2) |
 | `sport`, `dport` (`src.port`, `dst.port`) | num | Puertos individuales |
 | `tcp.port`, `udp.port`, `port` | num (multi) | Ambos puertos; `tcp.port` solo aplica a flujos TCP y `udp.port` a UDP (igual que tcpdump) |
 | `tcp.flags.syn/ack/fin/rst/psh` | bool | True si el flujo vio el flag (en cualquier dirección) |
@@ -125,11 +126,12 @@ valor, encontrado ')'`. Los errores comunes:
 -f "!(flow.noise) && !(net.l7 == \"DNS\")"
 ```
 
-## Límites actuales y evolución (Fase 2)
+## Límites actuales y evolución
 
-- Literales IP solo IPv4 (IPv6 entre comillas como cadena funciona contra
-  `ip.src/ip.dst` por coerción; el literal nativo llega con el dissector IPv6).
+- Literales IPv6 nativos desde Fase 2 (`ip.dst == 2001:db8::1`, sin
+  comillas); el lexer incluye `:` en las palabras. Las cadenas entre
+  comillas siguen funcionando por coerción.
 - Sin funciones (`len()`, `entropy()`): llegarán como predicados registrados
   cuando el mini-IDS los exponga.
-- La TUI (Fase 2) reutilizará este parser para su línea de comando interactiva
-  con autocompletado de campos generado desde la misma tabla de `get_fields`.
+- La TUI reutiliza este parser para su línea de filtro interactiva
+  (generando los mismos errores con posición que la CLI).

@@ -28,26 +28,39 @@ Analizar capturas de archivo de extremo a extremo y producir valor SOC real.
 - [x] CLI: `capture` (tabla/JSONL/filtro), `dev sample-pcap`, stub `daemon`
 - [x] 70 tests (unitarios + integración) en verde, clippy limpio
 
-## Fase 2 — Captura en vivo + TUI
+## Fase 2 — Captura en vivo + TUI (en curso: 4/7)
 
 Objetivo: dejar de ser un lector de archivos y convertirse en herramienta de
 operación en tiempo real.
 
 - [ ] Backend de captura en vivo: libpcap (compatibilidad) con pushdown BPF;
-      AF_XDP para alto rendimiento
-- [ ] Pipeline en streaming: agregador incremental con `drain_expired` en
-      hilo propio y expiración por tiempo real (la API ya existe)
+      AF_XDP para alto rendimiento — *pendiente: exige libpcap-dev y
+      privilegios de captura, ausentes en el entorno de desarrollo actual.
+      La frontera ya está definida: trait `CaptureSource`, stub `socshark
+      daemon` y expiración incremental lista para el hilo del daemon*
+- [x] Pipeline en streaming: agregador incremental con `drain_expired`
+      testado (expira por tiempo real y alimenta exportación incremental);
+      falta el hilo del daemon que lo consuma en vivo
 - [ ] Pool de dissectors concurrente (dispatch por hash de `FlowKey`)
-- [ ] TUI con Ratatui: Flow Accordion (1 línea por flujo, expansión a
-      paquetes), RadarSidebar de alertas, línea de filtro con el DSL
-- [ ] IPv6 completo (dissector + claves de flujo + literal en el DSL)
-- [ ] Reensamblado TCP básico por dirección (buffers fuera de orden + Follow
-      Stream en la TUI)
+- [x] TUI con Ratatui (modo offline): lista Flow-First con detalle
+      expandible, panel de alertas, línea de filtro con el DSL completo y
+      ruido atenuado (`socshark tui -r captura.pcap`, ver `docs/tui.md`);
+      el modelo de estado se testea sin terminal y se enchufará al JSONL
+      del daemon en vivo sin cambios
+- [x] IPv6 completo: disector con cabeceras de extensión (Hop-by-Hop,
+      Routing, Destinos, Fragment —solo primer fragmento— y AH), claves de
+      flujo sobre `IpAddr`, campo `ip_version`, `ip.version` en el DSL y
+      literales v6 nativos (`2001:db8::1`)
+- [x] Reensamblado TCP por dirección: orden de secuencia con aritmética
+      serial (RFC 9293 §3.3), deduplicación de retransmisiones, huecos
+      marcados (`[N bytes perdidos]`), tope de 1 MiB con marcado `lossy`,
+      más `socshark follow` en texto/hexdump
 - [ ] Fuzzing de parsers con cargo-fuzz en CI (seeds de testgen)
 
-Criterios de aceptación: captura en vivo sostenida a ≥ 200 Mbps en un portátil
-moderno sin pérdida reportada por el backend; TUI fluida con 10k flujos
-activos; Follow Stream legible para un flujo HTTP real.
+Estado 0.3.0: 94 tests verdes. Los criterios de captura en vivo (≥ 200 Mbps
+sostenidos, TUI fluida con 10k flujos activos) quedan condicionados al
+backend de captura pendiente; Follow Stream ya es legible para un flujo HTTP
+real (test de integración con segmentos fuera de orden).
 
 ## Fase 3 — eBPF: atribución de proceso
 

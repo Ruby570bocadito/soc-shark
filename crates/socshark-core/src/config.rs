@@ -22,6 +22,10 @@ pub struct PipelineConfig {
     /// Número de SYNs "en seco" (sin ACK de respuesta) desde una misma origen
     /// hacia un mismo puerto destino antes de alertar posible escaneo.
     pub scan_syn_threshold: u32,
+    /// Recolectar segmentos TCP por dirección para el reensamblado
+    /// (`socshark follow`). Añade hasta 1 MiB de memoria por dirección
+    /// activa, así que va desactivado por defecto.
+    pub collect_streams: bool,
 }
 
 impl Default for PipelineConfig {
@@ -33,6 +37,7 @@ impl Default for PipelineConfig {
             dns_entropy_threshold: 3.5,
             dns_tunnel_min_len: 30,
             scan_syn_threshold: 4,
+            collect_streams: false,
         }
     }
 }

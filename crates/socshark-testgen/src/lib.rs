@@ -9,25 +9,27 @@
 //! workspace: nada del "código bajo test" puede colarse en los fixtures.
 
 use std::io::Write as _;
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::path::Path;
 
 // ---------------------------------------------------------------- checksums
 
-fn ones_sum(bytes: &[u8]) -> u32 {
-    let mut sum = 0u32;
+fn ones_sum(bytes: &[u8]) -> u64 {
+    let mut sum = 0u64;
     let mut i = 0;
     while i + 1 < bytes.len() {
-        sum += u16::from_be_bytes([bytes[i], bytes[i + 1]]) as u32;
+        sum += u16::from_be_bytes([bytes[i], bytes[i + 1]]) as u64;
         i += 2;
     }
     if i < bytes.len() {
-        sum += (bytes[i] as u32) << 8;
+        sum += (bytes[i] as u64) << 8;
     }
     sum
 }
 
 fn checksum16(bytes: &[u8]) -> u16 {
+    // Acumulador u64: los pseudo-cabeceras de segmentos grandes (hasta 1 MiB
+    // en los fixtures de reensamblado) desbordarían un u32 antes de plegar.
     let mut s = ones_sum(bytes);
     while s >> 16 != 0 {
         s = (s & 0xffff) + (s >> 16);
@@ -82,6 +84,28 @@ pub fn tcp(
     flags: u8,
     payload: &[u8],
 ) -> Vec<u8> {
+    let mut seg = tcp_segment(src_port, dst_port, seq, ack, flags, payload);
+    let mut pseudo = Vec::with_capacity(12 + seg.len());
+    pseudo.extend_from_slice(&src_ip.octets());
+    pseudo.extend_from_slice(&dst_ip.octets());
+    pseudo.extend_from_slice(&[0, 6]); // protocolo TCP
+    pseudo.extend_from_slice(&(seg.len() as u16).to_be_bytes());
+    pseudo.extend_from_slice(&seg);
+    let ck = checksum16(&pseudo);
+    seg[16..18].copy_from_slice(&ck.to_be_bytes());
+    seg
+}
+
+/// Segmento TCP sin checksum (lo rellena cada variante de IP).
+#[allow(clippy::too_many_arguments)]
+fn tcp_segment(
+    src_port: u16,
+    dst_port: u16,
+    seq: u32,
+    ack: u32,
+    flags: u8,
+    payload: &[u8],
+) -> Vec<u8> {
     let mut seg = Vec::with_capacity(20 + payload.len());
     seg.extend_from_slice(&src_port.to_be_bytes());
     seg.extend_from_slice(&dst_port.to_be_bytes());
@@ -92,15 +116,6 @@ pub fn tcp(
     seg.extend_from_slice(&[0, 0]); // checksum provisional
     seg.extend_from_slice(&[0, 0]); // urgent pointer
     seg.extend_from_slice(payload);
-
-    let mut pseudo = Vec::with_capacity(12 + seg.len());
-    pseudo.extend_from_slice(&src_ip.octets());
-    pseudo.extend_from_slice(&dst_ip.octets());
-    pseudo.extend_from_slice(&[0, 6]); // protocolo TCP
-    pseudo.extend_from_slice(&(seg.len() as u16).to_be_bytes());
-    pseudo.extend_from_slice(&seg);
-    let ck = checksum16(&pseudo);
-    seg[16..18].copy_from_slice(&ck.to_be_bytes());
     seg
 }
 
@@ -145,6 +160,114 @@ pub fn frame_tcp(
 ) -> Vec<u8> {
     let l4 = tcp(src_ip, dst_ip, sport, dport, seq, ack, flags, payload);
     frame(src_mac, dst_mac, src_ip, dst_ip, 64, &l4, 6)
+}
+
+// ------------------------------------------------------------ IPv6 (Fase 2)
+
+/// Cabecera IPv6 fija (40 bytes, sin extensiones).
+fn ipv6_header(src: Ipv6Addr, dst: Ipv6Addr, next_header: u8, payload_len: usize) -> Vec<u8> {
+    let mut ip = Vec::with_capacity(40);
+    ip.extend_from_slice(&[0x60, 0x00, 0x00, 0x00]); // versión 6, TC 0, FL 0
+    ip.extend_from_slice(&(payload_len as u16).to_be_bytes());
+    ip.push(next_header);
+    ip.push(64); // hop limit
+    ip.extend_from_slice(&src.octets());
+    ip.extend_from_slice(&dst.octets());
+    ip
+}
+
+/// Checksum L4 con pseudo-cabecera común a IPv4 e IPv6 (RFC 1071/2460).
+fn l4_checksum(seg: &[u8], src: &[u8], dst: &[u8], proto: u8) -> u16 {
+    let mut pseudo = Vec::with_capacity(40 + seg.len());
+    pseudo.extend_from_slice(src);
+    pseudo.extend_from_slice(dst);
+    pseudo.extend_from_slice(&(seg.len() as u32).to_be_bytes());
+    pseudo.extend_from_slice(&[0, 0, 0]); // reservado
+    pseudo.push(proto);
+    pseudo.extend_from_slice(seg);
+    checksum16(&pseudo)
+}
+
+/// Segmento TCP sobre IPv6 con checksum (pseudo-cabecera v6).
+#[allow(clippy::too_many_arguments)]
+pub fn ipv6_tcp(
+    src: Ipv6Addr,
+    dst: Ipv6Addr,
+    src_port: u16,
+    dst_port: u16,
+    seq: u32,
+    ack: u32,
+    flags: u8,
+    payload: &[u8],
+) -> Vec<u8> {
+    let seg = tcp_segment(src_port, dst_port, seq, ack, flags, payload);
+    let mut seg = seg;
+    let ck = l4_checksum(&seg, &src.octets(), &dst.octets(), 6);
+    seg[16..18].copy_from_slice(&ck.to_be_bytes());
+    seg
+}
+
+/// Datagrama UDP sobre IPv6 con checksum (obligatorio en IPv6, RFC 2460).
+pub fn ipv6_udp(
+    src: Ipv6Addr,
+    dst: Ipv6Addr,
+    src_port: u16,
+    dst_port: u16,
+    payload: &[u8],
+) -> Vec<u8> {
+    let mut seg = Vec::with_capacity(8 + payload.len());
+    seg.extend_from_slice(&src_port.to_be_bytes());
+    seg.extend_from_slice(&dst_port.to_be_bytes());
+    seg.extend_from_slice(&((8 + payload.len()) as u16).to_be_bytes());
+    seg.extend_from_slice(&[0, 0]); // checksum provisional
+    seg.extend_from_slice(payload);
+    let ck = l4_checksum(&seg, &src.octets(), &dst.octets(), 17);
+    seg[6..8].copy_from_slice(&ck.to_be_bytes());
+    seg
+}
+
+/// Atajo: trama Ethernet + IPv6 + UDP completa.
+pub fn frame_ipv6_udp(
+    src_mac: [u8; 6],
+    dst_mac: [u8; 6],
+    src: Ipv6Addr,
+    dst: Ipv6Addr,
+    sport: u16,
+    dport: u16,
+    payload: &[u8],
+) -> Vec<u8> {
+    let l4 = ipv6_udp(src, dst, sport, dport, payload);
+    let mut out = Vec::with_capacity(14 + 40 + l4.len());
+    out.extend_from_slice(&dst_mac);
+    out.extend_from_slice(&src_mac);
+    out.extend_from_slice(&0x86ddu16.to_be_bytes());
+    out.extend_from_slice(&ipv6_header(src, dst, 17, l4.len()));
+    out.extend_from_slice(&l4);
+    out
+}
+
+/// Atajo: trama Ethernet + IPv6 + TCP completa.
+#[allow(clippy::too_many_arguments)]
+pub fn frame_ipv6_tcp(
+    src_mac: [u8; 6],
+    dst_mac: [u8; 6],
+    src: Ipv6Addr,
+    dst: Ipv6Addr,
+    sport: u16,
+    dport: u16,
+    seq: u32,
+    ack: u32,
+    flags: u8,
+    payload: &[u8],
+) -> Vec<u8> {
+    let l4 = ipv6_tcp(src, dst, sport, dport, seq, ack, flags, payload);
+    let mut out = Vec::with_capacity(14 + 40 + l4.len());
+    out.extend_from_slice(&dst_mac);
+    out.extend_from_slice(&src_mac);
+    out.extend_from_slice(&0x86ddu16.to_be_bytes());
+    out.extend_from_slice(&ipv6_header(src, dst, 6, l4.len()));
+    out.extend_from_slice(&l4);
+    out
 }
 
 // --------------------------------------------------------------------- DNS
@@ -197,6 +320,26 @@ pub fn dns_response(id: u16, name: &str, qtype: u16, addr: Ipv4Addr) -> Vec<u8> 
     m.extend_from_slice(&300u32.to_be_bytes()); // TTL
     m.extend_from_slice(&4u16.to_be_bytes()); // rdlength
     m.extend_from_slice(&addr.octets()); // rdata
+    m
+}
+
+/// Respuesta DNS AAAA (dirección IPv6 de 16 bytes en rdata).
+pub fn dns_response_aaaa(id: u16, name: &str, addr: Ipv6Addr) -> Vec<u8> {
+    let mut m = Vec::new();
+    m.extend_from_slice(&id.to_be_bytes());
+    m.extend_from_slice(&0x8180u16.to_be_bytes());
+    m.extend_from_slice(&1u16.to_be_bytes());
+    m.extend_from_slice(&1u16.to_be_bytes());
+    m.extend_from_slice(&[0, 0, 0, 0]);
+    m.extend_from_slice(&encode_dns_name(name));
+    m.extend_from_slice(&28u16.to_be_bytes()); // AAAA
+    m.extend_from_slice(&1u16.to_be_bytes());
+    m.extend_from_slice(&0xc00cu16.to_be_bytes());
+    m.extend_from_slice(&28u16.to_be_bytes());
+    m.extend_from_slice(&1u16.to_be_bytes());
+    m.extend_from_slice(&300u32.to_be_bytes());
+    m.extend_from_slice(&16u16.to_be_bytes()); // rdlength
+    m.extend_from_slice(&addr.octets());
     m
 }
 
@@ -259,6 +402,11 @@ pub const DNS_EXT: Ipv4Addr = Ipv4Addr::new(8, 8, 8, 8);
 pub const WEB: Ipv4Addr = Ipv4Addr::new(93, 184, 216, 34);
 pub const NTP: Ipv4Addr = Ipv4Addr::new(17, 253, 0, 1);
 pub const MDNS_MCAST: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 251);
+
+// Extremos IPv6 del escenario (Fase 2).
+pub const HOST_A6: Ipv6Addr = Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 0x10);
+pub const DNS6: Ipv6Addr = Ipv6Addr::new(0x2001, 0x4860, 0x4860, 0, 0, 0, 0, 0x8888);
+pub const WEB6: Ipv6Addr = Ipv6Addr::new(0x2606, 0x2800, 0x220, 0x1, 0, 0, 0, 0x248);
 
 /// qname de alta entropía del túnel DNS demo (60 caracteres, 30 símbolos
 /// distintos repetidos dos veces → entropía ≈ log2(30) ≈ 4.91 bits).
@@ -504,6 +652,32 @@ pub fn sample_pcap_packets() -> Vec<(u64, Vec<u8>)> {
         ),
     ));
 
+    // 8) DNS sobre IPv6 (Fase 2): consulta AAAA + respuesta.
+    p.push((
+        t0 + 6_000_000,
+        frame_ipv6_udp(
+            MAC_HOST_A,
+            MAC_ROUTER,
+            HOST_A6,
+            DNS6,
+            53010,
+            53,
+            &dns_query(0x0606, "v6.example.com", 28),
+        ),
+    ));
+    p.push((
+        t0 + 6_010_000,
+        frame_ipv6_udp(
+            MAC_ROUTER,
+            MAC_HOST_A,
+            DNS6,
+            HOST_A6,
+            53,
+            53010,
+            &dns_response_aaaa(0x0606, "v6.example.com", WEB6),
+        ),
+    ));
+
     p
 }
 
@@ -516,10 +690,40 @@ mod tests {
     #[test]
     fn escenario_demo_genera_paquetes_validos() {
         let pkts = sample_pcap_packets();
-        // 2 DNS + 7 TLS + 2 ruido + 1 túnel + 5 escaneo + 1 SSH + 1 HTTP = 19.
-        assert_eq!(pkts.len(), 19);
+        // 2 DNS + 7 TLS + 2 ruido + 1 túnel + 5 escaneo + 1 SSH + 1 HTTP
+        // + 2 DNS-IPv6 = 21.
+        assert_eq!(pkts.len(), 21);
         // Todas las tramas deben ser >= 34 bytes (eth + ip mínimo).
         assert!(pkts.iter().all(|(_, d)| d.len() >= 34));
+    }
+
+    #[test]
+    fn checksum_ipv6_udp_es_valido() {
+        // Recalcula el checksum sobre la pseudo-cabecera v6 y debe dar 0xffff
+        // tras plegar (el campo checksum incluido).
+        let frame = frame_ipv6_udp(
+            MAC_HOST_A,
+            MAC_ROUTER,
+            HOST_A6,
+            DNS6,
+            53010,
+            53,
+            &dns_query(1, "ck.example", 1),
+        );
+        let ip = &frame[14..];
+        let payload_len = u16::from_be_bytes([ip[4], ip[5]]) as usize;
+        let l4 = &ip[40..40 + payload_len];
+        let mut pseudo = Vec::new();
+        pseudo.extend_from_slice(&HOST_A6.octets());
+        pseudo.extend_from_slice(&DNS6.octets());
+        pseudo.extend_from_slice(&(l4.len() as u32).to_be_bytes());
+        pseudo.extend_from_slice(&[0, 0, 0, 17]);
+        pseudo.extend_from_slice(l4);
+        let mut s = ones_sum(&pseudo);
+        while s >> 16 != 0 {
+            s = (s & 0xffff) + (s >> 16);
+        }
+        assert_eq!(s as u16, 0xffff);
     }
 
     #[test]

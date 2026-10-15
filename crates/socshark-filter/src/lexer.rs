@@ -1,7 +1,7 @@
 //! Tokenizador del DSL de filtrado.
 //!
-//! - Palabras: `[A-Za-z0-9_.]+` (campos, IPs, números y booleanos se
-//!   clasifican en el parser).
+//! - Palabras: `[A-Za-z0-9_.:]+` (campos, IPs v4/v6 —p. ej.
+//!   `2001:db8::1`—, números y booleanos se clasifican en el parser).
 //! - Cadenas: entre comillas simples o dobles, con escapes `\n`, `\t`, `\\`,
 //!   `\'` y `\"`.
 //! - Operadores de dos caracteres primero: `==`, `!=`, `<=`, `>=`, `&&`, `||`.
@@ -120,7 +120,8 @@ pub fn lex(input: &str) -> Result<Vec<(usize, Tok)>, LexError> {
                     i += 1;
                 }
             }
-            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_' | b'.' => {
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_' | b'.' | b':' => {
+                // `:` incluye los literales IPv6 nativos (Fase 2): 2001:db8::1.
                 let start = i;
                 while i < bytes.len() && is_word_byte(bytes[i]) {
                     i += 1;
@@ -144,7 +145,7 @@ pub fn lex(input: &str) -> Result<Vec<(usize, Tok)>, LexError> {
 }
 
 fn is_word_byte(b: u8) -> bool {
-    matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_' | b'.')
+    matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_' | b'.' | b':')
 }
 
 fn lex_string(input: &str, start: usize) -> Result<(Tok, usize), LexError> {

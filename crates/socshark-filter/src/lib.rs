@@ -38,6 +38,7 @@ mod tests {
             flow_id: FlowId("tcp/10.0.0.5:52000-93.184.216.34:443".into()),
             state: FlowState::Closed,
             transport: Transport::Tcp,
+            ip_version: 4,
             l7_protocol: L7Protocol::Tls,
             src_ip: "10.0.0.5".parse().unwrap(),
             src_port: 52000,

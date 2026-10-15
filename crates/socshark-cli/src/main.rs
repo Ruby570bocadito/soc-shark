@@ -2,8 +2,10 @@
 
 use clap::Parser;
 use socshark_cli::cli::{Cli, Cmd, DevCmd};
+use socshark_cli::follow;
 use socshark_cli::output;
-use socshark_cli::pipeline::run_capture;
+use socshark_cli::pipeline::{run_capture, run_follow};
+use socshark_cli::tui;
 use socshark_core::config::PipelineConfig;
 
 fn main() {
@@ -49,14 +51,55 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             Ok(())
         }
 
+        Cmd::Follow {
+            read,
+            flow,
+            hex,
+            max_bytes,
+        } => {
+            // El reensamblado exige recolectar segmentos durante el pipeline.
+            let cfg = PipelineConfig {
+                collect_streams: true,
+                ..PipelineConfig::default()
+            };
+            match run_follow(&read, &flow, &cfg)? {
+                Some((flow, stream)) => follow::print_follow(&flow, &stream, hex, max_bytes),
+                None => {
+                    eprintln!("[!] ningún flujo coincide con '{flow}'");
+                    eprintln!(
+                        "    Pista: busca una subcadena del id, p. ej. --flow \"93.184.216.34:443\""
+                    );
+                    std::process::exit(2);
+                }
+            }
+            Ok(())
+        }
+
+        Cmd::Tui { read, filter } => {
+            #[cfg(feature = "tui")]
+            {
+                tui::run(&read, filter.as_deref())
+            }
+            #[cfg(not(feature = "tui"))]
+            {
+                let _ = (&read, &filter);
+                eprintln!(
+                    "[!] La TUI no está incluida en este build: recompila con --features tui"
+                );
+                Ok(())
+            }
+        }
+
         Cmd::Daemon { iface } => {
             // Stub de la Fase 2: documenta el plan y no hace nada más.
-            eprintln!("[!] La captura en vivo ({iface}) llega en la Fase 2.");
+            eprintln!("[!] La captura en vivo ({iface}) requiere libpcap/AF_XDP.");
             eprintln!(
                 "    Plan: daemon con CAP_NET_RAW (libpcap → AF_XDP) + módulos eBPF en Fase 3."
             );
             eprintln!("    Ver docs/roadmap.md y docs/ebpf-design.md.");
-            eprintln!("    Por ahora: socshark capture -r archivo.pcap");
+            eprintln!(
+                "    Por ahora: socshark capture -r archivo.pcap · socshark tui -r archivo.pcap"
+            );
             Ok(())
         }
 

@@ -7,11 +7,13 @@
 //! Claves de diseño:
 //! - **Bidireccionalidad canónica**: A→B y B→A comparten clave; los contadores
 //!   se separan en dirección `fwd` (primer paquete observado) y `rev`.
+//! - **IPv4 e IPv6 iguales ante la clave**: la clave canónica opera sobre
+//!   `IpAddr`, así que la agregación v6 es exactamente la v4 (Fase 2).
 //! - **Sin reordenar**: los timestamps fuera de orden solo empujan
 //!   `first_seen` hacia atrás; nada se pierde.
 //! - **Presión de memoria acotada**: `max_flows` con expulsión de los flujos
-//!   más antiguos cuando se alcanza el límite (capturas largas o ataques de
-//!   agotamiento de tabla).
+//!   más antiguos, y reensamblado TCP opcional con tope de 1 MiB por
+//!   dirección ([`ReassembledStream`]).
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -21,6 +23,10 @@ use socshark_core::{
     TcpFlagCounts, Transport,
 };
 use socshark_dissectors::{DissectedPacket, DnsInfo};
+
+/// Tope de bytes recolectados por dirección y flujo para el reensamblado.
+/// Lo que exceda el tope se descarta y se marca el stream como `lossy`.
+pub const MAX_STREAM_BYTES: u64 = 1024 * 1024;
 
 /// Clave canónica de flujo bidireccional: los extremos se ordenan para que
 /// A→B y B→A compartan clave.
@@ -82,6 +88,99 @@ impl PipelineStats {
     }
 }
 
+// --------------------------------------------------- reensamblado TCP (Fase 2)
+
+/// Buffer de una dirección: segmentos `(seq, datos)` con su ISN observado.
+#[derive(Debug, Default, Clone)]
+struct StreamBuf {
+    /// Número de secuencia del primer segmento observado en la dirección.
+    base: Option<u32>,
+    segs: Vec<(u32, Vec<u8>)>,
+    collected: u64,
+    truncated: bool,
+}
+
+impl StreamBuf {
+    fn push(&mut self, seq: u32, data: &[u8]) {
+        if data.is_empty() {
+            return;
+        }
+        match self.base {
+            None => self.base = Some(seq),
+            Some(b) => {
+                // Si el segmento es ANTERIOR a la base (comparación serial con
+                // signo, RFC 9293 §3.3), la captura empezó a mitad de dirección:
+                // se retrocede la base para que todos los offsets queden
+                // ordenables hacia adelante.
+                if (seq.wrapping_sub(b) as i32) < 0 {
+                    self.base = Some(seq);
+                }
+            }
+        }
+        if self.collected + data.len() as u64 > MAX_STREAM_BYTES {
+            self.truncated = true;
+            return;
+        }
+        self.collected += data.len() as u64;
+        self.segs.push((seq, data.to_vec()));
+    }
+
+    /// Reensambla en orden de secuencia relativo al primer ISN observado:
+    /// elimina retransmisiones solapadas y marca los huecos con un
+    /// separador legible. Devuelve `(bytes, hay_pérdida)`.
+    fn reassemble(&self) -> (Vec<u8>, bool) {
+        let Some(base) = self.base else {
+            return (Vec::new(), false);
+        };
+        let mut segs = self.segs.clone();
+        segs.sort_by_key(|(seq, _)| seq.wrapping_sub(base));
+
+        let mut out = Vec::with_capacity(self.collected as usize);
+        let mut cursor: u64 = 0; // offset relativo ya cubierto
+        let mut lossy = self.truncated;
+        for (seq, data) in segs {
+            let off = seq.wrapping_sub(base) as u64;
+            let end = off + data.len() as u64;
+            if end <= cursor {
+                continue; // retransmisión íntegra ya vista
+            }
+            if off > cursor {
+                let gap = off - cursor;
+                out.extend_from_slice(format!("\n[{gap} bytes perdidos]\n").as_bytes());
+                lossy = true;
+                out.extend_from_slice(&data);
+            } else {
+                let skip = (cursor - off) as usize;
+                out.extend_from_slice(&data[skip..]);
+            }
+            cursor = end;
+        }
+        (out, lossy)
+    }
+}
+
+/// Par de streams de un flujo TCP (cliente = origen del primer paquete).
+#[derive(Debug, Clone)]
+struct StreamPair {
+    fwd: StreamBuf,
+    rev: StreamBuf,
+}
+
+/// Stream TCP reensamblado, listo para `socshark follow`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReassembledStream {
+    /// Bytes del iniciador de la conexión (src del primer paquete).
+    pub client: Vec<u8>,
+    /// Bytes del otro extremo.
+    pub server: Vec<u8>,
+    /// True si hubo huecos de secuencia, retransmisiones inconsistentes o
+    /// descartes por el tope de memoria.
+    pub client_lossy: bool,
+    pub server_lossy: bool,
+}
+
+// ------------------------------------------------------------ acumuladores
+
 /// Acumulador interno por flujo.
 #[derive(Debug, Clone)]
 struct FlowAccum {
@@ -102,9 +201,11 @@ struct FlowAccum {
     flags: TcpFlagCounts,
     l7: L7Protocol,
     dns: Option<DnsSummary>,
+    streams: Option<StreamPair>,
 }
 
 impl FlowAccum {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         key: FlowKey,
         ts_micros: u64,
@@ -113,6 +214,7 @@ impl FlowAccum {
         dst: IpAddr,
         dst_port: u16,
         dp: &DissectedPacket,
+        collect_streams: bool,
     ) -> Self {
         let (src_mac, dst_mac) = dp
             .eth
@@ -136,6 +238,14 @@ impl FlowAccum {
             flags: TcpFlagCounts::default(),
             l7: dp.l7,
             dns: None,
+            streams: if collect_streams && dp.transport == Transport::Tcp {
+                Some(StreamPair {
+                    fwd: StreamBuf::default(),
+                    rev: StreamBuf::default(),
+                })
+            } else {
+                None
+            },
         }
     }
 
@@ -183,16 +293,19 @@ pub struct FlowAggregator {
     flows: HashMap<FlowKey, FlowAccum>,
     max_flows: usize,
     idle_timeout_micros: u64,
+    collect_streams: bool,
     stats: PipelineStats,
 }
 
 impl FlowAggregator {
-    /// Crea un agregador con límite de tabla y timeout de inactividad.
-    pub fn new(max_flows: usize, idle_timeout_secs: u64) -> Self {
+    /// Crea un agregador con límite de tabla, timeout de inactividad y la
+    /// opción de recolectar segmentos TCP para reensamblar streams.
+    pub fn new(max_flows: usize, idle_timeout_secs: u64, collect_streams: bool) -> Self {
         Self {
             flows: HashMap::new(),
             max_flows,
             idle_timeout_micros: idle_timeout_secs * 1_000_000,
+            collect_streams,
             stats: PipelineStats::default(),
         }
     }
@@ -209,11 +322,11 @@ impl FlowAggregator {
     pub fn on_packet(&mut self, ts_micros: u64, raw_len: usize, dp: &DissectedPacket) {
         self.stats.total_packets += 1;
 
-        let Some(ip) = dp.ipv4.as_ref() else {
+        let (Some(src_ip), Some(dst_ip)) = (dp.src_ip(), dp.dst_ip()) else {
             self.stats.skipped_packets += 1;
             return;
         };
-        let transport = Transport::from_ip_proto(ip.protocol);
+        let transport = dp.transport;
         let (sport, dport) = match (dp.tcp.as_ref(), dp.udp.as_ref()) {
             (Some(t), _) => (t.src_port, t.dst_port),
             (_, Some(u)) => (u.src_port, u.dst_port),
@@ -221,7 +334,7 @@ impl FlowAggregator {
         };
         self.stats.parsed_packets += 1;
 
-        let key = FlowKey::new(ip.src.into(), sport, ip.dst.into(), dport, transport);
+        let key = FlowKey::new(src_ip, sport, dst_ip, dport, transport);
         if !self.flows.contains_key(&key) && self.flows.len() >= self.max_flows {
             self.force_expire();
         }
@@ -233,16 +346,17 @@ impl FlowAggregator {
             FlowAccum::new(
                 key,
                 ts_micros,
-                ip.src.into(),
+                src_ip,
                 sport,
-                ip.dst.into(),
+                dst_ip,
                 dport,
                 dp,
+                self.collect_streams,
             )
         });
 
         // ¿El paquete va en la dirección del primer paquete (fwd) o en la opuesta?
-        let forward = acc.src == IpAddr::V4(ip.src) && acc.src_port == sport;
+        let forward = acc.src == src_ip && acc.src_port == sport;
         if forward {
             acc.packets_fwd += 1;
             acc.bytes_fwd += raw_len as u64;
@@ -267,6 +381,14 @@ impl FlowAggregator {
             acc.flags.rst += f.rst as u32;
             acc.flags.psh += f.psh as u32;
             acc.flags.urg += f.urg as u32;
+
+            // Reensamblado (Fase 2): solo segmentos con payload.
+            if let Some(sp) = acc.streams.as_mut() {
+                if !dp.payload.is_empty() {
+                    let dir = if forward { &mut sp.fwd } else { &mut sp.rev };
+                    dir.push(t.seq, dp.payload);
+                }
+            }
         }
 
         if acc.l7 == L7Protocol::Unknown && dp.l7 != L7Protocol::Unknown {
@@ -288,16 +410,38 @@ impl FlowAggregator {
             .collect();
         expired
             .into_iter()
-            .filter_map(|k| self.flows.remove(&k).map(Self::export))
+            .filter_map(|k| {
+                self.flows
+                    .remove(&k)
+                    .map(|acc| Self::export_with_streams(acc).0)
+            })
             .collect()
     }
 
     /// Finaliza la captura y exporta todos los flujos restantes, ordenados
     /// por primer avistamiento (el orden natural para el analista).
     pub fn finish(self) -> Vec<EnrichedFlow> {
-        let mut out: Vec<EnrichedFlow> = self.flows.into_values().map(Self::export).collect();
+        self.finish_with_streams().0
+    }
+
+    /// Como [`FlowAggregator::finish`], pero además devuelve los streams TCP
+    /// reensamblados por flujo (solo si `collect_streams` estaba activo).
+    /// La clave del mapa es el `flow_id` del flujo.
+    pub fn finish_with_streams(self) -> (Vec<EnrichedFlow>, HashMap<String, ReassembledStream>) {
+        let mut streams_out = HashMap::new();
+        let mut out: Vec<EnrichedFlow> = self
+            .flows
+            .into_values()
+            .map(|acc| {
+                let (flow, streams) = Self::export_with_streams(acc);
+                if let Some(s) = streams {
+                    streams_out.insert(flow.flow_id.0.clone(), s);
+                }
+                flow
+            })
+            .collect();
         out.sort_by_key(|f| f.first_seen_micros);
-        out
+        (out, streams_out)
     }
 
     /// Bajo presión de memoria: expulsa los `excess` flujos con `last_seen`
@@ -320,19 +464,34 @@ impl FlowAggregator {
         }
     }
 
-    /// Convierte un acumulador en el `EnrichedFlow` final. Los campos SOC
-    /// (riesgo, alertas, resúmenes) los rellena después `socshark-soc`.
-    fn export(acc: FlowAccum) -> EnrichedFlow {
+    /// Convierte un acumulador en el `EnrichedFlow` final y, si procede, su
+    /// stream reensamblado. Los campos SOC (riesgo, alertas, resúmenes) los
+    /// rellena después `socshark-soc`.
+    fn export_with_streams(mut acc: FlowAccum) -> (EnrichedFlow, Option<ReassembledStream>) {
         let state = if acc.flags.fin > 0 || acc.flags.rst > 0 {
             FlowState::Closed
         } else {
             FlowState::Idle
         };
-        EnrichedFlow {
+        let streams = acc.streams.take().map(|sp| {
+            let (client, client_lossy) = sp.fwd.reassemble();
+            let (server, server_lossy) = sp.rev.reassemble();
+            ReassembledStream {
+                client,
+                server,
+                client_lossy,
+                server_lossy,
+            }
+        });
+        let flow = EnrichedFlow {
             flow_id: acc.key.flow_id(),
             state,
             transport: acc.key.transport,
             l7_protocol: acc.l7,
+            ip_version: match acc.src {
+                IpAddr::V4(_) => 4,
+                IpAddr::V6(_) => 6,
+            },
             src_ip: acc.src,
             src_port: acc.src_port,
             dst_ip: acc.dst,
@@ -360,7 +519,8 @@ impl FlowAggregator {
             risk_score: 0,
             alerts: Vec::new(),
             extracted_files: Vec::new(),
-        }
+        };
+        (flow, streams)
     }
 }
 
@@ -388,7 +548,7 @@ mod tests {
 
     #[test]
     fn bidireccional_comparte_flujo() {
-        let mut agg = FlowAggregator::new(1000, 120);
+        let mut agg = FlowAggregator::new(1000, 120, false);
         let (len1, dp1) = dissected(tg::frame_tcp(
             tg::MAC_HOST_A,
             tg::MAC_ROUTER,
@@ -425,9 +585,241 @@ mod tests {
         assert_eq!(f.state, FlowState::Idle); // sin FIN/RST
     }
 
+    // ---------------------------------------------- Fase 2: IPv6
+
+    #[test]
+    fn flujo_ipv6_se_agrega_como_ipv4() {
+        let mut agg = FlowAggregator::new(1000, 120, false);
+        let (len1, d1) = dissected(tg::frame_ipv6_udp(
+            tg::MAC_HOST_A,
+            tg::MAC_ROUTER,
+            tg::HOST_A6,
+            tg::DNS6,
+            53010,
+            53,
+            &tg::dns_query(0x0606, "v6.example.com", 28),
+        ));
+        let (len2, d2) = dissected(tg::frame_ipv6_udp(
+            tg::MAC_ROUTER,
+            tg::MAC_HOST_A,
+            tg::DNS6,
+            tg::HOST_A6,
+            53,
+            53010,
+            &tg::dns_response_aaaa(0x0606, "v6.example.com", tg::WEB6),
+        ));
+        agg.on_packet(1_000, len1, &d1);
+        agg.on_packet(2_000, len2, &d2);
+
+        let flows = agg.finish();
+        assert_eq!(flows.len(), 1);
+        let f = &flows[0];
+        assert_eq!(f.ip_version, 6);
+        assert_eq!(f.src_ip, IpAddr::V6(tg::HOST_A6));
+        assert_eq!(f.dst_ip, IpAddr::V6(tg::DNS6));
+        assert_eq!(f.packets_rev, 1);
+        let dns = f.dns.as_ref().expect("resumen DNS v6");
+        assert_eq!(dns.answers[0].address, Some(IpAddr::V6(tg::WEB6)));
+        // flow_id con literal IPv6 entre corchetes visualmente legible.
+        assert!(f.flow_id.0.contains("fd00::10") || f.flow_id.0.contains("fd00:"));
+    }
+
+    // ---------------------------------------- Fase 2: reensamblado TCP
+
+    /// Pcap sintético: cliente manda 2 segmentos y servidor responde con
+    /// un segmento fuera de orden + retransmisión solapada.
+    #[allow(clippy::vec_init_then_push)]
+    fn pcap_streams() -> Vec<(u64, Vec<u8>)> {
+        let (sp, s_seq, r_seq) = (50000u16, 1000u32, 5000u32);
+        let mut pkts: Vec<(u64, Vec<u8>)> = Vec::new();
+        // Cliente → servidor: "HOLA " (seq 1000) y "MUNDO" (seq 1005).
+        pkts.push((
+            1_000,
+            tg::frame_tcp(
+                tg::MAC_HOST_A,
+                tg::MAC_ROUTER,
+                tg::HOST_A,
+                tg::WEB,
+                sp,
+                8080,
+                s_seq,
+                r_seq,
+                tg::flags::PSH_ACK,
+                b"HOLA ",
+            ),
+        ));
+        pkts.push((
+            2_000,
+            tg::frame_tcp(
+                tg::MAC_HOST_A,
+                tg::MAC_ROUTER,
+                tg::HOST_A,
+                tg::WEB,
+                sp,
+                8080,
+                s_seq + 5,
+                r_seq,
+                tg::flags::PSH_ACK,
+                b"MUNDO",
+            ),
+        ));
+        // Servidor → cliente: llega primero el segmento LECLeJO (seq 5005)
+        // y después el inicial (seq 5000): fuera de orden en la captura.
+        pkts.push((
+            3_000,
+            tg::frame_tcp(
+                tg::MAC_ROUTER,
+                tg::MAC_HOST_A,
+                tg::WEB,
+                tg::HOST_A,
+                8080,
+                sp,
+                r_seq + 5,
+                s_seq + 10,
+                tg::flags::PSH_ACK,
+                b"ECLEJO",
+            ),
+        ));
+        // Retransmisión solapada de "ADIOS" + 2 bytes ya vistos.
+        pkts.push((
+            4_000,
+            tg::frame_tcp(
+                tg::MAC_ROUTER,
+                tg::MAC_HOST_A,
+                tg::WEB,
+                tg::HOST_A,
+                8080,
+                sp,
+                r_seq,
+                s_seq + 10,
+                tg::flags::PSH_ACK,
+                b"ADIOSECLEJO",
+            ),
+        ));
+        pkts
+    }
+
+    #[test]
+    fn reensamblado_orden_retransmisiones_y_huecos() {
+        let mut agg = FlowAggregator::new(1000, 120, true);
+        let pipe = DissectorPipeline::new();
+        for (ts, frame) in pcap_streams() {
+            let len = frame.len();
+            let raw = RawPacket {
+                ts_micros: ts,
+                orig_len: len as u32,
+                data: frame,
+            };
+            if let Some(dp) = pipe.dissect(&raw, socshark_core::LinkType::Ethernet) {
+                agg.on_packet(ts, len, &dp);
+            }
+        }
+        let (flows, streams) = agg.finish_with_streams();
+        assert_eq!(flows.len(), 1);
+        let s = streams.get(&flows[0].flow_id.0).expect("stream presente");
+
+        // Cliente: dos segmentos consecutivos → sin huecos.
+        assert_eq!(s.client, b"HOLA MUNDO");
+        assert!(!s.client_lossy);
+
+        // Servidor: "ECLEJO" llegó antes (seq+5), "ADIOSECLEJO" retransmite
+        // "ADIOS" + solapa 6 bytes; el reensamblado debe dar "ADIOS"+"ECLEJO".
+        assert_eq!(s.server, b"ADIOSECLEJO");
+        assert!(!s.server_lossy);
+    }
+
+    #[test]
+    fn hueco_de_secuencia_se_marca() {
+        let mut agg = FlowAggregator::new(1000, 120, true);
+        // Solo dos segmentos con un hueco de 100 bytes entre ellos.
+        let (len1, d1) = dissected(tg::frame_tcp(
+            tg::MAC_HOST_A,
+            tg::MAC_ROUTER,
+            tg::HOST_A,
+            tg::WEB,
+            50001,
+            8080,
+            1000,
+            0,
+            tg::flags::PSH_ACK,
+            b"INICIO",
+        ));
+        agg.on_packet(1_000, len1, &d1);
+        let (len2, d2) = dissected(tg::frame_tcp(
+            tg::MAC_HOST_A,
+            tg::MAC_ROUTER,
+            tg::HOST_A,
+            tg::WEB,
+            50001,
+            8080,
+            1106,
+            0,
+            tg::flags::PSH_ACK,
+            b"FINAL",
+        ));
+        agg.on_packet(2_000, len2, &d2);
+
+        let (_, streams) = agg.finish_with_streams();
+        let s = streams.values().next().unwrap();
+        assert_eq!(s.client, b"INICIO\n[100 bytes perdidos]\nFINAL");
+        assert!(s.client_lossy);
+    }
+
+    #[test]
+    fn tope_de_stream_marca_lossy() {
+        // 20 segmentos de 60 KiB (el máximo realista de IPv4 son ~65 KiB por
+        // datagrama): 1,2 MiB en total supera el tope de 1 MiB por dirección.
+        let seg = vec![b'x'; 60_000];
+        let mut agg = FlowAggregator::new(1000, 120, true);
+        for i in 0..20u32 {
+            let seq = 1000 + i * 60_000;
+            let (len, d) = dissected(tg::frame_tcp(
+                tg::MAC_HOST_A,
+                tg::MAC_ROUTER,
+                tg::HOST_A,
+                tg::WEB,
+                50002,
+                8080,
+                seq,
+                0,
+                tg::flags::PSH_ACK,
+                &seg,
+            ));
+            agg.on_packet((i as u64 + 1) * 1_000, len, &d);
+        }
+        let (_, streams) = agg.finish_with_streams();
+        let s = streams.values().next().unwrap();
+        assert!(
+            s.client_lossy,
+            "los segmentos que exceden el tope se descartan"
+        );
+        // 17 × 60.000 = 1.020.000 bytes entran; el 18.º ya excede 1 MiB.
+        assert_eq!(s.client.len(), 1_020_000);
+    }
+
+    #[test]
+    fn sin_collect_streams_no_hay_mapa() {
+        let mut agg = FlowAggregator::new(1000, 120, false);
+        let (len, d) = dissected(tg::frame_tcp(
+            tg::MAC_HOST_A,
+            tg::MAC_ROUTER,
+            tg::HOST_A,
+            tg::WEB,
+            50003,
+            8080,
+            1,
+            0,
+            tg::flags::PSH_ACK,
+            b"payload",
+        ));
+        agg.on_packet(1_000, len, &d);
+        let (_, streams) = agg.finish_with_streams();
+        assert!(streams.is_empty());
+    }
+
     #[test]
     fn fin_marcado_como_cerrado() {
-        let mut agg = FlowAggregator::new(1000, 120);
+        let mut agg = FlowAggregator::new(1000, 120, false);
         let (len1, d1) = dissected(tg::frame_tcp(
             tg::MAC_HOST_A,
             tg::MAC_ROUTER,
@@ -447,7 +839,7 @@ mod tests {
 
     #[test]
     fn dns_query_y_respuesta_se_fusionan() {
-        let mut agg = FlowAggregator::new(1000, 120);
+        let mut agg = FlowAggregator::new(1000, 120, false);
         let (len1, d1) = dissected(tg::frame_udp(
             tg::MAC_HOST_A,
             tg::MAC_ROUTER,
@@ -478,7 +870,7 @@ mod tests {
 
     #[test]
     fn drain_expired_expulsa_solo_inactivos() {
-        let mut agg = FlowAggregator::new(1000, 120); // 120 s
+        let mut agg = FlowAggregator::new(1000, 120, false); // 120 s
         let (len1, d1) = dissected(tg::frame_udp(
             tg::MAC_HOST_A,
             tg::MAC_ROUTER,
@@ -498,7 +890,7 @@ mod tests {
 
     #[test]
     fn max_flows_fuerza_expulsion_de_los_mas_antiguos() {
-        let mut agg = FlowAggregator::new(4, 120);
+        let mut agg = FlowAggregator::new(4, 120, false);
         // 6 flujos distintos (puertos origen distintos), límite 4 → quedan ~3-4.
         for i in 0..6u16 {
             let (len, d) = dissected(tg::frame_udp(

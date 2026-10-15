@@ -14,7 +14,9 @@ use std::path::PathBuf;
   socshark capture -r demo.pcap
   socshark capture -r demo.pcap --json flujos.jsonl
   socshark capture -r demo.pcap -f \"flow.risk >= 30\"
-  socshark capture -r demo.pcap -f \"dns.qname contains evil\" --show-noise
+  socshark capture -r demo.pcap -f \"ip.version == 6\"
+  socshark follow -r demo.pcap --flow \"93.184.216.34:443\"
+  socshark tui -r demo.pcap
 
 Documentación completa: docs/index.md"
 )]
@@ -55,6 +57,30 @@ pub enum Cmd {
         /// Interfaz de red a monitorizar.
         #[arg(short, long, default_value = "eth0")]
         iface: String,
+    },
+    /// Sigue el stream TCP de un flujo reensamblándolo (Fase 2).
+    Follow {
+        /// Archivo pcap de entrada.
+        #[arg(short = 'r', long = "read")]
+        read: PathBuf,
+        /// Selector del flujo: id completo o subcadena (p. ej. "93.184.216.34:443").
+        #[arg(short, long)]
+        flow: String,
+        /// Muestra el contenido como hexdump en lugar de texto.
+        #[arg(long)]
+        hex: bool,
+        /// Máximo de bytes a mostrar por dirección.
+        #[arg(long, default_value_t = 8 * 1024)]
+        max_bytes: usize,
+    },
+    /// TUI (Fase 2): explorador Flow-First de los flujos de una captura.
+    Tui {
+        /// Archivo pcap de entrada.
+        #[arg(short = 'r', long = "read")]
+        read: PathBuf,
+        /// Filtro DSL inicial aplicado al arrancar.
+        #[arg(short = 'f', long = "filter")]
+        filter: Option<String>,
     },
     /// Utilidades de desarrollo.
     Dev {

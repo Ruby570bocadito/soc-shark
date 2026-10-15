@@ -5,5 +5,7 @@
 //! rápido, más depurable, mismas rutas de código).
 
 pub mod cli;
+pub mod follow;
 pub mod output;
 pub mod pipeline;
+pub mod tui;

@@ -3,6 +3,46 @@
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/)
 y [SemVer](https://semver.org/lang/es/).
 
+## [0.3.0] — 2026-10-15
+
+### Añadido (Fase 2, parcial: 4/7 según `docs/roadmap.md`)
+
+- **IPv6 completo**: disector con cabeceras de extensión (Hop-by-Hop,
+  Routing, Destinos, Fragment —solo primer fragmento— y AH), agregación
+  v4/v6 sobre `IpAddr`, campo `ip_version` en `EnrichedFlow`, campo
+  `ip.version` en el DSL y **literales IPv6 nativos** sin comillas
+  (`ip.dst == 2001:db8::1`).
+- **Reensamblado TCP por dirección**: orden de secuencia con aritmética
+  serial (RFC 9293 §3.3), base retrocedible para capturas iniciadas a mitad
+  de conversación, deduplicación de retransmisiones solapadas, huecos
+  marcados (`[N bytes perdidos]`) y tope de 1 MiB por dirección con marcado
+  `lossy`. Nuevo comando **`socshark follow`** (texto o `--hex`) con
+  contexto del flujo.
+- **TUI interactiva** (Ratatui + crossterm, feature `tui` activada por
+  defecto): lista Flow-First, panel de alertas SOC, detalle expandible,
+  línea de filtro con el DSL completo y ruido atenuado. El modelo
+  (`TuiApp`) se testea sin terminal (`socshark tui -r captura.pcap`).
+- Pipeline streaming: `drain_expired` ya testado + `collect_streams`
+  opt-in en `PipelineConfig` (frontera lista para el daemon en vivo).
+- Demo ampliado: intercambio DNS-over-IPv6 con respuesta AAAA (21
+  paquetes, 13 flujos, 11 sin ruido).
+- testgen: builders IPv6 UDP/TCP con checksum de pseudo-cabecera v6,
+  respuestas AAAA y acumulador u64 (soporta segmentos grandes).
+
+### Cambiado
+
+- `FlowAggregator::new(max_flows, idle_timeout_secs, collect_streams)` y
+  `finish_with_streams() -> (flujos, streams)`.
+- DSL: el lexer acepta `:` en palabras (literales v6); nuevo campo
+  `ip.version`; ejemplos de `follow` con el id normalizado.
+
+### Pendiente de Fase 2 (documentado en roadmap)
+
+- Backend de captura en vivo libpcap/AF_XDP: el entorno de build carece de
+  libpcap-dev y privilegios; la frontera (`CaptureSource`, stub `daemon`)
+  está definida.
+- Pool de dissectors concurrente y fuzzing con cargo-fuzz en CI.
+
 ## [0.2.0] — 2026-10-15
 
 ### Cambiado (reestructuración del workspace, ADR-008)

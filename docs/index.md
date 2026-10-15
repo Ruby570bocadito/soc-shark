@@ -26,6 +26,7 @@ en [decisions.md](decisions.md) (ADR-007).
 | [data-model.md](data-model.md) | `EnrichedFlow` campo por campo: tipos, significado y fase de activación |
 | [security.md](security.md) | Modelo de privilegios, threat model de la propia herramienta, fuzzing |
 | [filter-dsl.md](filter-dsl.md) | Gramática EBNF, campos soportados, semántica de operadores, ejemplos |
+| [tui.md](tui.md) | La TUI Flow-First: atajos, paneles, modo offline y paso a vivo |
 | [ebpf-design.md](ebpf-design.md) | Diseño completo del módulo eBPF: probes, correlación, aya, TLS |
 | [wasm-plugins.md](wasm-plugins.md) | Diseño del runtime de plugins WASM: API, límites, firma |
 | [soc-features.md](soc-features.md) | Paradigma Flow-First, mini-IDS, DNS pasivo, carving, threat intel, SIEM |

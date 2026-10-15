@@ -41,7 +41,7 @@ impl Transport {
         match proto {
             6 => Transport::Tcp,
             17 => Transport::Udp,
-            1 => Transport::Icmp,
+            1 | 58 => Transport::Icmp, // ICMP e ICMPv6
             other => Transport::Other(other),
         }
     }
@@ -207,6 +207,9 @@ pub struct EnrichedFlow {
     pub state: FlowState,
     pub transport: Transport,
     pub l7_protocol: L7Protocol,
+    /// Versión IP del flujo (4 o 6). Fase 2 añade soporte IPv6 completo.
+    #[serde(default)]
+    pub ip_version: u8,
 
     // ---- Extremos (orientados según el primer paquete observado) ----
     pub src_ip: IpAddr,
@@ -314,6 +317,7 @@ mod tests {
         assert_eq!(Transport::from_ip_proto(6), Transport::Tcp);
         assert_eq!(Transport::from_ip_proto(17), Transport::Udp);
         assert_eq!(Transport::from_ip_proto(1), Transport::Icmp);
+        assert_eq!(Transport::from_ip_proto(58), Transport::Icmp, "ICMPv6");
         assert_eq!(Transport::from_ip_proto(132), Transport::Other(132));
     }
 

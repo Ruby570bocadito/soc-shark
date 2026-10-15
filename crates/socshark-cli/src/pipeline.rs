@@ -8,7 +8,7 @@ use socshark_core::config::PipelineConfig;
 use socshark_core::EnrichedFlow;
 use socshark_dissectors::DissectorPipeline;
 use socshark_filter::parse as parse_filter;
-use socshark_flow::{FlowAggregator, PipelineStats};
+use socshark_flow::{FlowAggregator, PipelineStats, ReassembledStream};
 use socshark_soc::{enrich_all, SocContext};
 
 /// Resultado completo de una ejecución de `socshark capture`.
@@ -43,7 +43,8 @@ pub fn run_capture(
         .with_context(|| format!("no se pudo abrir el pcap {}", pcap_path.display()))?;
     let link = reader.link_type();
 
-    let mut aggregator = FlowAggregator::new(cfg.max_flows, cfg.idle_timeout_secs);
+    let mut aggregator =
+        FlowAggregator::new(cfg.max_flows, cfg.idle_timeout_secs, cfg.collect_streams);
     let dissectors = DissectorPipeline::new();
 
     eprintln!("[*] Leyendo {} (enlace: {link:?})", pcap_path.display());
@@ -83,4 +84,40 @@ pub fn run_capture(
         pcap_path: pcap_path.to_path_buf(),
         passive_dns_entries: ctx.passive_dns.len(),
     })
+}
+
+/// Localiza un flujo por su id (coincidencia de subcadena) y devuelve el
+/// flujo enriquecido junto a su stream TCP reensamblado (Fase 2).
+///
+/// Siempre recolecta segmentos (`collect_streams`), incluye el ruido (el
+/// analista pidió ese flujo explícitamente) y no aplica filtro DSL.
+pub fn run_follow(
+    pcap_path: &Path,
+    selector: &str,
+    cfg: &PipelineConfig,
+) -> Result<Option<(EnrichedFlow, ReassembledStream)>> {
+    let mut reader = PcapFileReader::open(pcap_path)
+        .with_context(|| format!("no se pudo abrir el pcap {}", pcap_path.display()))?;
+    let link = reader.link_type();
+
+    let mut aggregator = FlowAggregator::new(cfg.max_flows, cfg.idle_timeout_secs, true);
+    let dissectors = DissectorPipeline::new();
+    while let Some(pkt) = reader.next_packet().context("error leyendo paquetes")? {
+        if let Some(dp) = dissectors.dissect(&pkt, link) {
+            aggregator.on_packet(pkt.ts_micros, pkt.data.len(), &dp);
+        }
+    }
+
+    let (mut flows, streams) = aggregator.finish_with_streams();
+    let mut ctx = SocContext::default();
+    enrich_all(&mut ctx, &mut flows, cfg);
+
+    for flow in &flows {
+        if let Some(stream) = streams.get(&flow.flow_id.0) {
+            if flow.flow_id.0.contains(selector) {
+                return Ok(Some((flow.clone(), stream.clone())));
+            }
+        }
+    }
+    Ok(None)
 }

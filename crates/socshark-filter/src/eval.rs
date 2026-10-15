@@ -44,6 +44,11 @@ pub fn get_fields(flow: &EnrichedFlow, path: &FieldPath) -> Vec<FieldValue> {
     match name.as_str() {
         "ip.src" => vec![FieldValue::Ip(flow.src_ip)],
         "ip.dst" => vec![FieldValue::Ip(flow.dst_ip)],
+        // Fase 2: filtrar por familia (p. ej. `ip.version == 6`).
+        "ip.version" => vec![FieldValue::Num(match flow.src_ip {
+            IpAddr::V4(_) => 4.0,
+            IpAddr::V6(_) => 6.0,
+        })],
         "sport" | "src.port" => vec![FieldValue::Num(flow.src_port as f64)],
         "dport" | "dst.port" => vec![FieldValue::Num(flow.dst_port as f64)],
         // tcp.port/udp.port solo aplican si el transporte coincide (igual

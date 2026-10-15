@@ -28,9 +28,9 @@ fn pipeline_end_to_end_sin_ruido() {
     assert!(out.flows.iter().all(|f| !f.is_background_noise));
 
     // Escenario esperado: 1 DNS + 1 TLS + 1 túnel DNS + 5 escaneo + 1 SSH
-    // + 1 HTTP = 10 flujos.
+    // + 1 HTTP + 1 DNS-IPv6 (Fase 2) = 11 flujos.
     let ids: Vec<String> = out.flows.iter().map(|f| f.flow_id.0.clone()).collect();
-    assert_eq!(out.flows.len(), 10, "flujos obtenidos: {ids:#?}");
+    assert_eq!(out.flows.len(), 11, "flujos obtenidos: {ids:#?}");
 
     // Túnel DNS detectado con su mapeo MITRE.
     let tunel = out
@@ -84,9 +84,9 @@ fn filtro_dsl_y_ruido() {
     let path = demo_pcap("filtro");
     let cfg = PipelineConfig::default();
 
-    // Con ruido: 10 + NTP + mDNS = 12.
+    // Con ruido: 11 + NTP + mDNS = 13.
     let todo = run_capture(&path, None, true, &cfg).unwrap();
-    assert_eq!(todo.flows.len(), 12);
+    assert_eq!(todo.flows.len(), 13);
     assert!(todo.flows.iter().any(|f| f.is_background_noise));
 
     // DSL: solo el flujo TLS toca el 443.
@@ -125,5 +125,124 @@ fn jsonl_se_escribe_correctamente() {
     }
 
     std::fs::remove_file(&destino).ok();
+    std::fs::remove_file(&path).ok();
+}
+
+// ------------------------------------------------------------ Fase 2
+
+#[test]
+fn ipv6_del_escenario_y_dsl_ip_version() {
+    let path = demo_pcap("v6");
+    let cfg = PipelineConfig::default();
+
+    // El DSL separa la familia IPv6 sin ambigüedad.
+    let v6 = run_capture(&path, Some("ip.version == 6"), false, &cfg).unwrap();
+    assert_eq!(v6.flows.len(), 1);
+    let f = &v6.flows[0];
+    assert_eq!(f.ip_version, 6);
+    assert_eq!(f.l7_protocol, L7Protocol::Dns);
+    assert!(f.flow_id.0.contains("2001:4860:4860::8888"));
+    let dns = f.dns.as_ref().expect("resumen DNS v6");
+    assert_eq!(dns.queries[0].name, "v6.example.com");
+
+    // Y su respuesta AAAA alimenta el DNS pasivo con una dirección v6.
+    let sin_filtro = run_capture(&path, None, false, &cfg).unwrap();
+    let flujos_v6_resueltos: Vec<_> = sin_filtro
+        .flows
+        .iter()
+        .filter(|f| f.resolved_domain.as_deref() == Some("v6.example.com") && f.ip_version == 6)
+        .collect();
+    assert_eq!(flujos_v6_resueltos.len(), 1);
+
+    // Literal IPv6 nativo como bareword del DSL (sin comillas).
+    let literal = run_capture(&path, Some("ip.dst == 2001:4860:4860::8888"), false, &cfg).unwrap();
+    assert_eq!(literal.flows.len(), 1);
+
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn follow_reensambla_stream_http_con_segmentos_desordenados() {
+    // Pcap propio: el servidor responde con la parte 2 ANTES que la parte 1
+    // (reordenado en la captura); `follow` debe reconstruir el orden lógico.
+    let (sp, cseq, sseq) = (41000u16, 2000u32, 8000u32);
+    let part1: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 42\r\n\r\n";
+    let part2: &[u8] = b"RESPUESTA-DEL-SERVIDOR-12345678901234567890123456789";
+
+    let mut pkts: Vec<(u64, Vec<u8>)> = Vec::new();
+    #[allow(clippy::vec_init_then_push)]
+    {
+        pkts.push((
+            1,
+            socshark_testgen::frame_tcp(
+                socshark_testgen::MAC_HOST_B,
+                socshark_testgen::MAC_ROUTER,
+                socshark_testgen::HOST_B,
+                socshark_testgen::WEB,
+                sp,
+                80,
+                cseq,
+                sseq,
+                socshark_testgen::flags::PSH_ACK,
+                b"GET /a.html HTTP/1.1\r\nHost: example.com\r\n\r\n",
+            ),
+        ));
+        // Parte 2 (fuera de orden)...
+        pkts.push((
+            2,
+            socshark_testgen::frame_tcp(
+                socshark_testgen::MAC_ROUTER,
+                socshark_testgen::MAC_HOST_B,
+                socshark_testgen::WEB,
+                socshark_testgen::HOST_B,
+                80,
+                sp,
+                sseq + part1.len() as u32,
+                cseq + 43,
+                socshark_testgen::flags::PSH_ACK,
+                part2,
+            ),
+        ));
+        // ...y luego la parte 1.
+        pkts.push((
+            3,
+            socshark_testgen::frame_tcp(
+                socshark_testgen::MAC_ROUTER,
+                socshark_testgen::MAC_HOST_B,
+                socshark_testgen::WEB,
+                socshark_testgen::HOST_B,
+                80,
+                sp,
+                sseq,
+                cseq + 43,
+                socshark_testgen::flags::PSH_ACK,
+                part1,
+            ),
+        ));
+    }
+
+    let path = std::env::temp_dir().join(format!("socshark-follow-{}.pcap", std::process::id()));
+    socshark_testgen::write_pcap(&path, 1, &pkts).unwrap();
+
+    let cfg = PipelineConfig {
+        collect_streams: true,
+        ..PipelineConfig::default()
+    };
+    let (flow, stream) = socshark_cli::pipeline::run_follow(&path, "tcp/93.184.216.34:80", &cfg)
+        .unwrap()
+        .expect("el flujo HTTP debe existir");
+
+    assert_eq!(flow.l7_protocol, L7Protocol::Http);
+    assert_eq!(
+        stream.client,
+        b"GET /a.html HTTP/1.1\r\nHost: example.com\r\n\r\n"
+    );
+    let esperado = [part1, part2].concat();
+    assert_eq!(
+        stream.server, esperado,
+        "partes reordenadas en orden de seq"
+    );
+    assert!(!stream.server_lossy);
+
     std::fs::remove_file(&path).ok();
 }
