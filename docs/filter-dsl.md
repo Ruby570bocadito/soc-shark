@@ -66,6 +66,11 @@ field    = ident , { "." , ident } ;
 | `flow.interval_mean_secs` | num | Intervalo medio entre paquetes del iniciador en segundos (Fase 3; vacío con < 3 paquetes) |
 | `flow.interval_cv` | num | Coeficiente de variación de los intervalos: 0 = reloj perfecto (Fase 3) |
 | `process.name`, `process.pid` | cadena/num | Atribución eBPF (siempre vacíos hasta Fase 3; ya cableados) |
+| `file.count` | num | Archivos tallados en el flujo con `--carve-files` (Fase 4) |
+| `file.name` | cadena (multi) | Nombres declarados de los archivos tallados (Fase 4) |
+| `file.magic` | cadena (multi) | Firmas magic de los archivos tallados: `PE32`, `ELF`, `PDF`, ... (Fase 4) |
+| `file.masquerading` | bool | True si algún archivo tallado tiene identidad falseada (T1036, Fase 4) |
+| `intel.tag` | cadena (multi) | Etiquetas de threat intel offline del destino: `FEODO-C2`, `TOR-EXIT` (Fase 4) |
 
 ## Semántica de operadores
 

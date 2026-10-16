@@ -84,29 +84,65 @@ En Fase 4 esta base persistirá en disco y expondrá la vista inversa
 (¿qué IPs ha resuelto este dominio en las últimas horas?), el insumo básico
 para cazar infraestructura compartida.
 
-## File carving con detección de masquerading (Fase 4 — diseñado)
+## File carving con detección de masquerading (Fase 4 — implementado)
 
-El reassembler de streams (Fase 2) permite reconstruir archivos transferidos
-por HTTP y otros protocolos de texto. El pipeline previsto:
+El reassembler de streams (Fase 2) alimenta el tallado de archivos HTTP
+(`socshark capture --carve-files`, módulo `socshark-soc::carve`). Por cada
+flujo HTTP clasificado por la heurística L7, el stream del servidor se
+recorre en busca de respuestas HTTP/1.x completas (keep-alive incluido: las
+respuestas se emparejan con las peticiones del stream del cliente en orden):
 
-1. Detectar límites de objeto (cabeceras HTTP Content-Disposition/Content-Type
-   y fronteras multipart).
-2. Confirmar el tipo real con **magic bytes** (librería propia de firmas:
-   PE32, ELF, PDF, ZIP, DOCX, JPEG...).
-3. **SHA-256** del contenido (para VirusTotal/SIEM laterales) sin volcar a
-   disco por defecto.
-4. **T1036 Masquerading**: si el nombre declarado dice `.jpg` pero el magic
-   dice PE32 → alerta inmediata y marcado `masquerading_suspect` (campo ya
-   presente en `ExtractedFile`).
+1. Cuerpo por **Content-Length exacto** o por **Transfer-Encoding: chunked**
+   (reensamblado propio de chunks; los separadores no son datos). Un cuerpo
+   truncado (captura cortada o tope de 1 MiB por dirección) talla lo
+   disponible: el SHA-256 deja de ser el del archivo original, pero la
+   firma magic de la cabecera sigue siendo válida.
+2. **Magic bytes propios** (misma filosofía sin dependencias, ADR-003):
+   PE32 (MZ), ELF, Mach-O, PDF, ZIP/Office, OLE2, GZIP, RAR, 7Z, PNG, JPEG,
+   GIF y scripts con shebang.
+3. **SHA-256** del contenido reconstruido — la implementación de JA4
+   (ADR-011) se centralizó en `socshark-core::hash` para reutilizarla aquí.
+   Nada se vuelca a disco: el hash y la firma viven en el JSONL.
+4. **T1036 Masquerading por dos vías**: magic ≠ extensión declarada (un
+   `banner.jpg` cuyo contenido es PE32) y **doble extensión ejecutable**
+   (`informe.pdf.exe`). El nombre viene de `Content-Disposition` y, si no,
+   del basename de la ruta pedida.
 
-## Threat intel offline (Fase 4 — diseñado)
+Selección conservadora: no se talla toda respuesta 200 — solo si hay nombre
+declarado, tipo binario (`application/*`) o firma conocida; las páginas
+HTML/texto normales no inundan el modelo. Cota dura de 8 archivos por flujo.
+La regla **R6** del mini-IDS alerta `FILE-MASQUERADING` (T1036, severidad
+alta, +40 de riesgo) y cualquier ejecutable transferido suma +15 sin alerta
+(distribución de software legítima). DSL: `file.name`, `file.magic`,
+`file.count`, `file.masquerading`. El escenario demo incluye ya una descarga
+de `factura.jpg` que es un PE (verificado por test E2E).
 
-Sin conexión saliente: las bases se descargan aparte y se cargan como
-archivos locales firmados. Piezas previstas: GeoIP/ASN (MaxMind GeoLite2)
-para `dst_geo_asn` (campo ya en el modelo), listas de IOCs (Feodo Tracker de
-C2 activos, Tor exit nodes), y comparación de `ja4_fingerprint` contra
-listas públicas de malware. Toda coincidencia es una alerta `INFO`/`MEDIUM`
-con la fuente citada, nunca una decisión automática de bloqueo.
+## Threat intel offline (Fase 4 — implementado la parte de listas; GeoIP/ASN pendiente)
+
+Sin conexión saliente: las listas se descargan aparte (cron, curl, el propio
+SOC) y se cargan como ficheros de texto plano
+(`--intel-feodo fichero.txt`, `--intel-tor fichero.txt`; módulo
+`socshark-soc::intel`):
+
+- **Feodo Tracker** (C2 activos): una IP o CIDR por línea, `#` comentarios.
+  Soporta v4 y v6, con normalización de la base del CIDR.
+- **Tor Bulk Exit List**: se extrae la primera IP de cada línea (tolera el
+  formato `ExitAddress <ip> <fecha>`).
+- El parser es tolerante por diseño: comentarios, líneas vacías y líneas sin
+  IP interpretable se saltan sin error (las listas públicas cambian de
+  formato con frecuencia).
+
+Cada flujo cuyo **destino** coincide lleva `threat_intel` lleno con las
+etiquetas (`FEODO-C2`, `TOR-EXIT`) y la regla **R7** alerta: C2 de Feodo →
+`THREAT-INTEL-FEODO` (alta, T1071.001, +45) y salida de Tor → `TOR-USAGE`
+(media, T1090.003 — proxy multi-salto, +20). DSL: `intel.tag`. La
+coincidencia es una señal, nunca una decisión de bloqueo: soc-shark es
+solo lectura.
+
+Pendiente (documentado en roadmap): GeoIP/ASN hacia `dst_geo_asn` exige un
+lector `.mmdb` propio sin dependencias, y el hunting de `tls.ja4` contra
+listas públicas exige empaquetar esas bases. Ambos encajan en la Fase 4
+avanzada o contribuciones.
 
 ## Huella JA4 y SNI del ClientHello (Fase 3 — implementado)
 
@@ -158,24 +194,26 @@ La correlación por grupos de flujos hacia el mismo (destino, puerto) y el
 beaconing con jitter aleatorizado (CV deliberadamente alto) quedan como
 evolutivos documentados.
 
-## Export a SIEM (Fase 4 — diseñado, contrato ya operativo)
+## Export a SIEM (Fase 4 — implementado ECS y Wazuh; TheHive pendiente)
 
-El JSONL de hoy es ya el contrato de exportación. La capa ECS añadirá el
-mapeo siguiente (transformación pura, sin tocar el núcleo):
+`socshark export -r captura.pcap -F ecs|wazuh [-o salida.jsonl]` ejecuta el
+pipeline completo (con `--carve-files` y `--intel-*` si se piden) y emite un
+JSON por línea. El contrato campo a campo está en
+[siem-export.md](siem-export.md); resumen:
 
-| `EnrichedFlow` | ECS 8.x |
-|---|---|
-| `src_ip`/`dst_ip` | `source.ip` / `destination.ip` |
-| `src_port`/`dst_port` | `source.port` / `destination.port` |
-| `transport` | `network.transport` (normalizado: TCP→tcp...) |
-| `l7_protocol` | `network.protocol` |
-| `bytes + bytes_rev` | `network.bytes` |
-| `packets + packets_rev` | `network.packets` |
-| `first_seen_micros` | `@timestamp` |
-| `resolved_domain` | `dns.question.name` / `destination.domain` |
-| `process_name`/`pid` | `process.name` / `process.pid` |
-| `risk_score`/`alerts` | `risk.score` / `message` + `rule.name` |
+- **ECS 8.x** (`-F ecs`, módulo `socshark-soc::siem::to_ecs`): campos
+  estándar donde existen (`source.*`, `destination.*`, `network.*`,
+  `dns.*`, `tls.client.server_name`, `event.duration` en ns,
+  `threat.technique.id` con los MITRE de las alertas) y espacio propio
+  anidado `socshark.*` (riesgo, ruido, archivos tallados, etiquetas intel).
+  El `@timestamp` ISO-8601 se calcula con conversión civil propia
+  (algoritmo de Hinnant, ADR-012): sin `chrono` para un solo formato.
+- **Wazuh** (`-F wazuh`, `to_wazuh`): evento plano que el decoder JSON del
+  manager consume de serie — `srcip`/`srcport`/`dstip`/`dstport`/`protocol`
+  reconocidos, `data.*` anidado con el detalle (incluye archivos tallados e
+  intel), y `rule.level` (escala 0-15: Info 2 → Critical 13) + `rule.mitre.id`
+  cuando hay alertas, para que el evento entre como alerta correlacionada.
+  Sin alertas el evento se archiva sin `rule`.
 
-Además de ECS: salida nativa para Wazuh (decoder + reglas de ejemplo) y
-case-management hacia TheHive (cada alerta ≥ HIGH como observable-artifact
-agrupado por `flow_id`).
+Pendiente: push hacia TheHive (exigiría cliente HTTP propio) y el mapeo ECS
+completo de todos los campos secundarios.

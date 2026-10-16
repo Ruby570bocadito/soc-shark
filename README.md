@@ -19,6 +19,9 @@ Wireshark responde a la pregunta *«¿qué hay en este paquete?»*. **soc-shark 
 | **Plugins WASM en sandbox** | Dissectors seguros escritos por la comunidad, sin riesgo de RCE | Diseño (`docs/wasm-plugins.md`) — Fase 4 |
 | **Decodificador CyberChef integrado** | Pipelines Base64→XOR→Zlib→JSON sobre payloads | Fase 4 |
 | **Detección pasiva y fingerprinting** | JA4 (spec FoxIO), SNI, entropía, beaconing (T1071) | **Implementado (JA4 + beaconing)** |
+| **File carving HTTP + Masquerading** | Archivos de respuestas HTTP con SHA-256, magic bytes propio y alerta T1036 (magic ≠ extensión / doble extensión) | **Implementado** |
+| **Threat intel offline** | Listas Feodo (C2, IP/CIDR v4-v6) y salidas de Tor → alertas T1071.001 / T1090.003 | **Implementado (listas; GeoIP/ASN pendiente)** |
+| **Export SIEM** | JSONL → **ECS 8.x** y **Wazuh** con MITRE ATT&CK (TheHive pendiente) | **Implementado (ECS + Wazuh)** |
 | **IPv6 completo** | Dissector con extensiones, claves de flujo v4/v6 y literales v6 en el DSL | **Implementado** |
 | **Follow Stream** | Reensamblado TCP por dirección: orden, retransmisiones, huecos, hexdump | **Implementado** |
 | **Captura en vivo (libpcap)** | Daemon con pushdown BPF al kernel, sin dependencia en tiempo de compilación (dlopen) | **Implementado** |
@@ -26,14 +29,13 @@ Wireshark responde a la pregunta *«¿qué hay en este paquete?»*. **soc-shark 
 | **Fuzzing determinista en CI** | Corpus mutado sobre parsers + agregador + SOC + DSL, reproducible por semilla | **Implementado** |
 | **TUI interactiva (Ratatui)** | Lista Flow-First + panel de alertas + filtro DSL en vivo | **Implementado** |
 | **Paradigma Flow-First** | 1 línea = 1 sesión; expansión bajo demanda | **Núcleo implementado** |
-| **Mini-IDS heurístico** | Túnel DNS, escaneos SYN, puertos inseguros, beaconing | **Implementado** |
+| **Mini-IDS heurístico** | Túnel DNS, escaneos SYN, puertos inseguros, beaconing, masquerading, threat intel | **Implementado** |
 | **DNS pasivo** | Dominio ↔ IP observados, etiqueta el resto de flujos (+ SNI del ClientHello desde F3) | **Implementado** |
 | **Smart Noise Dimming** | NTP/mDNS/SSDP marcados como ruido y atenuados | **Implementado** |
-| **Export SIEM** | JSONL → ECS / Wazuh / TheHive | Fase 4 (JSONL ya disponible) |
 
-## Estado actual: Fases 1-2 completas ✅ · Fase 3 en curso (piezas puras implementadas)
+## Estado actual: Fases 1-2 completas ✅ · Fase 3 piezas puras ✅ · Fase 4 piezas puras ✅
 
-El pipeline funciona de extremo a extremo sobre archivos **y en vivo**: **lectura/libpcap → disección (Ethernet/IPv4/IPv6/TCP/UDP/DNS/TLS, secuencial o en pool de N hilos) → agregación de flujos bidireccionales (JA4 + SNI + estadística de intervalos) → enriquecimiento SOC → filtro DSL → tabla/TUI/JSONL/follow/daemon**. 121 tests automatizados cubren parsers (barrido anti-panic), JA4 (vectores oficiales FoxIO + NIST), pool concurrente, agregador, reensamblado, DSL, capa SOC (incluido beaconing T1071), backend de captura e integración; el fuzzing determinista recorre millones de tramas mutadas en cada build.
+El pipeline funciona de extremo a extremo sobre archivos **y en vivo**: **lectura/libpcap → disección (Ethernet/IPv4/IPv6/TCP/UDP/DNS/TLS, secuencial o en pool de N hilos) → agregación de flujos bidireccionales (JA4 + SNI + estadística de intervalos) → file carving opcional (T1036) → enriquecimiento SOC (incluidas listas Feodo/Tor) → filtro DSL → tabla/TUI/JSONL/follow/daemon/export ECS-Wazuh**. 152 tests automatizados cubren parsers (barrido anti-panic), JA4 (vectores oficiales FoxIO + NIST), SHA-256 (FIPS 180-4), pool concurrente, agregador, reensamblado, DSL, capa SOC (beaconing T1071, masquerading T1036, threat intel), backend de captura, export SIEM e integración; el fuzzing determinista recorre millones de tramas mutadas en cada build.
 
 ### Inicio rápido
 
@@ -60,12 +62,13 @@ cargo build --release
 ./target/release/socshark capture -r demo.pcap
 ```
 
-Salida real de la demo (29 paquetes → 12 flujos relevantes, ruido excluido):
+Salida real de la demo (33 paquetes → 13 flujos relevantes, ruido excluido):
 
 ```text
-═══ soc-shark · 12 flujos (demo.pcap) ═══
+═══ soc-shark · 13 flujos (demo.pcap) ═══
 FLUJO                                                        L7        PAQ      BYTES  RIESGO  ALERTAS
 udp/192.168.1.30:53100-198.51.100.23:8080                    ?           8      848 B      20  BEACONING
+tcp/93.184.216.34:80-192.168.1.20:40112                      HTTP        4      956 B      55  FILE-MASQUERADING
 tcp/93.184.216.34:443-192.168.1.10:52000                     TLS         7      583 B       0  -
 udp/2001:4860:4860::8888:53-fd00::10:53010                   DNS         2      216 B       0  -
 udp/8.8.8.8:53-192.168.1.10:53001                            DNS         2      158 B       0  -
@@ -75,6 +78,8 @@ tcp/192.168.1.1:22-192.168.1.30:40001                        ?           1      
 ...
 
 ─── Alertas SOC ───
+▸ (alta) Archivo transferido con identidad falseada · tcp/93.184.216.34:80-192.168.1.20:40112 ·
+  tipo real ≠ extensión declarada en factura.jpg · MITRE T1036
 ▸ (alta) Posible túnel DNS · udp/8.8.8.8:53-192.168.1.30:53002 ·
   qname 'az3k9...chfdgs.tun.evil.example' (77 caracteres, entropía 5.09 ≥ 3.50) · MITRE T1048.003
 ▸ (media) Posible escaneo de puertos · tcp/192.168.1.1:22-192.168.1.30:40001 ·
@@ -82,7 +87,7 @@ tcp/192.168.1.1:22-192.168.1.30:40001                        ?           1      
 ▸ (media) Comunicación periódica (beacon) · udp/192.168.1.30:53100-198.51.100.23:8080 ·
   intervalo medio 30.0s con jitter ±0.0% en 7 intervalos · MITRE T1071
 
-Estadísticas: 29 paquetes leídos · 29 diseccionados · 0 descartados · 14 flujos
+Estadísticas: 33 paquetes leídos · 33 diseccionados · 0 descartados · 15 flujos
 ```
 
 El flujo TLS lleva la **huella JA4** del ClientHello (`t13d0208h2_777cda164f4b_af51ac0c444f`)
@@ -90,6 +95,10 @@ y el **SNI** declarado por el cliente (`store.ejemplo-corporativo.com`) —
 consultables en JSONL y con `tls.ja4` / `tls.sni` en el DSL. El flujo del
 beacon hacia `198.51.100.23:8080` dispara la alerta **BEACONING** (T1071)
 por regularidad de intervalos (Fase 3). El flujo
+tcp/...40112 es la **descarga encubierta** que incluye la demo desde la
+Fase 4: `factura.jpg` cuyo contenido es un PE32 — con `--carve-files` el
+motor extrae el archivo (SHA-256 + magic) y la regla R6 alerta **T1036**;
+sin carving es solo otra sesión HTTP. El flujo
 `udp/2001:4860:4860::8888:53-...` es el intercambio **DNS sobre IPv6**
 que incluye la demo desde la Fase 2 (respuesta AAAA incluida).
 
@@ -107,6 +116,17 @@ socshark capture -r captura.pcap --json - | jq '.risk_score'
 socshark capture -r captura.pcap -f "tcp.port == 443"
 socshark capture -r captura.pcap -f "ip.version == 6 || flow.risk >= 50"
 socshark capture -r captura.pcap -f "!(flow.noise)" --show-noise
+
+# File carving: extrae archivos HTTP y detecta encubrimiento (T1036)
+socshark capture -r captura.pcap --carve-files
+socshark capture -r captura.pcap --carve-files -f "file.masquerading == true"
+
+# Threat intel offline: listas Feodo/Tor (se descargan aparte)
+socshark capture -r captura.pcap --intel-feodo feodo.txt --intel-tor tor-exits.txt
+
+# Export a SIEM: ECS (Elastic) o Wazuh, con carving e intel si se piden
+socshark export -r captura.pcap -F ecs -o ecs.jsonl
+socshark export -r captura.pcap -F wazuh -o wazuh.jsonl --carve-files
 
 # Seguir un stream TCP reensamblado (texto o hexdump)
 socshark follow -r captura.pcap --flow "93.184.216.34:443"
@@ -137,10 +157,10 @@ soc-shark/
 │   ├── socshark-dissectors/   # Ethernet, IPv4/6, TCP, UDP, DNS + pool concurrente
 │   ├── socshark-flow/         # Agregador de flujos bidireccionales
 │   ├── socshark-filter/       # DSL de filtrado (lexer, parser, evaluador)
-│   ├── socshark-soc/          # Ruido, DNS pasivo, riesgo, resúmenes humanos
+│   ├── socshark-soc/          # Ruido, DNS pasivo, riesgo, resúmenes, carving (T1036), threat intel, export ECS/Wazuh
 │   ├── socshark-ebpf-common/  # Tipos compartidos probe/userspace eBPF (repr(C), no_std)
 │   ├── socshark-testgen/      # Constructores de tramas + demo + primitivas de fuzzing
-│   └── socshark-cli/          # Binario `socshark` (capture/daemon/follow/tui/fuzz) + tests
+│   └── socshark-cli/          # Binario `socshark` (capture/daemon/follow/tui/export/fuzz) + tests
 ├── docs/                      # Documentación completa (índice en docs/index.md)
 │   ├── architecture.md        # Visión general y decisiones técnicas
 │   ├── pipeline.md            # Las 4 etapas del pipeline
@@ -150,8 +170,9 @@ soc-shark/
 │   ├── tui.md                 # La TUI Flow-First (atajos, paneles, diseño)
 │   ├── ebpf-design.md         # Diseño eBPF (procesos, TLS, correlación)
 │   ├── wasm-plugins.md        # Diseño del sandbox de plugins
-│   ├── soc-features.md        # Funciones SOC (Flow-First, IDS, SIEM)
+│   ├── soc-features.md        # Funciones SOC (Flow-First, IDS, carving, intel, SIEM)
 │   ├── soc-mitre-mapping.md   # Detecciones ↔ MITRE ATT&CK
+│   ├── siem-export.md         # Contrato de export ECS/Wazuh campo a campo
 │   ├── roadmap.md             # Fases 0-4 con criterios de aceptación
 │   └── decisions.md           # ADRs (decisiones de arquitectura)
 ├── examples/demo.pcap         # Captura de demostración lista para analizar
@@ -160,10 +181,11 @@ soc-shark/
 
 ## Calidad
 
-- **121 tests** unitarios y de integración (`cargo test --workspace`),
+- **152 tests** unitarios y de integración (`cargo test --workspace`),
   incluido el barrido anti-panic, el reensamblado con segmentos fuera de
-  orden y el test de igualdad JSONL entre el pool de 4 hilos y el camino
-  secuencial.
+  orden, el test de igualdad JSONL entre el pool de 4 hilos y el camino
+  secuencial, el carving T1036 sobre el escenario demo y el E2E de threat
+  intel con lista Feodo de laboratorio.
 - **Fuzzing determinista en CI**: `socshark dev fuzz` muta el corpus demo
   (bit flips, truncados, empalmes, mentiras de snaplen) y lo pasa por el
   pipeline completo; un fallo se reproduce con la semilla impresa. En un

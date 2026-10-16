@@ -3,6 +3,7 @@
 use socshark_core::config::PipelineConfig;
 use socshark_core::{EnrichedFlow, L7Protocol};
 
+use crate::intel::ThreatIntelDb;
 use crate::noise;
 use crate::passive_dns::PassiveDnsDb;
 use crate::risk;
@@ -16,6 +17,8 @@ pub struct SocContext {
     pub passive_dns: PassiveDnsDb,
     /// Tracker de escaneos SYN entre flujos.
     pub scan_tracker: ScanTracker,
+    /// Threat intel offline (Fase 4): `None` si no se cargó ninguna lista.
+    pub intel: Option<ThreatIntelDb>,
 }
 
 /// Enriquece todos los flujos: DNS pasivo, ruido, riesgo y resumen humano.
@@ -59,6 +62,16 @@ pub fn enrich_all(ctx: &mut SocContext, flows: &mut [EnrichedFlow], cfg: &Pipeli
 
         if cfg.detect_noise {
             flow.is_background_noise = noise::is_background_noise(flow);
+        }
+
+        // Threat intel offline: etiquetas del destino (Fase 4). Se evalúa
+        // antes del riesgo para que la regla R7 vea las etiquetas.
+        if let Some(db) = &ctx.intel {
+            flow.threat_intel = db
+                .check(flow.dst_ip)
+                .into_iter()
+                .map(str::to_string)
+                .collect();
         }
 
         let scan_hits = ctx

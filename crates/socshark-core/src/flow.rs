@@ -294,6 +294,11 @@ pub struct EnrichedFlow {
     /// alimenta la detección de beaconing y el DSL).
     #[serde(default)]
     pub interval_stats: Option<IntervalStats>,
+    /// Etiquetas de threat intel offline que coinciden con el destino
+    /// (Fase 4): p. ej. `FEODO-C2` (lista Feodo) o `TOR-EXIT` (nodos de
+    /// salida de Tor). Vacío si no hay base cargada o no hay coincidencia.
+    #[serde(default)]
+    pub threat_intel: Vec<String>,
 
     // ---- Capa semántica SOC ----
     /// True si es tráfico de fondo (mDNS, NTP, ...) que la UI debe atenuar.

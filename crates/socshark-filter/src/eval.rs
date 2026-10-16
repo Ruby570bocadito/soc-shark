@@ -158,6 +158,26 @@ pub fn get_fields(flow: &EnrichedFlow, path: &FieldPath) -> Vec<FieldValue> {
             .map(|p| FieldValue::Num(p as f64))
             .into_iter()
             .collect(),
+        // Fase 4: archivos tallados y threat intel offline.
+        "file.count" => vec![FieldValue::Num(flow.extracted_files.len() as f64)],
+        "file.name" => flow
+            .extracted_files
+            .iter()
+            .map(|f| FieldValue::Str(f.name.clone()))
+            .collect(),
+        "file.magic" => flow
+            .extracted_files
+            .iter()
+            .filter_map(|f| f.magic.clone().map(FieldValue::Str))
+            .collect(),
+        "file.masquerading" => vec![FieldValue::Bool(
+            flow.extracted_files.iter().any(|f| f.masquerading_suspect),
+        )],
+        "intel.tag" => flow
+            .threat_intel
+            .iter()
+            .map(|t| FieldValue::Str(t.clone()))
+            .collect(),
         _ => Vec::new(),
     }
 }

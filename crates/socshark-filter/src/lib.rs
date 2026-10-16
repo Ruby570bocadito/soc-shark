@@ -63,6 +63,7 @@ mod tests {
             ja4_fingerprint: None,
             tls_sni: None,
             interval_stats: None,
+            threat_intel: vec![],
             is_background_noise: false,
             human_summary: String::new(),
             risk_score: 55,

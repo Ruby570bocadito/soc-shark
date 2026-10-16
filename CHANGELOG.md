@@ -3,6 +3,61 @@
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/)
 y [SemVer](https://semver.org/lang/es/).
 
+## [0.6.0] — 2026-10-16
+
+### Añadido (Fase 4, piezas puras: file carving, threat intel, export SIEM)
+
+- **File carving HTTP con detección de encubrimiento T1036**
+  (`socshark capture --carve-files`; módulo `socshark-soc::carve`): extrae
+  archivos de las respuestas HTTP de los streams TCP reensamblados — cuerpos
+  por Content-Length exacto o Transfer-Encoding chunked (reensamblado propio
+  de chunks), keep-alive con emparejamiento petición/respuesta en orden,
+  tolerancia a cuerpos truncados y respuestas 1xx. Magic bytes propio
+  (PE32, ELF, Mach-O, PDF, ZIP/Office, OLE2, GZIP, RAR, 7Z, PNG, JPEG, GIF,
+  shebang), SHA-256 reutilizando el motor de JA4 (centralizado en
+  `socshark-core::hash`, ADR-011) y **T1036 por dos vías**: magic ≠ extensión
+  declarada (un `factura.jpg` que es PE32) y doble extensión ejecutable
+  (`informe.pdf.exe`). Selección conservadora (nombre declarado, binario o
+  firma conocida; las páginas HTML no tallan) y cota de 8 archivos por flujo.
+  Regla `R6` del mini-IDS: `FILE-MASQUERADING` (alta, T1036, +40) y
+  ejecutables sin encubrir suman +15 sin alerta. El criterio de fase — un
+  ejecutable renombrado a `.jpg` transferido por HTTP genera alerta T1036 —
+  queda cubierto por test E2E sobre el escenario demo, que ahora incluye una
+  descarga encubierta (33 paquetes, 13 flujos).
+- **Threat intel offline** (`--intel-feodo` / `--intel-tor`; módulo
+  `socshark-soc::intel`): listas de texto plano cargadas de ficheros locales
+  sin conexión saliente. Formato Feodo Tracker (IP o CIDR por línea, v4/v6,
+  comentarios `#`) y Tor Bulk Exit List (se extrae la primera IP de cada
+  línea). Parser tolerante: comentarios, líneas vacías y basura se saltan sin
+  error. El destino de cada flujo se marca en `threat_intel`
+  (`FEODO-C2`, `TOR-EXIT`) y la regla `R7` alerta `THREAT-INTEL-FEODO`
+  (alta, T1071.001, +45) y `TOR-USAGE` (media, T1090.003 — proxy
+  multi-salto, +20). GeoIP/ASN (lector `.mmdb` propio) queda pendiente y
+  documentado en el roadmap.
+- **Export a SIEM** (`socshark export -r captura.pcap -F ecs|wazuh`; módulo
+  `socshark-soc::siem`, contrato completo en `docs/siem-export.md`): mapeo
+  **ECS 8.x** (`source/destination/network/dns/tls/threat.technique.id` +
+  espacio propio anidado `socshark.*`) y salida **Wazuh** plana
+  (`srcip`/`dstip`/`data.*` + `rule.level` 0-15 con mapeo de severidad +
+  `rule.mitre.id`), ambas con el pipeline completo detrás (carving e intel
+  incluidos si se piden). ISO-8601 propio con el algoritmo civil de Hinnant
+  (ADR-012): sin `chrono` para un solo formato.
+- **DSL**: campos nuevos `file.count`, `file.name`, `file.magic`,
+  `file.masquerading` e `intel.tag`.
+- El SHA-256 propio se centraliza en `socshark-core::hash` (antes vivía
+  dentro de `socshark-dissectors::tls`): misma implementación, misma
+  validación FIPS 180-4, ahora compartida por JA4 y el carving.
+- Docs: `soc-features.md` (carving, intel y SIEM implementados),
+  `soc-mitre-mapping.md` (T1036, T1071.001 y T1090.003 implementados),
+  `data-model.md` (`threat_intel`), `filter-dsl.md` (campos F4),
+  `siem-export.md` (nuevo, contrato campo a campo), ADR-012.
+- 152 tests (antes 121): SHA-256 en su módulo definitivo, parser de
+  respuestas HTTP (chunked, keep-alive, truncados, 1xx, hostiles),
+  masquerading por tabla de casos, listas Feodo/Tor (CIDR, tolerancia,
+  errores limpios), mapeo ECS/Wazuh e ISO-8601 contra fechas conocidas,
+  reglas R6/R7 y cuatro E2E de integración (carving demo, no-carving,
+  Feodo sobre el C2 demo, export ECS/Wazuh con MITRE).
+
 ## [0.5.0] — 2026-10-16
 
 ### Añadido (Fase 3, piezas puras: JA4, beaconing, tipos eBPF)

@@ -17,6 +17,10 @@ use std::path::PathBuf;
   socshark capture -r demo.pcap -f \"ip.version == 6\" --workers 4
   socshark follow -r demo.pcap --flow \"93.184.216.34:443\"
   socshark tui -r demo.pcap
+  socshark capture -r demo.pcap --carve-files            <- file carving (T1036)
+  socshark capture -r demo.pcap --intel-feodo feodo.txt
+  socshark export -r demo.pcap --format ecs -o ecs.jsonl
+  socshark export -r demo.pcap --format wazuh -o wazuh.jsonl
   socshark daemon --list
   socshark daemon -i eth0 --bpf \"tcp port 443\" --json flujos.jsonl
   socshark dev fuzz --seed 42 --iterations 20000
@@ -58,6 +62,17 @@ pub enum Cmd {
         /// idéntica al modo secuencial).
         #[arg(long, default_value_t = 1)]
         workers: usize,
+        /// File carving HTTP: extrae archivos de las respuestas y detecta
+        /// encubrimiento T1036 (magic ≠ extensión). Requiere recolectar
+        /// streams (hasta 1 MiB por dirección de cada flujo TCP).
+        #[arg(long = "carve-files")]
+        carve_files: bool,
+        /// Lista de IPs/CIDR de C2 tipo Feodo (threat intel offline).
+        #[arg(long = "intel-feodo")]
+        intel_feodo: Option<PathBuf>,
+        /// Lista de nodos de salida de Tor (threat intel offline).
+        #[arg(long = "intel-tor")]
+        intel_tor: Option<PathBuf>,
     },
     /// Captura en vivo desde una interfaz (libpcap vía dlopen).
     Daemon {
@@ -91,6 +106,12 @@ pub enum Cmd {
         /// Detiene el daemon tras N paquetes capturados.
         #[arg(long)]
         max_packets: Option<u64>,
+        /// Lista de IPs/CIDR de C2 tipo Feodo (threat intel offline).
+        #[arg(long = "intel-feodo")]
+        intel_feodo: Option<PathBuf>,
+        /// Lista de nodos de salida de Tor (threat intel offline).
+        #[arg(long = "intel-tor")]
+        intel_tor: Option<PathBuf>,
     },
     /// Sigue el stream TCP de un flujo reensamblándolo (Fase 2).
     Follow {
@@ -115,6 +136,33 @@ pub enum Cmd {
         /// Filtro DSL inicial aplicado al arrancar.
         #[arg(short = 'f', long = "filter")]
         filter: Option<String>,
+    },
+    /// Exporta los flujos enriquecidos a un SIEM (Fase 4).
+    Export {
+        /// Archivo pcap de entrada.
+        #[arg(short = 'r', long = "read")]
+        read: PathBuf,
+        /// Formato de salida: `ecs` (Elastic Common Schema) o `wazuh`.
+        #[arg(short = 'F', long = "format", default_value = "ecs")]
+        format: String,
+        /// Archivo de salida JSONL (`-` = stdout, por defecto).
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+        /// Filtra los flujos con el DSL antes de exportar.
+        #[arg(short = 'f', long = "filter")]
+        filter: Option<String>,
+        /// Incluye el ruido de fondo (NTP, mDNS, ...).
+        #[arg(long = "show-noise")]
+        show_noise: bool,
+        /// File carving HTTP antes de exportar (añade los archivos tallados).
+        #[arg(long = "carve-files")]
+        carve_files: bool,
+        /// Lista de IPs/CIDR de C2 tipo Feodo (threat intel offline).
+        #[arg(long = "intel-feodo")]
+        intel_feodo: Option<PathBuf>,
+        /// Lista de nodos de salida de Tor (threat intel offline).
+        #[arg(long = "intel-tor")]
+        intel_tor: Option<PathBuf>,
     },
     /// Utilidades de desarrollo.
     Dev {

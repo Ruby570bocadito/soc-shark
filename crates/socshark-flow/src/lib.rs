@@ -534,7 +534,8 @@ impl FlowAggregator {
             packets_rev: acc.packets_rev,
             bytes_rev: acc.bytes_rev,
             tcp_flags: acc.flags,
-            // eBPF (Fase 3) y threat intel (Fase 4): aún sin valor.
+            // eBPF (Fase 3) y threat intel (Fase 4): aún sin valor; el
+            // enriquecimiento SOC rellena threat_intel si hay listas cargadas.
             process_name: None,
             pid: None,
             user: None,
@@ -544,6 +545,7 @@ impl FlowAggregator {
             ja4_fingerprint,
             tls_sni,
             interval_stats,
+            threat_intel: Vec::new(),
             is_background_noise: false,
             human_summary: String::new(),
             risk_score: 0,

@@ -288,3 +288,31 @@ SHA-256, se sustituye por una crate auditada en ese momento (el módulo está
 aislado detrás de `sha256()` y `sha256_12()`). El coste de mantenimiento es
 mínimo: el algoritmo lleva congelado desde 2001 y los tests de vectores
 detectan cualquier regresión.
+
+## ADR-012 — Export SIEM e ISO-8601 propio (sin dependencias nuevas)
+
+**Fecha:** 2026-10-16 · **Estado:** aceptada
+
+**Contexto.** La Fase 4 exige entregar los flujos enriquecidos a SIEMs
+(Elastic ECS y Wazuh). ECS exige `@timestamp` ISO-8601 con precisión de
+microsegundos; el workspace congela sus dependencias externas en cinco
+crates (ADR-003) y ni `chrono` ni `time` aportan nada más al proyecto.
+
+**Decisión.** El export vive en `socshark-soc::siem` como transformación
+pura sobre `EnrichedFlow` (dos funciones: `to_ecs` y `to_wazuh`), añadiendo
+solo `serde_json` al crate — que ya estaba en el conjunto congelado. La
+conversión de microsegundos Unix a fecha civil ISO-8601 se implementa con
+el algoritmo de Howard Hinnant (`civil_from_days`, ~20 líneas), testado
+contra época, la fecha del escenario demo y un bisiesto con fracción de
+segundo. El contrato campo a campo se documenta en `docs/siem-export.md`
+y es la referencia obligada ante cualquier cambio.
+
+En la misma línea, el SHA-256 de ADR-011 se centraliza en
+`socshark-core::hash` para que el file carving (Fase 4) reutilice el motor
+de JA4 sin duplicar código.
+
+**Consecuencias.** Un formato de fecha menos estándar (sin zonas horarias
+no-UTC) a cambio de cero dependencias; los timestamps de soc-shark son
+siempre UTC. Si TheHive exigiera cliente HTTP (ADR-003 lo prohíbe hoy), se
+revaluará en un ADR específico: por ahora el camino es SIEM → TheHive con
+sus integraciones nativas.

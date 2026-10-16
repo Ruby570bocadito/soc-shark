@@ -9,6 +9,7 @@ use socshark_cli::output;
 use socshark_cli::pipeline::{run_capture, run_follow};
 use socshark_cli::tui;
 use socshark_core::config::PipelineConfig;
+use std::io::Write;
 
 fn main() {
     let cli = Cli::parse();
@@ -29,6 +30,9 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             idle_timeout,
             top,
             workers,
+            carve_files,
+            intel_feodo,
+            intel_tor,
         } => {
             if workers == 0 {
                 eprintln!("error: --workers debe ser ≥ 1");
@@ -38,6 +42,9 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 max_flows,
                 idle_timeout_secs: idle_timeout,
                 workers,
+                file_carving: carve_files,
+                intel_feodo,
+                intel_tor,
                 ..PipelineConfig::default()
             };
             let out = run_capture(&read, filter.as_deref(), show_noise, &cfg)?;
@@ -109,6 +116,8 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             report_secs,
             duration,
             max_packets,
+            intel_feodo,
+            intel_tor,
         } => {
             if list {
                 return daemon::list_interfaces();
@@ -125,8 +134,55 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 max_packets,
                 max_flows: 50_000,
                 idle_timeout_secs: 120,
+                intel_feodo,
+                intel_tor,
             };
             daemon::run_daemon(&opts)
+        }
+
+        Cmd::Export {
+            read,
+            format,
+            out,
+            filter,
+            show_noise,
+            carve_files,
+            intel_feodo,
+            intel_tor,
+        } => {
+            let fmt = format.to_ascii_lowercase();
+            if !matches!(fmt.as_str(), "ecs" | "wazuh") {
+                eprintln!("error: --format debe ser 'ecs' o 'wazuh' (recibido: '{format}')");
+                std::process::exit(2);
+            }
+            let cfg = PipelineConfig {
+                file_carving: carve_files,
+                intel_feodo,
+                intel_tor,
+                ..PipelineConfig::default()
+            };
+            let out_data = run_capture(&read, filter.as_deref(), show_noise, &cfg)?;
+            let mut sink: Box<dyn Write> = match &out {
+                Some(p) if p.as_os_str() == "-" => Box::new(std::io::stdout().lock()),
+                Some(p) => Box::new(std::io::BufWriter::new(std::fs::File::create(p)?)),
+                None => Box::new(std::io::stdout().lock()),
+            };
+            for flow in &out_data.flows {
+                let line = match fmt.as_str() {
+                    "wazuh" => socshark_soc::siem::to_wazuh(flow).to_string(),
+                    _ => socshark_soc::siem::to_ecs(flow).to_string(),
+                };
+                writeln!(sink, "{line}")?;
+            }
+            if sink.flush().is_ok() {
+                eprintln!(
+                    "[+] {} flujos exportados en formato {fmt} a {}",
+                    out_data.flows.len(),
+                    out.as_ref()
+                        .map_or_else(|| "stdout".to_string(), |p| p.display().to_string())
+                );
+            }
+            Ok(())
         }
 
         Cmd::Dev { cmd } => match cmd {

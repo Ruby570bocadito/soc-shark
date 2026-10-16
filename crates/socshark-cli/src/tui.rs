@@ -302,6 +302,7 @@ mod tests {
             ja4_fingerprint: None,
             tls_sni: None,
             interval_stats: None,
+            threat_intel: Vec::new(),
             is_background_noise: noise,
             human_summary: String::new(),
             risk_score: risk,

@@ -14,17 +14,18 @@ SIEM: los `alerts[].mitre` del JSONL llevan exactamente estos IDs.
 | **T1021** | Remote Services | `INSECURE-PORT` | Conexión a telnet 23/tcp (credenciales en claro) | **Implementado (F1)** |
 | — (hardening) | Network Service Scanning (objetivo expuesto) | `EXPOSED-DB` | Conexión directa a 3306/5432/1433/6379/27017 | **Implementado (F1)** |
 | **T1071** | Application Layer Protocol (genérico) | `BEACONING` | Intervalos entre paquetes del iniciador con CV ≤ 0.15, ≥ 6 intervalos, media entre 5 s y 1 h (excluye ruido atenuado) | **Implementado (F3)** |
+| **T1036** | Masquerading: masquerade file type | `FILE-MASQUERADING` | Carving HTTP (Content-Length/chunked) + magic bytes propio: magic ≠ extensión declarada o doble extensión ejecutable (`informe.pdf.exe`) | **Implementado (F4)** |
+| **T1071.001** | Application Layer Protocol: Web (C2 conocido) | `THREAT-INTEL-FEODO` | Destino en lista Feodo cargada con `--intel-feodo` (IP o CIDR, v4/v6) | **Implementado (F4)** |
+| **T1090.003** | Proxy: Multi-hop Proxy | `TOR-USAGE` | Destino en la lista de nodos de salida de Tor cargada con `--intel-tor` | **Implementado (F4)** |
 
-## Cobertura diseñada (fases 3-4)
+## Cobertura diseñada (fases 4 avanzada)
 
 | ID | Técnica | Detección prevista | Señal concreta | Fase |
 |---|---|---|---|---|
-| **T1071.001** | Application Layer Protocol: Web | Fingerprinting JA4/JA4+ del handshake TLS | huella del ClientHello comparada con listas públicas de malware (la huella ya se calcula desde F3: `tls.ja4`) | F4 |
-| **T1043** (histórico) / C2 común | — | Conexiones a IOC | IP/dominio en listas Feodo/Tor offline | F4 |
-| **T1036** | Masquerading: masquerade file type | Carving + magic bytes | nombre declarado ≠ tipo real del contenido reconstruido | F4 |
+| **T1071.001** (JA4) | Application Layer Protocol: Web | Fingerprinting JA4/JA4+ contra listas públicas de malware | la huella ya se calcula (F3: `tls.ja4`); falta empaquetar las bases de huellas maliciosas | F4 avanzada |
 | **T1040** | Network Sniffing | (nota) | soc-shark *habilita* la detección del resto; no se autodetecta en F1-F4 | n/a |
-| **T1048** | Exfiltration (otros protocolos) | Volumen asimétrico anómalo | flujos con `bytes` ≫ `bytes_rev` hacia destinos no habituales | F4 |
-| **T1021.001-005** | Remote Services: RDP/SMB/SSH/VNC | Contexto de uso | conexión a 3389/445/22/5900 con combinación de flags y volúmenes anómalos | F4 |
+| **T1048** | Exfiltration (otros protocolos) | Volumen asimétrico anómalo | flujos con `bytes` ≫ `bytes_rev` hacia destinos no habituales | F4 avanzada |
+| **T1021.001-005** | Remote Services: RDP/SMB/SSH/VNC | Contexto de uso | conexión a 3389/445/22/5900 con combinación de flags y volúmenes anómalos | F4 avanzada |
 
 ## Filosofía del mapeo
 

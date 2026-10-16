@@ -71,7 +71,7 @@ operación en tiempo real.
       (DNS con `QDCOUNT=0`). cargo-fuzz/libFuzzer con cobertura guiada
       queda como tarea de contribución (ver CONTRIBUTING.md).
 
-Estado 0.5.0: 121 tests verdes. El único criterio de fase pendiente de
+Estado 0.6.0: 152 tests verdes. El único criterio de fase pendiente de
 verificación sobre hardware real es el rendimiento en vivo (≥ 200 Mbps
 sostenidos y TUI fluida con 10k flujos): el resto del criterio (Follow
 Stream legible, salida determinista con paralelismo) ya está cubierto por
@@ -117,24 +117,38 @@ privilegiado); beaconing simulado con sleep fijo de 30 s se alerta en
 < 5 min con periodo estimado ±2% — **cubierto por el test E2E** del
 escenario demo (alerta a los 3 min, periodo 30.0 s ±0%).
 
-## Fase 4 — GUI, plugins y export
+## Fase 4 — GUI, plugins y export (piezas puras implementadas ✅)
 
-Objetivo: producto para el analista no-cli y ecosistema de comunidad.
+Objetivo: producto para el analista no-cli y ecosistema de comunidad. Las
+piezas verificables sin entorno gráfico ni runtime pesado están ya
+implementadas; Tauri, wasmtime y DuckDB se implementan contra sus
+ecosistemas (son las únicas piezas que justificarían dependencias nuevas).
 
+- [x] File carving HTTP con SHA-256 + detección T1036 (magic vs nombre y
+      doble extensión ejecutable): Content-Length/chunked, keep-alive,
+      magic bytes propio, regla R6 `FILE-MASQUERADING`; criterio de fase
+      cubierto por test E2E (el ejecutable renombrado a `.jpg` del escenario
+      demo genera la alerta)
+- [x] Threat intel offline (Feodo C2 IP/CIDR v4-v6, Tor Bulk Exit List) →
+      `threat_intel` + regla R7 (`THREAT-INTEL-FEODO` T1071.001,
+      `TOR-USAGE` T1090.003); GeoIP/ASN hacia `dst_geo_asn` queda pendiente
+      de un lector `.mmdb` propio (sin dependencias)
+- [x] Export SIEM: mapeo ECS 8.x completo en lo esencial + salida Wazuh
+      (reglas de ejemplo documentadas en `docs/siem-export.md`); push a
+      TheHive pendiente (exigiría cliente HTTP propio)
 - [ ] GUI con Tauri + WebGL: tabla virtualizada de flujos, RadarSidebar de
       IOCs, SequenceView de handshakes, StreamInspector con decodificador
       CyberChef-style (pipelines Base64→XOR→Zlib→JSON)
 - [ ] Runtime de plugins WASM (wasmtime) con la API WIT de
       [wasm-plugins.md](wasm-plugins.md) + firma Ed25519 + plugins oficiales
-- [ ] File carving HTTP con SHA-256 + detección T1036 (magic vs nombre)
-- [ ] Threat intel offline (GeoIP/ASN, Feodo, Tor exits) → `dst_geo_asn`
-- [ ] Export SIEM: mapeo ECS completo, salida Wazuh, push a TheHive
 - [ ] Persistencia de sesiones (DuckDB) con consultas analíticas
 
-Criterios: un plugin HTTP comunitario corre en sandbox con fuel limit y
-enriquece flujos reales; un ejecutable renombrado a `.jpg` transferido por
-HTTP genera alerta T1036; un SIEM Wazuh de laboratorio recibe flujos
-enriquecidos con tags ATT&CK correctos.
+Criterios restantes: un plugin HTTP comunitario corre en sandbox con fuel
+limit y enriquece flujos reales (wasmtime); un SIEM Wazuh de laboratorio
+recibe flujos enriquecidos con tags ATT&CK correctos — el contrato de
+export ya está operativo (`docs/siem-export.md`), la verificación en un
+manager real queda pendiente de entorno. El criterio T1036 está **cubierto
+por test E2E**.
 
 ## Fuera de alcance (declarado)
 

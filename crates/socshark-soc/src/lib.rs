@@ -5,15 +5,21 @@
 //! - [`passive_dns`]: caché dominio↔IP construida con las respuestas DNS.
 //! - [`risk`]: mini-IDS heurístico + puntuación de riesgo (0-100).
 //! - [`summarize`]: traducción semántica a lenguaje humano.
+//! - [`carve`]: file carving HTTP + detección de encubrimiento T1036.
+//! - [`intel`]: threat intel offline (Feodo C2, salidas de Tor).
+//! - [`siem`]: export a SIEM (ECS y Wazuh).
 //!
-//! Las fases posteriores añadirán aquí: detección de beaconing, file carving
-//! con SHA-256, threat intel offline (GeoIP/ASN/Feodo/Tor) y export SIEM.
-//! Ver `docs/soc-features.md` y `docs/soc-mitre-mapping.md`.
+//! Las fases posteriores añadirán aquí: correlación de proceso (eBPF) y
+//! GeoIP/ASN. Ver `docs/soc-features.md`, `docs/siem-export.md` y
+//! `docs/soc-mitre-mapping.md`.
 
+pub mod carve;
 pub mod enrich;
+pub mod intel;
 pub mod noise;
 pub mod passive_dns;
 pub mod risk;
+pub mod siem;
 pub mod summarize;
 
 use std::collections::HashMap;
@@ -22,6 +28,7 @@ use std::net::IpAddr;
 use socshark_core::{EnrichedFlow, Transport};
 
 pub use enrich::{enrich_all, SocContext};
+pub use intel::ThreatIntelDb;
 
 /// (ip_origen, ip_destino, puerto_destino) objetivo de un posible escaneo.
 pub type ScanKey = (IpAddr, IpAddr, u16);
@@ -98,6 +105,7 @@ pub(crate) mod tests_support {
             ja4_fingerprint: None,
             tls_sni: None,
             interval_stats: None,
+            threat_intel: vec![],
             is_background_noise: false,
             human_summary: String::new(),
             risk_score: 0,
@@ -145,6 +153,7 @@ mod tests {
             ja4_fingerprint: None,
             tls_sni: None,
             interval_stats: None,
+            threat_intel: vec![],
             is_background_noise: false,
             human_summary: String::new(),
             risk_score: 0,

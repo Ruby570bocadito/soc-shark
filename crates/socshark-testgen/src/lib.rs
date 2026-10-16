@@ -502,8 +502,11 @@ pub fn client_hello(sni: &str, alpn: &[u8]) -> Vec<u8> {
 /// 3. Posible túnel DNS (qname largo de alta entropía, TXT al resolver).
 /// 4. Escaneo SYN hacia el gateway (5 SYNs, puertos origen distintos).
 /// 5. Banner SSH y petición HTTP en texto claro.
-/// 6. DNS sobre IPv6 (Fase 2).
-/// 7. Beacon UDP cada 30 s hacia un C2 simulado (Fase 3: alerta BEACONING
+/// 6. Descarga HTTP de un ejecutable encubierto como imagen (Fase 4):
+///    `factura.jpg` cuya cabecera es PE32 → con `--carve-files` dispara la
+///    regla R6 (MITRE T1036, Masquerading) con SHA-256 del contenido.
+/// 7. DNS sobre IPv6 (Fase 2).
+/// 8. Beacon UDP cada 30 s hacia un C2 simulado (Fase 3: alerta BEACONING
 ///    por regularidad de intervalos, MITRE T1071).
 pub fn sample_pcap_packets() -> Vec<(u64, Vec<u8>)> {
     let t0 = 1_700_000_000_000_000u64; // 2023-11-14T22:13:20Z
@@ -735,7 +738,90 @@ pub fn sample_pcap_packets() -> Vec<(u64, Vec<u8>)> {
         ),
     ));
 
-    // 8) DNS sobre IPv6 (Fase 2): consulta AAAA + respuesta.
+    // 8) Descarga HTTP encubierta (Fase 4): HOST_B baja "factura.jpg" que en
+    //    realidad es un PE32 (cabecera MZ). Sin carving el flujo es una
+    //    descarga más; con `--carve-files` el motor extrae el archivo, calcula
+    //    su SHA-256 y R6 alerta T1036 (tipo real ≠ extensión declarada).
+    let http_req =
+        b"GET /downloads/factura.jpg HTTP/1.1\r\nHost: store.ejemplo-corporativo.com\r\n\r\n";
+    let mut pe_body = b"MZ\x90\x00\x03\x00\x00\x00\x04\x00".to_vec();
+    #[allow(clippy::manual_repeat_n)]
+    pe_body.extend(std::iter::repeat(0xccu8).take(502)); // 512 bytes totales
+    let http_resp_head = format!(
+        "HTTP/1.1 200 OK\r\nServer: nginx\r\nContent-Type: application/octet-stream\r\n\
+         Content-Disposition: attachment; filename=\"factura.jpg\"\r\n\
+         Content-Length: {}\r\n\r\n",
+        pe_body.len()
+    );
+    let http_resp = {
+        let mut v = http_resp_head.into_bytes();
+        v.extend_from_slice(&pe_body);
+        v
+    };
+    let (req_len, resp_len) = (http_req.len() as u32, http_resp.len() as u32);
+    // Sesión ya establecida (igual que la petición simple de arriba).
+    p.push((
+        t0 + 5_400_000,
+        frame_tcp(
+            MAC_HOST_B,
+            MAC_ROUTER,
+            HOST_B,
+            WEB,
+            40112,
+            80,
+            21,
+            23,
+            flags::PSH_ACK,
+            http_req,
+        ),
+    ));
+    p.push((
+        t0 + 5_450_000,
+        frame_tcp(
+            MAC_ROUTER,
+            MAC_HOST_B,
+            WEB,
+            HOST_B,
+            80,
+            40112,
+            23,
+            21 + req_len,
+            flags::PSH_ACK,
+            &http_resp,
+        ),
+    ));
+    p.push((
+        t0 + 5_500_000,
+        frame_tcp(
+            MAC_HOST_B,
+            MAC_ROUTER,
+            HOST_B,
+            WEB,
+            40112,
+            80,
+            21 + req_len,
+            23 + resp_len,
+            flags::FIN_ACK,
+            &[],
+        ),
+    ));
+    p.push((
+        t0 + 5_550_000,
+        frame_tcp(
+            MAC_ROUTER,
+            MAC_HOST_B,
+            WEB,
+            HOST_B,
+            80,
+            40112,
+            23 + resp_len,
+            22 + req_len,
+            flags::FIN_ACK,
+            &[],
+        ),
+    ));
+
+    // 9) DNS sobre IPv6 (Fase 2): consulta AAAA + respuesta.
     p.push((
         t0 + 6_000_000,
         frame_ipv6_udp(
@@ -761,7 +847,7 @@ pub fn sample_pcap_packets() -> Vec<(u64, Vec<u8>)> {
         ),
     ));
 
-    // 9) Beacon UDP (Fase 3): el equipo comprometido (HOST_C, el mismo del
+    // 10) Beacon UDP (Fase 3): el equipo comprometido (HOST_C, el mismo del
     //    túnel DNS y el escaneo) "llama a casa" cada 30 s al C2 simulado.
     //    8 datagramas = 7 intervalos de 30 s exactos → alerta BEACONING
     //    (T1071) con periodo estimado 30.0 s. Sin handshake: sesión larga
@@ -795,8 +881,8 @@ mod tests {
     fn escenario_demo_genera_paquetes_validos() {
         let pkts = sample_pcap_packets();
         // 2 DNS + 7 TLS + 2 ruido + 1 túnel + 5 escaneo + 1 SSH + 1 HTTP
-        // + 2 DNS-IPv6 + 8 beacon = 29.
-        assert_eq!(pkts.len(), 29);
+        // + 4 descarga encubierta (Fase 4) + 2 DNS-IPv6 + 8 beacon = 33.
+        assert_eq!(pkts.len(), 33);
         // Todas las tramas deben ser >= 34 bytes (eth + ip mínimo).
         assert!(pkts.iter().all(|(_, d)| d.len() >= 34));
     }

@@ -45,6 +45,18 @@ pub struct PipelineConfig {
     /// intervalos "programados". 0.15 deja fuera el tráfico humano (CV >
     /// 0.3) y capta beacons con jitter moderado.
     pub beacon_max_cv: f64,
+    /// File carving HTTP (Fase 4): extrae archivos de las respuestas HTTP de
+    /// los streams TCP reensamblados (Content-Length y chunked), calcula su
+    /// SHA-256 y detecta encubrimiento T1036 (magic bytes ≠ extensión).
+    /// Exige recolectar streams (hasta 1 MiB por dirección), así que va
+    /// desactivada por defecto; la CLI la activa con `--carve-files`.
+    pub file_carving: bool,
+    /// Ruta a una lista de IPs/CIDR de C2 tipo Feodo (threat intel offline,
+    /// Fase 4). `None` = sin base Feodo.
+    pub intel_feodo: Option<std::path::PathBuf>,
+    /// Ruta a una lista de nodos de salida de Tor (threat intel offline,
+    /// Fase 4). `None` = sin base Tor.
+    pub intel_tor: Option<std::path::PathBuf>,
 }
 
 impl Default for PipelineConfig {
@@ -62,6 +74,9 @@ impl Default for PipelineConfig {
             beacon_min_interval_secs: 5,
             beacon_max_interval_secs: 3600,
             beacon_max_cv: 0.15,
+            file_carving: false,
+            intel_feodo: None,
+            intel_tor: None,
         }
     }
 }

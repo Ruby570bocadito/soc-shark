@@ -28,9 +28,10 @@ fn pipeline_end_to_end_sin_ruido() {
     assert!(out.flows.iter().all(|f| !f.is_background_noise));
 
     // Escenario esperado: 1 DNS + 1 TLS + 1 túnel DNS + 5 escaneo + 1 SSH
-    // + 1 HTTP + 1 DNS-IPv6 (Fase 2) + 1 beacon UDP (Fase 3) = 12 flujos.
+    // + 2 HTTP (index + descarga encubierta, Fase 4) + 1 DNS-IPv6 (Fase 2)
+    // + 1 beacon UDP (Fase 3) = 13 flujos.
     let ids: Vec<String> = out.flows.iter().map(|f| f.flow_id.0.clone()).collect();
-    assert_eq!(out.flows.len(), 12, "flujos obtenidos: {ids:#?}");
+    assert_eq!(out.flows.len(), 13, "flujos obtenidos: {ids:#?}");
 
     // Túnel DNS detectado con su mapeo MITRE.
     let tunel = out
@@ -115,9 +116,9 @@ fn filtro_dsl_y_ruido() {
     let path = demo_pcap("filtro");
     let cfg = PipelineConfig::default();
 
-    // Con ruido: 12 + NTP + mDNS = 14.
+    // Con ruido: 13 + NTP + mDNS = 15.
     let todo = run_capture(&path, None, true, &cfg).unwrap();
-    assert_eq!(todo.flows.len(), 14);
+    assert_eq!(todo.flows.len(), 15);
     assert!(todo.flows.iter().any(|f| f.is_background_noise));
 
     // DSL: solo el flujo TLS toca el 443.
@@ -330,6 +331,168 @@ fn el_pool_concurrente_produce_la_misma_salida_que_el_camino_secuencial() {
         .map(|f| serde_json::to_string(f).unwrap())
         .collect();
     assert_eq!(json_seq, json_par, "JSONL idéntico entre workers 1 y 4");
+
+    std::fs::remove_file(&path).ok();
+}
+
+// ------------------------------------------------------------- Fase 4
+
+/// Escribe un fichero de texto en el directorio temporal del proceso.
+fn fichero_temp(tag: &str, contenido: &str) -> PathBuf {
+    let p = std::env::temp_dir().join(format!("socshark-{tag}-{}.txt", std::process::id()));
+    std::fs::write(&p, contenido).unwrap();
+    p
+}
+
+#[test]
+fn file_carving_detecta_el_pe_encubierto_del_escenario_t1036() {
+    // Criterio de Fase 4: un ejecutable renombrado a .jpg transferido por
+    // HTTP genera alerta T1036 (con carving activado).
+    let path = demo_pcap("carve");
+    let cfg = PipelineConfig {
+        file_carving: true,
+        ..PipelineConfig::default()
+    };
+    let out = run_capture(&path, None, false, &cfg).unwrap();
+
+    let descarga = out
+        .flows
+        .iter()
+        .find(|f| f.flow_id.0.contains("40112"))
+        .expect("el flujo de la descarga encubierta debe existir");
+
+    // El archivo tallado: factura.jpg con contenido PE32 y su SHA-256.
+    assert_eq!(descarga.extracted_files.len(), 1, "solo la descarga talla");
+    let f = &descarga.extracted_files[0];
+    assert_eq!(f.name, "factura.jpg");
+    assert_eq!(f.size, 512);
+    assert_eq!(f.magic.as_deref(), Some("PE32"));
+    assert!(f.sha256.as_deref().is_some_and(|h| h.len() == 64));
+    assert!(f.masquerading_suspect, "jpg con contenido PE es T1036");
+
+    // La regla R6 alerta con el mapeo MITRE correcto.
+    let alerta = descarga
+        .alerts
+        .iter()
+        .find(|a| a.id == "FILE-MASQUERADING")
+        .expect("el encubrimiento debe alertar");
+    assert_eq!(alerta.mitre.as_deref(), Some("T1036"));
+    assert!(alerta.detail.contains("factura.jpg"));
+    assert!(descarga.risk_score >= 55, "40 (encubrimiento) + 15 (PE)");
+
+    // El flujo index.html (sin carving relevante) sigue limpio.
+    let index = out
+        .flows
+        .iter()
+        .find(|f| f.flow_id.0.contains("40111"))
+        .expect("el flujo index.html debe existir");
+    assert!(
+        index.extracted_files.is_empty(),
+        "una petición sin respuesta no talla nada"
+    );
+
+    // El DSL de Fase 4 encuentra el archivo por nombre y por encubrimiento.
+    let por_nombre = run_capture(&path, Some("file.name == \"factura.jpg\""), false, &cfg).unwrap();
+    assert_eq!(por_nombre.flows.len(), 1);
+    let por_encubrimiento =
+        run_capture(&path, Some("file.masquerading == true"), false, &cfg).unwrap();
+    assert_eq!(por_encubrimiento.flows.len(), 1);
+
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn sin_carving_no_hay_archivos_ni_alertas_t1036() {
+    let path = demo_pcap("nocarve");
+    let cfg = PipelineConfig::default(); // file_carving: false
+    let out = run_capture(&path, None, false, &cfg).unwrap();
+    assert!(out.flows.iter().all(|f| f.extracted_files.is_empty()));
+    assert!(!out
+        .flows
+        .iter()
+        .any(|f| f.alerts.iter().any(|a| a.id == "FILE-MASQUERADING")));
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn threat_intel_feodo_marca_el_c2_y_dispara_r7() {
+    // El C2 del beacon demo (198.51.100.23) aparece en una lista Feodo de
+    // laboratorio: el flujo del beacon debe etiquetarse y alertar.
+    let path = demo_pcap("intel");
+    let feodo = fichero_temp("feodo", "# lista de laboratorio\n198.51.100.23\n# fin\n");
+    let cfg = PipelineConfig {
+        intel_feodo: Some(feodo.clone()),
+        ..PipelineConfig::default()
+    };
+    let out = run_capture(&path, None, false, &cfg).unwrap();
+
+    let beacon = out
+        .flows
+        .iter()
+        .find(|f| f.flow_id.0.contains("198.51.100.23"))
+        .expect("el flujo del beacon al C2 debe existir");
+    assert_eq!(beacon.threat_intel, vec!["FEODO-C2".to_string()]);
+
+    let alerta = beacon
+        .alerts
+        .iter()
+        .find(|a| a.id == "THREAT-INTEL-FEODO")
+        .expect("el destino en Feodo debe alertar");
+    assert_eq!(alerta.mitre.as_deref(), Some("T1071.001"));
+
+    // Los demás flujos no llevan la etiqueta.
+    assert_eq!(
+        out.flows
+            .iter()
+            .filter(|f| !f.threat_intel.is_empty())
+            .count(),
+        1,
+        "solo el flujo al C2 está etiquetado"
+    );
+
+    // El DSL de Fase 4 filtra por etiqueta de intel.
+    let por_intel = run_capture(&path, Some("intel.tag == \"FEODO-C2\""), false, &cfg).unwrap();
+    assert_eq!(por_intel.flows.len(), 1);
+
+    std::fs::remove_file(&feodo).ok();
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn export_ecs_y_wazuh_son_jsonl_validos_con_campos_clave() {
+    let path = demo_pcap("export");
+    let cfg = PipelineConfig {
+        file_carving: true,
+        ..PipelineConfig::default()
+    };
+    let out = run_capture(&path, None, false, &cfg).unwrap();
+    assert!(!out.flows.is_empty());
+
+    // ECS: @timestamp ISO-8601, extremos y el archivo tallado anidado.
+    for flow in &out.flows {
+        let v: serde_json::Value =
+            serde_json::from_str(&socshark_soc::siem::to_ecs(flow).to_string()).unwrap();
+        assert!(v["@timestamp"]
+            .as_str()
+            .is_some_and(|t| t.ends_with('Z') && t.len() == 27));
+        assert!(v["source.ip"].is_string());
+        assert!(v["destination.port"].is_number());
+    }
+    let descarga = out
+        .flows
+        .iter()
+        .find(|f| f.flow_id.0.contains("40112"))
+        .unwrap();
+    let ecs = socshark_soc::siem::to_ecs(descarga);
+    assert_eq!(ecs["socshark"]["extracted_files"][0]["name"], "factura.jpg");
+    assert_eq!(ecs["network.protocol"], "http");
+
+    // Wazuh: la descarga encubierta entra como alerta con MITRE T1036.
+    let wazuh = socshark_soc::siem::to_wazuh(descarga);
+    assert_eq!(wazuh["rule"]["level"], 10, "High → nivel 10");
+    assert_eq!(wazuh["rule"]["mitre"]["id"], serde_json::json!(["T1036"]));
+    assert_eq!(wazuh["dstport"], 80);
+    assert_eq!(wazuh["program_name"], "socshark");
 
     std::fs::remove_file(&path).ok();
 }

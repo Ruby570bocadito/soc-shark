@@ -47,6 +47,10 @@ pub struct DaemonOptions {
     pub max_packets: Option<u64>,
     pub max_flows: usize,
     pub idle_timeout_secs: u64,
+    /// Listas de threat intel offline (Fase 4): se cargan al arrancar y
+    /// alimentan las reglas R7 en cada ciclo de expiración.
+    pub intel_feodo: Option<PathBuf>,
+    pub intel_tor: Option<PathBuf>,
 }
 
 /// Reloj de pared en microsegundos (mismo universo que los timestamps pcap).
@@ -95,8 +99,31 @@ pub fn run_daemon(opts: &DaemonOptions) -> Result<()> {
     let pcfg = PipelineConfig {
         max_flows: opts.max_flows,
         idle_timeout_secs: opts.idle_timeout_secs,
+        intel_feodo: opts.intel_feodo.clone(),
+        intel_tor: opts.intel_tor.clone(),
         ..PipelineConfig::default()
     };
+
+    // Threat intel offline (Fase 4): se carga una vez al arrancar; un
+    // fichero ilegible aborta la sesión antes de perder tiempo capturando.
+    if opts.intel_feodo.is_some() || opts.intel_tor.is_some() {
+        let db = socshark_soc::ThreatIntelDb::from_paths(
+            opts.intel_feodo.as_deref(),
+            opts.intel_tor.as_deref(),
+        )
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "no se pudo cargar la lista de threat intel: {e} (revisa --intel-feodo / --intel-tor)"
+            )
+        })?;
+        eprintln!(
+            "[*] Threat intel offline: {} entradas (Feodo: {} · Tor: {})",
+            db.len(),
+            db.feodo_entries,
+            db.tor_entries
+        );
+        ctx.intel = Some(db);
+    }
 
     // El JSONL incremental escribe al vuelo; stdout sin búfer intermedio
     // para que `| jq` responda en tiempo real.

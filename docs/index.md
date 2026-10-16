@@ -31,5 +31,6 @@ en [decisions.md](decisions.md) (ADR-007).
 | [wasm-plugins.md](wasm-plugins.md) | Diseño del runtime de plugins WASM: API, límites, firma |
 | [soc-features.md](soc-features.md) | Paradigma Flow-First, mini-IDS, DNS pasivo, carving, threat intel, SIEM |
 | [soc-mitre-mapping.md](soc-mitre-mapping.md) | Cada detección mapeada a MITRE ATT&CK, con su estado |
+| [siem-export.md](siem-export.md) | Contrato de export a SIEM (ECS y Wazuh) campo a campo |
 | [roadmap.md](roadmap.md) | Fases 0-4, criterios de aceptación y dependencias entre fases |
 | [decisions.md](decisions.md) | Registro de decisiones de arquitectura (ADRs) |

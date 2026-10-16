@@ -52,8 +52,10 @@ pub fn run_capture(
         .with_context(|| format!("no se pudo abrir el pcap {}", pcap_path.display()))?;
     let link = reader.link_type();
 
-    let mut aggregator =
-        FlowAggregator::new(cfg.max_flows, cfg.idle_timeout_secs, cfg.collect_streams);
+    // El file carving necesita los streams TCP reensamblados: si está
+    // activo, el agregador recolecta segmentos aunque `follow` no lo pida.
+    let collect = cfg.collect_streams || cfg.file_carving;
+    let mut aggregator = FlowAggregator::new(cfg.max_flows, cfg.idle_timeout_secs, collect);
     let dissectors = DissectorPipeline::new();
 
     eprintln!("[*] Leyendo {} (enlace: {link:?})", pcap_path.display());
@@ -97,10 +99,19 @@ pub fn run_capture(
     }
 
     let stats = aggregator.stats();
-    let mut flows = aggregator.finish();
+    let (mut flows, streams) = aggregator.finish_with_streams();
     eprintln!("[*] {} → {} flujos agregados", stats.summary(), flows.len());
 
+    // File carving (Fase 4): extrae archivos HTTP de los streams ANTES de la
+    // capa SOC, para que R6 (T1036) y los resúmenes los vean.
+    if cfg.file_carving {
+        socshark_soc::carve::carve_all(&mut flows, &streams);
+        let total: usize = flows.iter().map(|f| f.extracted_files.len()).sum();
+        eprintln!("[*] File carving: {total} archivos tallados de los streams HTTP");
+    }
+
     let mut ctx = SocContext::default();
+    load_intel(&mut ctx, cfg)?;
     enrich_all(&mut ctx, &mut flows, cfg);
     eprintln!(
         "[*] Enriquecimiento SOC listo ({} entradas de DNS pasivo)",
@@ -126,6 +137,31 @@ pub fn run_capture(
         pcap_path: pcap_path.to_path_buf(),
         passive_dns_entries: ctx.passive_dns.len(),
     })
+}
+
+/// Carga las listas de threat intel offline indicadas en la configuración
+/// (Fase 4). Un fichero ilegible aborta con error claro: una lista que no
+/// carga es un fallo de configuración, no algo a pasar por alto.
+fn load_intel(ctx: &mut SocContext, cfg: &PipelineConfig) -> Result<()> {
+    if cfg.intel_feodo.is_some() || cfg.intel_tor.is_some() {
+        let db = socshark_soc::ThreatIntelDb::from_paths(
+            cfg.intel_feodo.as_deref(),
+            cfg.intel_tor.as_deref(),
+        )
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "no se pudo cargar la lista de threat intel: {e} (revisa --intel-feodo / --intel-tor)"
+            )
+        })?;
+        eprintln!(
+            "[*] Threat intel offline: {} entradas (Feodo: {} · Tor: {})",
+            db.len(),
+            db.feodo_entries,
+            db.tor_entries
+        );
+        ctx.intel = Some(db);
+    }
+    Ok(())
 }
 
 /// Envía un lote al pool y vuelca los resultados al agregador en el orden

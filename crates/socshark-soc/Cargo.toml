@@ -9,3 +9,5 @@ description = "Capa SOC de soc-shark: ruido de fondo, DNS pasivo, riesgo heurís
 
 [dependencies]
 socshark-core = { workspace = true }
+socshark-flow = { workspace = true }
+serde_json = { workspace = true }

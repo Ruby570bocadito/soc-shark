@@ -15,6 +15,13 @@
 //!   entre paquetes del iniciador (ver `IntervalStats`) son demasiado
 //!   regulares para tráfico humano y caen en la ventana típica de un
 //!   malware que "llama a casa" con un sleep programado.
+//!
+//! Reglas Fase 4:
+//! - `R6` Encubrimiento de archivos transferidos por HTTP (magic ≠ extensión
+//!   o doble extensión ejecutable) → T1036. Un ejecutable bajado sin
+//!   encubrimiento también suma riesgo (sin alerta propia).
+//! - `R7` Destino en listas de threat intel offline: C2 de Feodo → T1071.001
+//!   y nodos de salida de Tor → T1090.003 (proxy multi-salto).
 
 use socshark_core::{Alert, EnrichedFlow, L7Protocol, Severity, Transport};
 
@@ -154,6 +161,73 @@ pub fn assess(flow: &mut EnrichedFlow, scan_hits: u32, cfg: &PipelineConfig) {
         }
     }
 
+    // R6: encubrimiento de archivos transferidos — MITRE T1036. Basta con
+    // que UN archivo del flujo sea sospechoso para alertar (se listan todos).
+    let mut ejecutables: Vec<&str> = Vec::new();
+    let mut encubiertos: Vec<&str> = Vec::new();
+    for f in &flow.extracted_files {
+        if matches!(
+            f.magic.as_deref(),
+            Some("PE32") | Some("ELF") | Some("Mach-O")
+        ) {
+            ejecutables.push(&f.name);
+        }
+        if f.masquerading_suspect {
+            encubiertos.push(&f.name);
+        }
+    }
+    if !ejecutables.is_empty() {
+        // Descarga de ejecutable sin encubrir: riesgo, no alerta (es
+        // operación normal de distribución de software).
+        score += 15;
+    }
+    if !encubiertos.is_empty() {
+        score += 40;
+        flow.alerts.push(Alert {
+            id: "FILE-MASQUERADING".into(),
+            name: "Archivo transferido con identidad falseada".into(),
+            severity: Severity::High,
+            detail: format!(
+                "tipo real ≠ extensión declarada en {}",
+                encubiertos.join(", ")
+            ),
+            mitre: Some("T1036".into()),
+        });
+    }
+
+    // R7: destino en listas de threat intel offline — MITRE T1071.001 (C2
+    // conocido de Feodo) y T1090.003 (salida Tor = proxy multi-salto).
+    if flow
+        .threat_intel
+        .iter()
+        .any(|t| t == crate::intel::TAG_FEODO)
+    {
+        score += 45;
+        flow.alerts.push(Alert {
+            id: "THREAT-INTEL-FEODO".into(),
+            name: "Destino en lista de C2 (Feodo)".into(),
+            severity: Severity::High,
+            detail: format!(
+                "{} aparece en la lista Feodo cargada (--intel-feodo)",
+                flow.dst_ip
+            ),
+            mitre: Some("T1071.001".into()),
+        });
+    }
+    if flow.threat_intel.iter().any(|t| t == crate::intel::TAG_TOR) {
+        score += 20;
+        flow.alerts.push(Alert {
+            id: "TOR-USAGE".into(),
+            name: "Conexión a nodo de salida de Tor".into(),
+            severity: Severity::Medium,
+            detail: format!(
+                "{} es un nodo de salida de Tor (lista --intel-tor): posible proxy multi-salto",
+                flow.dst_ip
+            ),
+            mitre: Some("T1090.003".into()),
+        });
+    }
+
     flow.risk_score = score.min(100) as u8;
 }
 
@@ -271,6 +345,87 @@ mod tests {
         });
         assess(&mut rapido, 0, &cfg);
         assert!(!rapido.alerts.iter().any(|a| a.id == "BEACONING"));
+    }
+
+    #[test]
+    fn r6_pe_llamado_jpg_alerta_t1036_y_pe_honesto_solo_riesgo() {
+        let cfg = PipelineConfig::default();
+
+        // Encubierto: factura.jpg que en realidad es un PE → alerta alta.
+        let mut encubierto = flujo_basico(6, 46000, 80);
+        encubierto.extracted_files = vec![socshark_core::ExtractedFile {
+            name: "factura.jpg".into(),
+            size: 2048,
+            sha256: Some("ab".repeat(32)),
+            magic: Some("PE32".into()),
+            masquerading_suspect: true,
+        }];
+        assess(&mut encubierto, 0, &cfg);
+        let alert = encubierto
+            .alerts
+            .iter()
+            .find(|a| a.id == "FILE-MASQUERADING")
+            .expect("el encubrimiento debe alertar");
+        assert_eq!(alert.mitre.as_deref(), Some("T1036"));
+        assert_eq!(alert.severity, Severity::High);
+        assert!(alert.detail.contains("factura.jpg"));
+        assert!(
+            encubierto.risk_score >= 55,
+            "40 (encubrimiento) + 15 (PE): {}",
+            encubierto.risk_score
+        );
+
+        // Honesto: setup.exe que ES un PE → riesgo sin alerta FILE-*.
+        let mut honesto = flujo_basico(6, 46001, 80);
+        honesto.extracted_files = vec![socshark_core::ExtractedFile {
+            name: "setup.exe".into(),
+            size: 1024,
+            sha256: None,
+            magic: Some("PE32".into()),
+            masquerading_suspect: false,
+        }];
+        assess(&mut honesto, 0, &cfg);
+        assert!(!honesto.alerts.iter().any(|a| a.id == "FILE-MASQUERADING"));
+        assert_eq!(
+            honesto.risk_score, 15,
+            "solo la descarga de ejecutable suma"
+        );
+    }
+
+    #[test]
+    fn r7_listas_intel_disparan_feodo_y_tor() {
+        let cfg = PipelineConfig::default();
+
+        let mut c2 = flujo_basico(6, 47000, 8080);
+        c2.threat_intel = vec![crate::intel::TAG_FEODO.to_string()];
+        assess(&mut c2, 0, &cfg);
+        let alert = c2
+            .alerts
+            .iter()
+            .find(|a| a.id == "THREAT-INTEL-FEODO")
+            .expect("Feodo debe alertar");
+        assert_eq!(alert.mitre.as_deref(), Some("T1071.001"));
+        assert_eq!(alert.severity, Severity::High);
+        assert!(c2.risk_score >= 45);
+
+        let mut tor = flujo_basico(6, 47001, 9001);
+        tor.threat_intel = vec![crate::intel::TAG_TOR.to_string()];
+        assess(&mut tor, 0, &cfg);
+        let alert = tor
+            .alerts
+            .iter()
+            .find(|a| a.id == "TOR-USAGE")
+            .expect("Tor debe alertar");
+        assert_eq!(alert.mitre.as_deref(), Some("T1090.003"));
+        assert_eq!(tor.risk_score, 20);
+
+        // Sin etiquetas no hay alertas R7 (camino por defecto).
+        let mut limpio = flujo_basico(6, 47002, 443);
+        assess(&mut limpio, 0, &cfg);
+        assert!(!limpio
+            .alerts
+            .iter()
+            .any(|a| a.id.starts_with("THREAT-INTEL") || a.id == "TOR-USAGE"));
     }
 
     fn qname_dns(name: &str) -> socshark_core::DnsSummary {
