@@ -83,6 +83,8 @@ y [SemVer](https://semver.org/lang/es/).
 
 ### Corregido
 
+- README: la insignia de CI salía rota porque apuntaba a otro repositorio
+  (`soc-shark/soc-shark`); también el `repository` de `Cargo.toml`.
 - Iconos de gravedad (✕ ! ✓) descentrados en la leyenda del mapa y, según
   la fuente, en el resto de la ventana: ahora son SVG centrados, también en
   el informe.

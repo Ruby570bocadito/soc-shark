@@ -17,7 +17,7 @@ version = "0.6.0"
 edition = "2021"
 license = "MIT"
 authors = ["soc-shark contributors"]
-repository = "https://github.com/soc-shark/soc-shark"
+repository = "https://github.com/Ruby570bocadito/soc-shark"
 rust-version = "1.75"
 
 [workspace.dependencies]
