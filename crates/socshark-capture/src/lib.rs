@@ -1,10 +1,11 @@
 //! socshark-capture: abstracción de fuentes de captura de paquetes.
 //!
-//! Fase 1: lector de archivos pcap clásicos, implementado en Rust puro (no
-//! requiere libpcap instalado). Fase 2: captura en vivo ([`live`]) con FFI
-//! propio sobre libpcap cargada con `dlopen` — sin dependencias nuevas ni
+//! Lector de archivos pcap y pcapng ([`pcap_file`]), implementado en Rust
+//! puro (no requiere libpcap instalado). Captura en vivo ([`live`]) con FFI
+//! propio sobre libpcap/Npcap cargada al vuelo — sin dependencias nuevas ni
 //! cabeceras en tiempo de compilación — detrás del mismo trait
-//! [`CaptureSource`].
+//! [`CaptureSource`]. Y, para el tráfico de esta máquina, qué programa
+//! tiene cada conexión ([`owners`]).
 //!
 //! Contrato de [`CaptureSource`]:
 //! - `next_packet` devuelve `Ok(None)` al agotarse la fuente (EOF limpio).
@@ -16,6 +17,7 @@
 //! - `link_type` informa a los dissectors sobre la capa 2 a usar.
 
 pub mod live;
+pub mod owners;
 pub mod pcap_file;
 
 use socshark_core::{LinkType, RawPacket};
@@ -45,4 +47,5 @@ pub trait CaptureSource {
 }
 
 pub use live::{list_ifaces, LiveBreaker, LiveCapture, LiveCaptureConfig, LiveIface};
+pub use owners::{SocketOwner, SocketTable};
 pub use pcap_file::PcapFileReader;

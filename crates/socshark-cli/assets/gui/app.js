@@ -96,6 +96,12 @@
     packetSel: null,
     view: "flows",
     ifaces: [],
+    hosts: new Map(), // ip → lo que se sabe del equipo (quién es quién)
+    watch: false, // avisos en vivo
+    seenStories: new Set(),
+    freshStories: new Map(), // clave → cuándo apareció (marca «Nuevo»)
+    unseen: 0,
+    lastNotify: 0,
     polling: null,
     refreshing: false,
     lastStats: 0,
@@ -173,6 +179,94 @@
       ? hasPorts(f) ? endpoint(f.src_ip, f.src_port) : f.src_ip
       : hasPorts(f) ? endpoint(f.dst_ip, f.dst_port) : f.dst_ip;
   const plural = (n, one, many) => (n === 1 ? `1 ${one}` : `${nf.format(n)} ${many}`);
+
+  // ------------------------------------------------------------ quién es quién
+
+  const hostOf = (ip) => state.hosts.get(ip);
+  /** Dirección de la red local (las únicas a las que se pone nombre). */
+  const isLanIp = (ip) =>
+    /^(10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.)/.test(ip) || /^(f[cd]|fe[89ab])[0-9a-f]*:/i.test(ip);
+
+  /** Lo que se sabe de un equipo, en frases cortas. */
+  function hostFacts(hst) {
+    if (!hst) return [];
+    const out = [];
+    if (hst.nickname && hst.name) out.push(`se presenta como «${hst.name}»`);
+    if (hst.vendor) out.push(hst.vendor_hint ? `marca ${hst.vendor} (suele ser ${hst.vendor_hint})` : `marca ${hst.vendor}`);
+    if (hst.os) out.push(`con ${hst.os}`);
+    if (hst.random_mac) out.push("MAC aleatoria: móvil o portátil con privacidad activada");
+    if (hst.name && hst.name_source && !hst.nickname) out.push(`nombre anunciado por ${hst.name_source}`);
+    return out;
+  }
+
+  function renameButton(ip) {
+    if (!isLanIp(ip)) return null;
+    const hst = hostOf(ip);
+    return h(
+      "button",
+      {
+        class: "btn link",
+        type: "button",
+        title: "Ponle un nombre que reconozcas («Portátil de Ana»)",
+        onclick: (e) => {
+          e.stopPropagation();
+          openNickDialog(ip);
+        },
+      },
+      hst && hst.nickname ? "Cambiar nombre" : "Ponerle nombre",
+    );
+  }
+
+  /** «Quién empezó» / «Con quién»: nombre, dirección y lo que se sabe. */
+  function whoFact(ip, endpointText, extra) {
+    const hst = hostOf(ip);
+    const facts = hostFacts(hst);
+    return [
+      hst && hst.short ? h("b", { class: "host-name" }, hst.short, " ") : null,
+      h("span", { class: "mono" }, endpointText),
+      extra ? ` · ${extra}` : "",
+      " ",
+      renameButton(ip),
+      facts.length ? h("div", { class: "sub" }, facts.join(" · ")) : null,
+    ];
+  }
+
+  async function loadHosts() {
+    try {
+      const list = await api("/api/hosts");
+      state.hosts = new Map(list.map((x) => [x.ip, x]));
+    } catch {
+      state.hosts = new Map();
+    }
+  }
+
+  let nickTarget = null;
+  function openNickDialog(ip) {
+    const hst = hostOf(ip);
+    nickTarget = { key: hst ? hst.key : `ip:${ip}`, ip };
+    const who = [hst && hst.short, ip, hst && hst.mac ? `MAC ${hst.mac}` : null].filter(Boolean).join(" · ");
+    $("#nick-who").textContent = who;
+    $("#nick-input").value = (hst && hst.nickname) || "";
+    $("#nick-remove").hidden = !(hst && hst.nickname);
+    $("#nick-error").hidden = true;
+    $("#nick-dlg").showModal();
+    $("#nick-input").focus();
+  }
+
+  async function saveNick(name) {
+    if (!nickTarget) return;
+    const err = $("#nick-error");
+    try {
+      const ses = await api(`/api/hosts/nick?key=${encodeURIComponent(nickTarget.key)}&name=${encodeURIComponent(name)}`, { method: "POST" });
+      $("#nick-dlg").close();
+      await refresh(ses);
+      renderDetail();
+      toast(name ? `Ahora se llama «${name.trim()}».` : "Nombre quitado.", "info");
+    } catch (e) {
+      err.hidden = false;
+      err.textContent = e.message;
+    }
+  }
 
   function dot(level) {
     const l = LEVEL[level] || LEVEL.ok;
@@ -385,7 +479,13 @@
         h(
           "li",
           { class: `story ${st.level}` },
-          h("h3", null, dot(st.level), h("span", null, st.title)),
+          h(
+            "h3",
+            null,
+            dot(st.level),
+            h("span", null, st.title),
+            Date.now() - (state.freshStories.get(storyKey(st)) || 0) < 120000 ? h("span", { class: "new-badge" }, "Nuevo") : null,
+          ),
           h("p", null, rich(st.story)),
           h("p", { class: "todo" }, rich(st.action)),
           h(
@@ -396,6 +496,64 @@
           ),
         ),
       );
+    }
+  }
+
+  // ------------------------------------------------------------ avisos en vivo
+
+  const storyKey = (st) => `${st.alert_id}|${st.title}`;
+
+  function baseTitle() {
+    return state.session && state.session.loaded ? `${state.session.name} · soc-shark` : "soc-shark";
+  }
+
+  function updateTitle() {
+    document.title = (state.unseen ? `(${state.unseen}) ` : "") + baseTitle();
+  }
+
+  function setWatch(on) {
+    state.watch = on;
+    pref("watch", on ? "1" : "0");
+    $("#watch-btn").setAttribute("aria-pressed", String(on));
+    if (on && "Notification" in window && Notification.permission === "default") {
+      Notification.requestPermission().catch(() => {});
+    }
+  }
+
+  /** Historias nuevas desde la última foto: marca «Nuevo» y, con los avisos
+   *  activados, notificación del sistema + aviso en la ventana. */
+  function checkNewStories(stories) {
+    const fresh = stories.filter((st) => !state.seenStories.has(storyKey(st)));
+    for (const st of fresh) {
+      state.seenStories.add(storyKey(st));
+      state.freshStories.set(storyKey(st), Date.now());
+    }
+    const important = fresh.filter((st) => st.level !== "ok");
+    if (!important.length || !state.watch || !liveRunning()) return;
+    const danger = important.some((st) => st.level === "peligro");
+    const head = important.find((st) => st.level === "peligro") || important[0];
+    const more = important.length > 1 ? ` (y ${important.length - 1} más)` : "";
+    toast(`${danger ? "✕ Peligro" : "! Algo raro"}: ${head.title}${more}`, danger ? "error" : "info");
+    if (!document.hasFocus()) {
+      state.unseen += important.length;
+      updateTitle();
+    }
+    // Notificación del sistema, como mucho una cada 10 s.
+    if ("Notification" in window && Notification.permission === "granted" && Date.now() - state.lastNotify > 10000) {
+      state.lastNotify = Date.now();
+      try {
+        const n = new Notification(danger ? "soc-shark: algo peligroso en tu red" : "soc-shark: algo raro en tu red", {
+          body: `${head.title}${more}. Qué hacer: ${head.action}`.slice(0, 300),
+          tag: "socshark-aviso",
+        });
+        n.onclick = () => {
+          window.focus();
+          showStory(head);
+          n.close();
+        };
+      } catch {
+        /* sin notificaciones del sistema: queda el aviso de la ventana */
+      }
     }
   }
 
@@ -499,12 +657,14 @@
       h("td", null, dot(e.level)),
       h("td", { class: "time" }, fmtTime(f.first_seen_micros)),
       h("td", { class: "mono" }, r.proto),
-      h("td", { class: "mono" }, ep(f, "src")),
+      h("td", { class: "mono" }, ep(f, "src"), r.src_name ? h("div", { class: "sub", title: r.src_name }, r.src_name) : null),
       h(
         "td",
         { class: "mono" },
         ep(f, "dst"),
-        f.resolved_domain ? h("div", { class: "sub", title: f.resolved_domain }, f.resolved_domain) : null,
+        r.dst_name || f.resolved_domain
+          ? h("div", { class: "sub", title: r.dst_name || f.resolved_domain }, r.dst_name || f.resolved_domain)
+          : null,
       ),
       h("td", { class: "num" }, nf.format(f.packets + f.packets_rev)),
       h("td", { class: "num" }, fmtBytes(f.bytes + f.bytes_rev)),
@@ -705,8 +865,11 @@
 
     const facts = [];
     const fact = (k, ...v) => facts.push(h("dt", null, k), h("dd", null, ...v));
-    fact("Quién empezó", h("span", { class: "mono" }, ep(f, "src")));
-    fact("Con quién", h("span", { class: "mono" }, ep(f, "dst")), f.resolved_domain ? ` · ${f.resolved_domain}` : "");
+    fact("Quién empezó", ...whoFact(f.src_ip, ep(f, "src")));
+    if (f.process_name) {
+      fact("Programa", h("b", null, f.process_name), f.pid != null ? h("span", { class: "sub" }, ` · proceso ${f.pid}`) : null);
+    }
+    fact("Con quién", ...whoFact(f.dst_ip, ep(f, "dst"), hostOf(f.dst_ip) && hostOf(f.dst_ip).short ? null : f.resolved_domain));
     fact("Protocolo", rich(TRANSPORTS.includes(r.proto) ? r.proto : `${r.proto} sobre ${transportName(f)}`));
     fact("Cuándo", `${fmtDateTime(f.first_seen_micros)} · duró ${fmtDuration(f.duration_micros)}`);
     fact(
@@ -1417,7 +1580,17 @@
             },
           },
           h("td", null, dot(e.level)),
-          h("td", { class: "mono" }, e.ip, e.domain ? h("div", { class: "sub", title: e.domain }, e.domain) : null),
+          h(
+            "td",
+            null,
+            e.host && e.host.short ? h("div", { class: "host-name" }, e.host.short, " ", renameButton(e.ip)) : null,
+            h("div", { class: e.host && e.host.short ? "mono sub" : "mono" }, e.ip, e.host && e.host.short ? null : [" ", renameButton(e.ip)]),
+            e.host && hostFacts(e.host).length
+              ? h("div", { class: "sub" }, hostFacts(e.host).slice(0, 2).join(" · "))
+              : e.domain
+                ? h("div", { class: "sub", title: e.domain }, e.domain)
+                : null,
+          ),
           h("td", null, h("span", { class: `scope ${e.scope}` }, SCOPE_ES[e.scope] || e.scope)),
           h("td", { class: "num" }, nf.format(e.flows)),
           h("td", { class: "num" }, nf.format(e.peers)),
@@ -1515,6 +1688,254 @@
     return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 2.5 ? 2.5 : n <= 5 ? 5 : 10) * mag;
   }
 
+  // ------------------------------------------------------------ mapa de la red
+
+  const MAP_ROW = 62;
+
+  async function loadMap({ quiet = false } = {}) {
+    const box = $("#map");
+    state.lastStats = Date.now();
+    const q = viewQuery();
+    if (!quiet && box.childElementCount) box.style.opacity = "0.6";
+    let data;
+    try {
+      data = await api(`/api/map${q ? "?" + q : ""}`);
+    } catch (err) {
+      box.style.opacity = "";
+      if (!quiet) toast(`No se pudo dibujar el mapa: ${err.message}`);
+      return;
+    }
+    box.style.opacity = "";
+    const top = box.scrollTop;
+    renderMap(box, data);
+    box.scrollTop = top;
+  }
+
+  const levelLabel = (lv) => (lv && lv !== "ok" ? LEVEL[lv].label.toLowerCase() : null);
+
+  function renderMap(box, data) {
+    clear(box);
+    box.append(
+      h(
+        "div",
+        { class: "map-head" },
+        h("h2", null, "Mapa de la red"),
+        h(
+          "p",
+          { class: "sub" },
+          "A la izquierda, los equipos de tu red; en el centro, el router (la puerta a Internet); a la derecha, los sitios de Internet. ",
+          "Cuanto más gruesa la línea, más datos. Pulsa un equipo para ver solo lo suyo.",
+        ),
+      ),
+    );
+    if (!data.nodes.length) {
+      box.append(h("p", { class: "chart-empty" }, liveRunning() ? "Escuchando… el mapa se dibuja en cuanto haya tráfico." : "No hay conversaciones que dibujar con estos filtros."));
+      return;
+    }
+    const byId = new Map(data.nodes.map((n) => [n.id, n]));
+    const locals = data.nodes.filter((n) => n.column === "local");
+    const externals = data.nodes.filter((n) => n.column === "internet");
+    const group = data.nodes.find((n) => n.column === "group");
+    const routerNode = data.router ? byId.get(data.router) : null;
+
+    // Por dónde se sale a Internet: el router, o un cruce si no se conoce.
+    const needsGateway = data.links.some((l) => {
+      const a = byId.get(l.a);
+      const b = byId.get(l.b);
+      return a && b && (a.column === "internet") !== (b.column === "internet");
+    });
+    const W = Math.max(760, box.clientWidth - 34);
+    const rows = Math.max(locals.length, externals.length, 3);
+    const H = rows * MAP_ROW + 70 + (group ? 70 : 0);
+    const xL = 96;
+    const xC = Math.round(W * 0.48);
+    const xR = Math.round(W - 250);
+    const spread = (list, i) => 60 + ((i + 0.5) * (rows * MAP_ROW)) / list.length;
+    const pos = new Map();
+    locals.forEach((n, i) => pos.set(n.id, { x: xL, y: spread(locals, i) }));
+    externals.forEach((n, i) => pos.set(n.id, { x: xR, y: spread(externals, i) }));
+    const gw = { x: xC, y: 60 + (rows * MAP_ROW) / 2 };
+    if (routerNode) pos.set(routerNode.id, gw);
+    if (group) pos.set(group.id, { x: xC, y: H - 40 });
+
+    // Enlaces agregados: equipo↔router (todo lo que sale por él) y
+    // router↔sitio; entre equipos de casa, arcos; con «toda la red», rectas.
+    const edges = new Map();
+    const addEdge = (key, from, to, l, members) => {
+      const e = edges.get(key) || { from, to, bytes: 0, flows: 0, level: "ok", members: new Set() };
+      e.bytes += l.bytes;
+      e.flows += l.flows;
+      if (RANK[l.level] > RANK[e.level]) e.level = l.level;
+      for (const m of members) e.members.add(m);
+      edges.set(key, e);
+    };
+    const gwId = routerNode ? routerNode.id : "__gw";
+    for (const l of data.links) {
+      const a = byId.get(l.a);
+      const b = byId.get(l.b);
+      if (!a || !b) continue;
+      const ext = a.column === "internet" ? a : b.column === "internet" ? b : null;
+      const other = ext === a ? b : a;
+      if (ext && other.column !== "internet") {
+        if (other.id !== gwId) addEdge(`${other.id}>gw`, other.id, gwId, l, [other.id, ext.id, gwId]);
+        addEdge(`gw>${ext.id}`, gwId, ext.id, l, [other.id, ext.id, gwId]);
+      } else if ((a.id === gwId && b.column === "local") || (b.id === gwId && a.column === "local")) {
+        const loc = a.id === gwId ? b : a;
+        addEdge(`${loc.id}>gw`, loc.id, gwId, l, [loc.id, gwId]);
+      } else {
+        addEdge(`${a.id}|${b.id}`, a.id, b.id, l, [a.id, b.id]);
+      }
+    }
+    const maxB = Math.max(1, ...[...edges.values()].map((e) => e.bytes));
+    const where = (id) => (id === "__gw" ? gw : pos.get(id));
+
+    const svg = s("svg", { class: "map-svg", viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: "img", "aria-label": "Mapa de la red" });
+    const colTitle = (x, text, anchor) => s("text", { class: "col-title", x, y: 22, "text-anchor": anchor }, text);
+    svg.append(colTitle(xL - 20, "Tu red", "start"), colTitle(xC, needsGateway || routerNode ? "Router" : "", "middle"), colTitle(xR - 20, "Internet", "start"));
+    const edgeLayer = s("g");
+    const nodeLayer = s("g");
+    svg.append(edgeLayer, nodeLayer);
+    const edgeEls = [];
+    for (const e of edges.values()) {
+      const p1 = where(e.from);
+      const p2 = where(e.to);
+      if (!p1 || !p2) continue;
+      let d;
+      const localPair = byId.get(e.from)?.column === "local" && byId.get(e.to)?.column === "local";
+      if (localPair && p1.x === p2.x) {
+        // Arco hacia la izquierda entre dos equipos de casa.
+        const bulge = Math.min(80, 26 + Math.abs(p2.y - p1.y) * 0.2);
+        d = `M${p1.x},${p1.y} C${p1.x - bulge},${p1.y} ${p2.x - bulge},${p2.y} ${p2.x},${p2.y}`;
+      } else {
+        const mx = (p1.x + p2.x) / 2;
+        d = `M${p1.x},${p1.y} C${mx},${p1.y} ${mx},${p2.y} ${p2.x},${p2.y}`;
+      }
+      const width = 1.5 + 6.5 * Math.sqrt(e.bytes / maxB);
+      const path = s("path", { class: `edge ${e.level}`, d, "stroke-width": width.toFixed(1) });
+      const hit = s("path", { class: "edge-hit", d });
+      const name = (id) => (id === "__gw" ? "la salida a Internet" : byId.get(id)?.label || id);
+      const tip = () => {
+        const lv = levelLabel(e.level);
+        showTipAt(
+          { left: hitPoint.x, right: hitPoint.x, top: hitPoint.y, bottom: hitPoint.y },
+          h("span", { class: "tv" }, fmtBytes(e.bytes)),
+          `${name(e.from)} ↔ ${name(e.to)} · ${plural(e.flows, "conversación", "conversaciones")}`,
+          lv ? ` · ${lv}` : "",
+        );
+      };
+      let hitPoint = { x: 0, y: 0 };
+      hit.addEventListener("pointermove", (ev) => {
+        hitPoint = { x: ev.clientX + 8, y: ev.clientY + 8 };
+        tip();
+      });
+      hit.addEventListener("pointerleave", hideTip);
+      edgeLayer.append(path, hit);
+      edgeEls.push({ path, members: e.members });
+    }
+
+    const nodeEls = new Map();
+    const focus = (id, on) => {
+      svg.classList.toggle("focus", on);
+      for (const el of nodeEls.values()) el.classList.remove("on");
+      for (const ed of edgeEls) ed.path.classList.toggle("on", on && ed.members.has(id));
+      if (!on) return;
+      nodeEls.get(id)?.classList.add("on");
+      for (const ed of edgeEls) if (ed.members.has(id)) for (const m of ed.members) nodeEls.get(m)?.classList.add("on");
+    };
+    const drawNode = (n, p, labelSide) => {
+      const lv = n.level && n.level !== "ok" ? n.level : null;
+      const g = s("g", { class: `node${lv ? " " + lv : ""}`, transform: `translate(${p.x},${p.y})`, tabindex: n.ip ? "0" : null, role: n.ip ? "button" : null });
+      g.append(s("circle", { class: "body", r: 20 }), s("use", { href: `#m-${n.icon}`, x: -11, y: -11, width: 22, height: 22 }));
+      if (lv) {
+        // Gravedad con icono, no solo color.
+        g.append(s("circle", { class: `badge-dot ${lv}`, cx: 15, cy: -15, r: 8 }), s("text", { class: "badge-txt", x: 15, y: -11.5, "text-anchor": "middle" }, LEVEL[lv].icon));
+      }
+      const short = n.label.length > 26 ? n.label.slice(0, 25) + "…" : n.label;
+      const showIp = n.ip && n.ip !== n.label;
+      if (labelSide === "below") {
+        g.append(s("text", { class: "lbl", x: 0, y: 36, "text-anchor": "middle" }, short));
+        if (showIp) g.append(s("text", { class: "lbl-sub", x: 0, y: 51, "text-anchor": "middle" }, n.ip));
+      } else {
+        g.append(s("text", { class: "lbl", x: 28, y: showIp ? -1 : 4 }, short));
+        if (showIp) g.append(s("text", { class: "lbl-sub", x: 28, y: 14 }, n.ip));
+      }
+      const facts = hostFacts(n.host);
+      g.addEventListener("pointerenter", () => {
+        focus(n.id, true);
+        const r = g.getBoundingClientRect();
+        showTipAt(
+          r,
+          h("b", null, n.label),
+          [n.ip && n.ip !== n.label ? n.ip : null, `${fmtBytes(n.bytes)} en ${plural(n.flows, "conversación", "conversaciones")}`, levelLabel(n.level) ? `hay algo ${levelLabel(n.level) === "peligro" ? "peligroso" : "raro"}` : null, ...facts]
+            .filter(Boolean)
+            .join(" · "),
+        );
+      });
+      g.addEventListener("pointerleave", () => {
+        focus(n.id, false);
+        hideTip();
+      });
+      if (n.ip) {
+        const go = () => applyAsFilter(exprHost(n.ip));
+        g.addEventListener("click", go);
+        g.addEventListener("keydown", (ev) => ev.key === "Enter" && go());
+        g.addEventListener("contextmenu", (ev) => {
+          ev.preventDefault();
+          openMenu(ev.clientX, ev.clientY, hostMenu(n.ip, n.label !== n.ip ? n.label : null));
+        });
+      }
+      nodeLayer.append(g);
+      nodeEls.set(n.id, g);
+    };
+    for (const n of locals) drawNode(n, pos.get(n.id), "right");
+    for (const n of externals) drawNode(n, pos.get(n.id), "right");
+    if (routerNode) drawNode(routerNode, gw, "below");
+    else if (needsGateway) {
+      const g = s("g", { class: "node gateway", transform: `translate(${gw.x},${gw.y})` });
+      g.append(s("circle", { class: "body", r: 9 }), s("text", { class: "lbl-sub", x: 0, y: 26, "text-anchor": "middle" }, "salida a Internet"));
+      nodeLayer.append(g);
+      nodeEls.set("__gw", g);
+    }
+    if (group) drawNode(group, pos.get(group.id), "below");
+    box.append(h("div", { class: "map-canvas" }, svg));
+
+    box.append(
+      h(
+        "div",
+        { class: "map-legend" },
+        h("span", null, h("i", { class: "lg-line" }), "más grosor = más datos"),
+        h("span", null, dot("peligro"), "peligro"),
+        h("span", null, dot("raro"), "raro"),
+        h("span", { class: "sub" }, "Pasa el ratón por un equipo para ver con quién habla."),
+      ),
+      h(
+        "details",
+        { class: "as-table" },
+        h("summary", null, "Ver como lista"),
+        h(
+          "table",
+          { class: "grid" },
+          h("thead", null, h("tr", null, ["Quién", "Con quién", "Conversaciones", "Datos", ""].map((c, i) => h("th", { class: i >= 2 && i < 4 ? "num" : null }, h("span", null, c))))),
+          h(
+            "tbody",
+            null,
+            data.links.map((l) =>
+              h(
+                "tr",
+                { class: l.level !== "ok" ? l.level : null },
+                h("td", null, byId.get(l.a)?.label || l.a),
+                h("td", null, byId.get(l.b)?.label || l.b),
+                h("td", { class: "num" }, nf.format(l.flows)),
+                h("td", { class: "num" }, fmtBytes(l.bytes)),
+                h("td", null, l.level !== "ok" ? badge(l.level) : null),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   // ------------------------------------------------------------ menú contextual
 
   const menu = $("#ctx");
@@ -1578,13 +1999,16 @@
   }
 
   function hostMenu(ip, domain) {
-    return [
-      { title: domain ? `${ip} · ${domain}` : ip },
+    const hst = hostOf(ip);
+    const items = [
+      { title: [hst && hst.short, ip, domain].filter(Boolean).join(" · ") },
       { label: "Ver solo este equipo", expr: exprHost(ip) },
       { label: "Ocultar este equipo", expr: exprNotHost(ip) },
       "-",
-      { label: "Copiar la dirección", action: () => copy(ip) },
     ];
+    if (isLanIp(ip)) items.push({ label: hst && hst.nickname ? "Cambiar su nombre…" : "Ponerle nombre…", action: () => openNickDialog(ip) });
+    items.push({ label: "Copiar la dirección", action: () => copy(ip) });
+    return items;
   }
 
   function flowMenu(r) {
@@ -1603,6 +2027,12 @@
       "-",
       { label: "Ver sus paquetes", action: () => (switchView("flows"), select(r.idx), setTab("packets")) },
       { label: "Ver lo que se dijeron", action: () => (switchView("flows"), select(r.idx), setTab("stream")) },
+      "-",
+    );
+    for (const ip of [f.src_ip, f.dst_ip]) {
+      if (isLanIp(ip)) items.push({ label: `Ponerle nombre a ${(hostOf(ip) && hostOf(ip).short) || ip}…`, action: () => openNickDialog(ip) });
+    }
+    items.push(
       "-",
       { label: "Copiar origen", hint: ep(f, "src"), action: () => copy(ep(f, "src")) },
       { label: "Copiar destino", hint: ep(f, "dst"), action: () => copy(ep(f, "dst")) },
@@ -1659,10 +2089,13 @@
     state.pk.selPos = -1;
     $("#filter-input").value = "";
     setFilterError(null);
-    const [stories, data] = await Promise.all([api("/api/stories"), loadFlows("")]);
+    const [stories, data] = await Promise.all([api("/api/stories"), loadFlows(""), loadHosts()]);
     state.stories = stories;
+    state.seenStories = new Set(stories.map(storyKey));
+    state.freshStories = new Map();
+    state.unseen = 0;
     if (data.truncated) toast(`Hay ${nf.format(data.total)} conversaciones: se muestran las primeras 10.000. Usa un filtro para acotar.`, "info");
-    document.title = `${state.session.name} · soc-shark`;
+    updateTitle();
     renderOverview();
     renderStories();
     renderStoryChip();
@@ -1692,9 +2125,10 @@
 
   async function doRefresh(ses) {
     try {
-      const [stories] = await Promise.all([api("/api/stories"), loadFlows(state.filter)]);
+      const [stories] = await Promise.all([api("/api/stories"), loadFlows(state.filter), loadHosts()]);
       state.session = ses;
       state.stories = stories;
+      checkNewStories(stories);
       if (state.storyFilter) {
         const again = stories.find((st) => st.title === state.storyFilter.title);
         state.storyFilter.idx = new Set(again ? again.flows : []);
@@ -1722,6 +2156,8 @@
         pkRender();
       } else if (state.view === "stats" && (Date.now() - state.lastStats > 2500 || !liveRunning())) {
         loadStats({ quiet: true });
+      } else if (state.view === "map" && (Date.now() - state.lastStats > 2500 || !liveRunning())) {
+        loadMap({ quiet: true });
       }
       renderStatus();
     } catch (err) {
@@ -1827,6 +2263,7 @@
     $("#live-go").disabled = true;
     $("#live-replace").hidden = !(state.session && state.session.loaded && !liveRunning());
     $("#bpf-input").value = pref("bpf") || "";
+    $("#live-watch").checked = state.watch;
     list.append(h("p", { class: "muted" }, "Buscando interfaces…"));
     if (!dlg.open) dlg.showModal();
     let ifaces;
@@ -1907,6 +2344,7 @@
     }
     pref("iface", iface);
     pref("bpf", bpf);
+    setWatch($("#live-watch").checked);
     const chosen = state.ifaces.find((x) => x.name === iface);
     if (chosen) pref("iface-desc-" + iface, ifaceTitle(chosen));
     $("#live-dlg").close();
@@ -1967,26 +2405,40 @@
 
   // ------------------------------------------------------------ guardar
 
-  async function save() {
-    if (!state.session || !state.session.loaded || !state.session.packets) return;
+  /** Descarga un archivo de la API (con el token) a la carpeta de descargas. */
+  async function download(path, fallback) {
     let res;
     try {
-      res = await fetch("/api/save.pcap", { headers: { "X-Socshark-Token": TOKEN } });
+      res = await fetch(path, { headers: { "X-Socshark-Token": TOKEN } });
       if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || `Error ${res.status}`);
     } catch (e) {
-      toast(`No se pudo guardar: ${e.message}`);
-      return;
+      toast(`No se pudo descargar: ${e.message}`);
+      return null;
     }
     const blob = await res.blob();
     const m = /filename="([^"]+)"/.exec(res.headers.get("Content-Disposition") || "");
-    const name = m ? m[1] : "captura.pcap";
+    const name = m ? m[1] : fallback;
     const url = URL.createObjectURL(blob);
     const a = h("a", { href: url, download: name, hidden: true });
     document.body.append(a);
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 30000);
-    toast(`Guardado «${name}» (${fmtBytes(blob.size)}) en tu carpeta de descargas. Se abre también con Wireshark.`, "info");
+    return { name, size: blob.size };
+  }
+
+  async function save() {
+    if (!state.session || !state.session.loaded || !state.session.packets) return;
+    const got = await download("/api/save.pcap", "captura.pcap");
+    if (got) toast(`Guardado «${got.name}» (${fmtBytes(got.size)}) en tu carpeta de descargas. Se abre también con Wireshark.`, "info");
+  }
+
+  async function report() {
+    if (!state.session || !state.session.loaded) return;
+    // Minutos respecto a UTC, para poner las horas como en tu reloj.
+    const tz = -new Date().getTimezoneOffset();
+    const got = await download(`/api/report.html?tz=${tz}`, "informe.html");
+    if (got) toast(`Informe «${got.name}» guardado en tu carpeta de descargas: ábrelo con doble clic, imprímelo o envíalo.`, "info");
   }
 
   // ------------------------------------------------------------ barra de herramientas y de estado
@@ -1997,6 +2449,7 @@
     $("#stop-btn").hidden = !running;
     const ses = state.session;
     $("#save-btn").disabled = !(ses && ses.loaded && ses.packets > 0);
+    $("#report-btn").disabled = !(ses && ses.loaded);
     $("#follow-wrap").hidden = !running;
   }
 
@@ -2041,13 +2494,14 @@
   // ------------------------------------------------------------ vistas y paneles
 
   function switchView(view) {
-    if (!["flows", "packets", "stats"].includes(view)) view = "flows";
+    if (!["flows", "packets", "stats", "map"].includes(view)) view = "flows";
     state.view = view;
     pref("view", view);
     for (const b of $$(".views [role=tab]")) b.setAttribute("aria-selected", String(b.dataset.view === view));
     $("#view-flows").hidden = view !== "flows";
     $("#view-packets").hidden = view !== "packets";
     $("#view-stats").hidden = view !== "stats";
+    $("#view-map").hidden = view !== "map";
     renderStoryChip();
     renderView();
   }
@@ -2058,7 +2512,8 @@
     else if (state.view === "packets") {
       if (state.pk.key !== `${gen()}|${viewQuery()}`) pkReset();
       else pkRender();
-    } else loadStats();
+    } else if (state.view === "map") loadMap();
+    else loadStats();
     renderStatus();
   }
 
@@ -2208,12 +2663,26 @@
     $("#welcome-live").addEventListener("click", openLiveDialog);
     $("#stop-btn").addEventListener("click", stopLive);
     $("#save-btn").addEventListener("click", save);
+    $("#report-btn").addEventListener("click", report);
+    $("#watch-btn").addEventListener("click", () => setWatch(!state.watch));
+    window.addEventListener("focus", () => {
+      if (state.unseen) {
+        state.unseen = 0;
+        updateTitle();
+      }
+    });
     $("#file-input").addEventListener("change", (e) => openFile(e.target.files[0]));
     $("#live-form").addEventListener("submit", (e) => {
       e.preventDefault();
       if (!$("#live-go").disabled) startLive();
     });
     for (const b of $$("#live-dlg [data-close]")) b.addEventListener("click", () => $("#live-dlg").close());
+    for (const b of $$("#nick-dlg [data-close]")) b.addEventListener("click", () => $("#nick-dlg").close());
+    $("#nick-form").addEventListener("submit", (e) => {
+      e.preventDefault();
+      saveNick($("#nick-input").value);
+    });
+    $("#nick-remove").addEventListener("click", () => saveNick(""));
     $("#filter-form").addEventListener("submit", (e) => {
       e.preventDefault();
       applyFilter();
@@ -2273,7 +2742,11 @@
     let resizeTimer = 0;
     window.addEventListener("resize", () => {
       clearTimeout(resizeTimer);
-      resizeTimer = setTimeout(() => state.view === "stats" && state.session?.loaded && loadStats({ quiet: true }), 250);
+      resizeTimer = setTimeout(() => {
+        if (!state.session?.loaded) return;
+        if (state.view === "stats") loadStats({ quiet: true });
+        if (state.view === "map") loadMap({ quiet: true });
+      }, 250);
     });
 
     document.addEventListener("pointerdown", (e) => {
@@ -2283,7 +2756,7 @@
     document.addEventListener("scroll", closeMenu, true);
 
     document.addEventListener("keydown", (e) => {
-      const typing = e.target.closest && e.target.closest("input, select, textarea");
+      const typing = e.target.closest && e.target.closest("input:not([type=checkbox]):not([type=radio]), select, textarea");
       const dialogOpen = document.querySelector("dialog[open]");
       const ctrl = e.ctrlKey || e.metaKey;
       if (!menu.hidden) {
@@ -2313,6 +2786,9 @@
       } else if (ctrl && e.key.toLowerCase() === "s") {
         e.preventDefault();
         save();
+      } else if (ctrl && e.key.toLowerCase() === "i") {
+        e.preventDefault();
+        report();
       } else if (ctrl && e.key.toLowerCase() === "b") {
         e.preventDefault();
         toggleSidebar();
@@ -2321,8 +2797,8 @@
       } else if (e.key === "/") {
         e.preventDefault();
         $("#filter-input").focus();
-      } else if (["1", "2", "3"].includes(e.key) && !ctrl && !e.altKey) {
-        switchView(["flows", "packets", "stats"][Number(e.key) - 1]);
+      } else if (["1", "2", "3", "4"].includes(e.key) && !ctrl && !e.altKey) {
+        switchView(["flows", "packets", "stats", "map"][Number(e.key) - 1]);
       } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
         e.preventDefault();
         const d = e.key === "ArrowDown" ? 1 : -1;
@@ -2375,6 +2851,8 @@
     state.mode = pref("mode") === "experto" ? "experto" : "simple";
     for (const b of $$(".segmented[aria-label='Nivel de detalle'] button")) b.setAttribute("aria-pressed", String(b.dataset.mode === state.mode));
     state.showNoise = pref("noise") === "1";
+    state.watch = pref("watch") === "1";
+    $("#watch-btn").setAttribute("aria-pressed", String(state.watch));
     $("#noise-toggle").checked = state.showNoise;
     state.combine = pref("combine") === "1";
     state.measure = pref("measure") === "bytes" ? "bytes" : "packets";
@@ -2387,11 +2865,12 @@
     renderHistory();
     if (pref("side") === "0") toggleSidebar(false);
     const view = pref("view");
-    state.view = ["flows", "packets", "stats"].includes(view) ? view : "flows";
+    state.view = ["flows", "packets", "stats", "map"].includes(view) ? view : "flows";
     for (const b of $$(".views [role=tab]")) b.setAttribute("aria-selected", String(b.dataset.view === state.view));
     $("#view-flows").hidden = state.view !== "flows";
     $("#view-packets").hidden = state.view !== "packets";
     $("#view-stats").hidden = state.view !== "stats";
+    $("#view-map").hidden = state.view !== "map";
   }
 
   async function start() {

@@ -1,7 +1,7 @@
 //! Punto de entrada del binario `socshark`.
 
 use clap::Parser;
-use socshark_cli::cli::{Cli, Cmd, DevCmd};
+use socshark_cli::cli::{Cli, Cmd, DevCmd, Scenario};
 use socshark_cli::daemon::{self, DaemonOptions};
 use socshark_cli::follow;
 use socshark_cli::fuzz::{self, FuzzOptions};
@@ -161,6 +161,29 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             },
         }),
 
+        Cmd::Report {
+            read,
+            out,
+            utc_offset,
+            intel_feodo,
+            intel_tor,
+        } => {
+            let cfg = PipelineConfig {
+                file_carving: true,
+                intel_feodo,
+                intel_tor,
+                ..PipelineConfig::default()
+            };
+            let html = socshark_cli::report::from_file(&read, &cfg, utc_offset)?;
+            std::fs::write(&out, html)
+                .map_err(|e| anyhow::anyhow!("no se pudo escribir {}: {e}", out.display()))?;
+            eprintln!(
+                "[+] Informe escrito en {} (ábrelo con el navegador)",
+                out.display()
+            );
+            Ok(())
+        }
+
         Cmd::Export {
             read,
             format,
@@ -207,11 +230,14 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         }
 
         Cmd::Dev { cmd } => match cmd {
-            DevCmd::SamplePcap { out } => {
-                let packets = socshark_testgen::sample_pcap_packets();
+            DevCmd::SamplePcap { out, escenario } => {
+                let (packets, label) = match escenario {
+                    Scenario::Demo => (socshark_testgen::sample_pcap_packets(), "demo"),
+                    Scenario::Casa => (socshark_testgen::home_pcap_packets(), "casa"),
+                };
                 socshark_testgen::write_pcap(&out, 1, &packets)?;
                 eprintln!(
-                    "[+] Escenario demo ({} paquetes) escrito en {}",
+                    "[+] Escenario {label} ({} paquetes) escrito en {}",
                     packets.len(),
                     out.display()
                 );

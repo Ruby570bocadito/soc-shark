@@ -22,6 +22,7 @@
 
 mod http;
 mod live;
+mod names;
 pub mod packets;
 
 use std::collections::{HashMap, HashSet};
@@ -39,12 +40,16 @@ use socshark_capture::{CaptureSource, LiveBreaker, LiveCapture, LiveCaptureConfi
 use socshark_core::config::PipelineConfig;
 use socshark_core::{EnrichedFlow, L7Protocol, Transport};
 use socshark_flow::PipelineStats;
-use socshark_soc::explain::{explain, service_by_port, stories, Explanation, Level, Story};
+use socshark_soc::explain::{
+    explain_with, service_by_port, stories_with, Explanation, Level, Story,
+};
+use socshark_soc::hosts::HostDirectory;
 use socshark_soc::ThreatIntelDb;
 
 use crate::pipeline::run_capture;
 use http::{read_request, write_response, ReadError, Request, Response};
 use live::LiveInfo;
+use names::{clean_nickname, Nicknames};
 use packets::PacketIndex;
 
 const INDEX_HTML: &str = include_str!("../../assets/gui/index.html");
@@ -83,6 +88,8 @@ pub(crate) struct Loaded {
     stats: PipelineStats,
     packets: Arc<RwLock<PacketIndex>>,
     live: Option<LiveInfo>,
+    /// Quién es quién: nombres, fabricante, router, apodos.
+    hosts: HostDirectory,
     /// Número de foto: cambia cada vez que se sustituye la sesión.
     generation: u64,
 }
@@ -94,17 +101,31 @@ impl Loaded {
         stats: PipelineStats,
         packets: Arc<RwLock<PacketIndex>>,
         live: Option<LiveInfo>,
+        hosts: HostDirectory,
     ) -> Self {
         Self {
-            explanations: flows.iter().map(explain).collect(),
-            stories: stories(&flows),
+            explanations: flows.iter().map(|f| explain_with(f, &hosts)).collect(),
+            stories: stories_with(&flows, &hosts),
             name,
             flows,
             stats,
             packets,
             live,
+            hosts,
             generation: 0,
         }
+    }
+
+    /// La misma captura con otros nombres (al poner o quitar un apodo).
+    fn renamed(&self, hosts: HostDirectory) -> Self {
+        Self::new(
+            self.name.clone(),
+            self.flows.clone(),
+            self.stats,
+            Arc::clone(&self.packets),
+            self.live.clone(),
+            hosts,
+        )
     }
 }
 
@@ -127,20 +148,8 @@ pub(crate) struct Server {
     generation: AtomicU64,
     live: Mutex<Option<LiveHandle>>,
     upload_seq: AtomicU64,
-}
-
-/// Analiza una captura de archivo con el pipeline completo (ruido incluido:
-/// la interfaz decide si lo muestra) y prepara su índice de paquetes.
-fn load(path: &Path, name: String, cfg: &PipelineConfig) -> Result<Loaded> {
-    let out = run_capture(path, None, true, cfg)?;
-    let packets = PacketIndex::build(path)?;
-    Ok(Loaded::new(
-        name,
-        out.flows,
-        out.stats,
-        Arc::new(RwLock::new(packets)),
-        None,
-    ))
+    /// Apodos de los equipos (en disco salvo en tests).
+    nicknames: Mutex<Nicknames>,
 }
 
 /// 128 bits impredecibles para quien no ve la página: dos `RandomState`
@@ -205,7 +214,70 @@ impl Server {
             generation: AtomicU64::new(0),
             live: Mutex::new(None),
             upload_seq: AtomicU64::new(0),
+            nicknames: Mutex::new(Nicknames::in_memory()),
         }
+    }
+
+    /// Analiza una captura de archivo con el pipeline completo (ruido
+    /// incluido: la interfaz decide si lo muestra) y prepara su índice de
+    /// paquetes, que de paso aprende quién es quién.
+    fn load(&self, path: &Path, name: String) -> Result<Loaded> {
+        let out = run_capture(path, None, true, &self.cfg)?;
+        let packets = PacketIndex::build(path)?;
+        let hosts = self.directory(&packets, &[]);
+        Ok(Loaded::new(
+            name,
+            out.flows,
+            out.stats,
+            Arc::new(RwLock::new(packets)),
+            None,
+            hosts,
+        ))
+    }
+
+    /// Quién es quién según el índice, con este ordenador y los apodos.
+    pub(crate) fn directory(&self, index: &PacketIndex, this_computer: &[IpAddr]) -> HostDirectory {
+        let mut hosts = index.hosts.directory();
+        hosts.mark_this_computer(this_computer);
+        if let Ok(n) = self.nicknames.lock() {
+            hosts.apply_nicknames(n.map());
+        }
+        hosts
+    }
+
+    /// `POST /api/hosts/nick?key=mac:…|ip:…&name=…` (nombre vacío = quitar).
+    fn set_nickname(&self, req: &Request) -> Response {
+        let Some(key) = req
+            .query_param("key")
+            .and_then(|k| HostDirectory::valid_key(&k))
+        else {
+            return Response::error(400, "equipo no válido");
+        };
+        let nickname = clean_nickname(&req.query_param("name").unwrap_or_default());
+        let saved = match self.nicknames.lock() {
+            Ok(mut n) => n.set(key, nickname),
+            Err(_) => return lock_err(),
+        };
+        if let Err(e) = saved {
+            return Response::error(500, &format!("no se pudo guardar el apodo: {e}"));
+        }
+        // Las frases llevan los nombres: se rehacen (en vivo, la próxima
+        // foto ya los trae igualmente).
+        let renamed = self.with_session_ref(|l| {
+            let mut hosts = l.hosts.clone();
+            if let Ok(n) = self.nicknames.lock() {
+                hosts.apply_nicknames(n.map());
+            }
+            l.renamed(hosts)
+        });
+        if let Some(l) = renamed {
+            self.replace_session(l);
+        }
+        self.with_session(|s| Response::json(200, &session_json(s)))
+    }
+
+    fn with_session_ref<T>(&self, f: impl FnOnce(&Loaded) -> T) -> Option<T> {
+        self.session.read().ok().and_then(|s| s.as_ref().map(f))
     }
 
     /// Sustituye la captura que enseña la ventana (archivo o foto en vivo).
@@ -281,6 +353,38 @@ impl Server {
             }),
             ("GET", ["packets"]) => self.with_loaded(|l| packets_page(l, req)),
             ("GET", ["stats"]) => self.with_loaded(|l| stats_json(l, req)),
+            ("GET", ["map"]) => self.with_loaded(|l| map_json(l, req)),
+            ("GET", ["report.html"]) => self.with_loaded(|l| {
+                // La ventana dice su zona horaria (minutos respecto a UTC).
+                let tz = req
+                    .query_param("tz")
+                    .and_then(|v| v.parse::<i32>().ok())
+                    .filter(|m| m.abs() <= 14 * 60)
+                    .unwrap_or(0);
+                let html = crate::report::render(&crate::report::ReportInput {
+                    name: &l.name,
+                    flows: &l.flows,
+                    explanations: &l.explanations,
+                    stories: &l.stories,
+                    hosts: &l.hosts,
+                    packets: l.stats.total_packets,
+                    tz_offset_minutes: tz,
+                    generated_micros: live::now_micros(),
+                });
+                let base = save_name(l).trim_end_matches(".pcap").to_string();
+                Response::download(
+                    &format!("informe-{base}.html"),
+                    "text/html; charset=utf-8",
+                    html.into_bytes(),
+                )
+            }),
+            ("GET", ["hosts"]) => self.with_loaded(|l| {
+                Response::json(
+                    200,
+                    &json!(l.hosts.hosts().iter().map(host_json).collect::<Vec<_>>()),
+                )
+            }),
+            ("POST", ["hosts", "nick"]) => self.set_nickname(req),
             ("GET", ["packets", n]) => self.with_loaded(|l| {
                 let Ok(idx) = l.packets.read() else {
                     return lock_err();
@@ -342,8 +446,8 @@ impl Server {
             ("POST", ["open"]) => self.open_upload(req),
             (
                 _,
-                ["session" | "stories" | "flows" | "packets" | "stats" | "timeline" | "save.pcap"
-                | "live" | "open", ..],
+                ["session" | "stories" | "flows" | "packets" | "stats" | "map" | "hosts"
+                | "timeline" | "save.pcap" | "report.html" | "live" | "open", ..],
             ) => Response::error(405, "método no permitido"),
             _ => Response::error(404, "no existe"),
         }
@@ -386,6 +490,13 @@ impl Server {
             Err(e) => return Response::error(400, &e.to_string()),
         };
         let index = Arc::new(RwLock::new(PacketIndex::new(source.link_type(), true)));
+        // Las direcciones de esta máquina: «este ordenador» y, para su
+        // tráfico, qué programa abrió cada conexión.
+        let mut local_addrs: Vec<IpAddr> = socshark_capture::list_ifaces()
+            .map(|l| l.into_iter().flat_map(|i| i.addresses).collect())
+            .unwrap_or_default();
+        local_addrs.sort();
+        local_addrs.dedup();
         let info = LiveInfo {
             iface: iface.clone(),
             bpf,
@@ -394,13 +505,19 @@ impl Server {
             kernel_recv: 0,
             kernel_drop: 0,
             error: None,
+            local_addrs,
         };
+        let hosts = self.directory(
+            &PacketIndex::new(source.link_type(), true),
+            &info.local_addrs,
+        );
         self.replace_session(Loaded::new(
             format!("En vivo · {iface}"),
             Vec::new(),
             PipelineStats::default(),
             Arc::clone(&index),
             Some(info.clone()),
+            hosts,
         ));
         let stop = Arc::new(AtomicBool::new(false));
         let breaker = source.breaker();
@@ -440,7 +557,7 @@ impl Server {
             std::env::temp_dir().join(format!("socshark-gui-{}-{seq}.pcap", std::process::id()));
         let result = std::fs::write(&tmp, &req.body)
             .context("no se pudo guardar el archivo temporal")
-            .and_then(|_| load(&tmp, name, &self.cfg));
+            .and_then(|_| self.load(&tmp, name));
         std::fs::remove_file(&tmp).ok();
         match result {
             Ok(loaded) => {
@@ -530,13 +647,31 @@ fn flows_json(l: &Loaded, filter: Option<String>) -> Response {
         .take(MAX_FLOWS)
         .map(|&i| {
             let f = &l.flows[i];
-            json!({ "idx": i, "proto": proto_name(f), "flow": f, "explain": &l.explanations[i] })
+            let short = |ip| l.hosts.get(ip).and_then(|h| h.short());
+            json!({
+                "idx": i,
+                "proto": proto_name(f),
+                "src_name": short(f.src_ip),
+                "dst_name": short(f.dst_ip),
+                "flow": f,
+                "explain": &l.explanations[i],
+            })
         })
         .collect();
     Response::json(
         200,
         &json!({ "flows": rows, "total": matching.len(), "truncated": matching.len() > MAX_FLOWS }),
     )
+}
+
+/// Un equipo del directorio para la ventana: lo que se sabe de él, su
+/// nombre corto y la clave con la que se le pone apodo.
+fn host_json(h: &socshark_soc::hosts::HostInfo) -> Value {
+    let mut v = serde_json::to_value(h).unwrap_or(Value::Null);
+    v["key"] = json!(h.key());
+    v["short"] = json!(h.short());
+    v["scope"] = json!(ip_scope(&h.ip));
+    v
 }
 
 /// Nombre corto del protocolo de una conversación: el de aplicación si se
@@ -552,7 +687,14 @@ fn proto_name(f: &EnrichedFlow) -> &'static str {
 /// Dónde está una dirección, dicho para personas.
 fn ip_scope(ip: &IpAddr) -> &'static str {
     match ip {
-        IpAddr::V4(v4) if v4.is_multicast() || v4.is_broadcast() => "grupo",
+        // x.x.x.255 privada: la difusión de una red /24 (la de casa).
+        IpAddr::V4(v4)
+            if v4.is_multicast()
+                || v4.is_broadcast()
+                || (v4.is_private() && v4.octets()[3] == 255) =>
+        {
+            "grupo"
+        }
         IpAddr::V4(v4) if v4.is_private() || v4.is_loopback() || v4.is_link_local() => "local",
         IpAddr::V6(v6) if v6.is_multicast() => "grupo",
         IpAddr::V6(v6)
@@ -633,6 +775,10 @@ fn stats_json(l: &Loaded, req: &Request) -> Response {
             ),
         ];
         for (ip, peer, p_out, p_in, b_out, b_in, domain) in sides {
+            // 0.0.0.0: un equipo que aún pide dirección; aparece luego con la suya.
+            if ip.is_unspecified() {
+                continue;
+            }
             let ep = endpoints.entry(ip).or_insert_with(|| Endpoint {
                 flows: 0,
                 peers: HashSet::new(),
@@ -696,6 +842,7 @@ fn stats_json(l: &Loaded, req: &Request) -> Response {
                 "ip": ip, "scope": ip_scope(ip), "domain": ep.domain, "flows": ep.flows,
                 "peers": ep.peers.len(), "packets_out": ep.packets_out, "packets_in": ep.packets_in,
                 "bytes_out": ep.bytes_out, "bytes_in": ep.bytes_in, "level": ep.level,
+                "host": l.hosts.get(*ip).map(host_json),
             })).collect::<Vec<_>>(),
             "services_total": services.len(),
             "services": services.iter().take(MAX_STATS_ROWS).map(|((port, tr), s)| {
@@ -757,6 +904,239 @@ impl<'a> ViewFilter<'a> {
     fn keep(&self, id: &str) -> bool {
         self.flow(id).is_some_and(|i| self.keep_flow(i))
     }
+}
+
+/// Sitios de Internet que se dibujan por separado en el mapa (el resto se
+/// agrupa en «otros sitios»).
+const MAP_MAX_EXTERNAL: usize = 12;
+/// Equipos de la red local que se dibujan como mucho.
+const MAP_MAX_LOCAL: usize = 40;
+
+/// Icono de un equipo en el mapa, por lo que se sabe de él.
+fn map_icon(h: Option<&socshark_soc::hosts::HostInfo>, ip: &IpAddr) -> &'static str {
+    use socshark_soc::hosts::Role;
+    if ip.is_loopback() {
+        return "computer";
+    }
+    let Some(h) = h else { return "device" };
+    match h.role {
+        Some(Role::Router) => return "router",
+        Some(Role::ThisComputer) => return "computer",
+        None => {}
+    }
+    let hint = h.vendor_hint.unwrap_or("");
+    // El nombre que el equipo se pone suele decir qué es.
+    let name = h.name.as_deref().unwrap_or("").to_lowercase();
+    let named = |words: &[&str]| words.iter().any(|w| name.contains(w));
+    if named(&[
+        "iphone", "ipad", "android", "galaxy", "pixel", "redmi", "xiaomi", "huawei", "movil",
+        "móvil", "phone",
+    ]) {
+        return "phone";
+    }
+    if named(&[
+        "desktop-",
+        "laptop",
+        "portatil",
+        "portátil",
+        "macbook",
+        "imac",
+        "-pc",
+        "thinkpad",
+    ]) {
+        return "computer";
+    }
+    if named(&["tv", "tele", "chromecast", "roku", "firestick"]) {
+        return "tv";
+    }
+    match h.kind.unwrap_or("") {
+        "la impresora" => "printer",
+        "el Chromecast" | "el Fire TV" | "el dispositivo AirPlay" => "tv",
+        "el altavoz" => "speaker",
+        "el ordenador" => "computer",
+        _ if hint.contains("impresora") => "printer",
+        _ if hint.contains("router") || hint.contains("Wi-Fi") => "router",
+        _ if hint.contains("móvil") => "phone",
+        _ if hint.contains("televisión") => "tv",
+        _ if h.os == Some("Windows") || hint.contains("ordenador") => "computer",
+        _ if h.os == Some("Android") => "phone",
+        _ => "device",
+    }
+}
+
+/// El mapa de la red: equipos de casa, router, sitios de Internet y quién
+/// habla con quién (con los mismos recortes que la ventana).
+fn map_json(l: &Loaded, req: &Request) -> Response {
+    let sel = match ViewFilter::from_request(l, req) {
+        Ok(f) => f,
+        Err(resp) => return resp,
+    };
+    #[derive(Default)]
+    struct Acc {
+        bytes: u64,
+        flows: u64,
+        level: Option<Level>,
+    }
+    impl Acc {
+        fn add(&mut self, bytes: u64, level: Level) {
+            self.bytes += bytes;
+            self.flows += 1;
+            self.level = Some(self.level.map_or(level, |l| l.max(level)));
+        }
+    }
+    // Un extremo: equipo de casa, sitio de Internet o «toda la red».
+    let resolve = |ip: IpAddr, mac: Option<&str>| -> Option<(String, &'static str)> {
+        if ip.is_unspecified() {
+            // Aún sin dirección (DHCP): se reconoce por su MAC si se puede.
+            let h = mac.and_then(|m| l.hosts.by_mac(m))?;
+            return Some((h.ip.to_string(), "local"));
+        }
+        Some(match ip_scope(&ip) {
+            "grupo" => ("grupo".to_string(), "group"),
+            "local" => (ip.to_string(), "local"),
+            _ if ip.is_loopback() => (ip.to_string(), "local"),
+            _ => (ip.to_string(), "internet"),
+        })
+    };
+
+    // Primera pasada: cuánto mueve cada extremo, para elegir los que se dibujan.
+    let kept: Vec<usize> = (0..l.flows.len()).filter(|&i| sel.keep_flow(i)).collect();
+    let mut volume: HashMap<String, (u64, &'static str)> = HashMap::new();
+    let mut labels: HashMap<String, String> = HashMap::new();
+    for &i in &kept {
+        let f = &l.flows[i];
+        let bytes = f.bytes + f.bytes_rev;
+        for (ip, mac) in [
+            (f.src_ip, f.src_mac.as_deref()),
+            (f.dst_ip, f.dst_mac.as_deref()),
+        ] {
+            if let Some((id, col)) = resolve(ip, mac) {
+                volume.entry(id).or_insert((0, col)).0 += bytes;
+            }
+        }
+        // Un sitio de Internet se llama por su nombre: el de la web pedida
+        // (SNI) o el dominio resuelto, salvo en DNS (ahí el dominio es lo
+        // que se preguntó, no quién responde), o un servidor conocido.
+        let named = match f.l7_protocol {
+            L7Protocol::Dns => None,
+            _ => f.tls_sni.as_deref().or(f.resolved_domain.as_deref()),
+        };
+        if let Some(name) = named.or_else(|| socshark_soc::explain::well_known_name(f.dst_ip)) {
+            labels
+                .entry(f.dst_ip.to_string())
+                .or_insert_with(|| name.to_string());
+        }
+    }
+    let top = |col: &str, max: usize| -> HashSet<String> {
+        let mut v: Vec<(&String, u64)> = volume
+            .iter()
+            .filter(|(_, (_, c))| *c == col)
+            .map(|(id, (b, _))| (id, *b))
+            .collect();
+        v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+        v.into_iter().take(max).map(|(id, _)| id.clone()).collect()
+    };
+    let shown_ext = top("internet", MAP_MAX_EXTERNAL);
+    let shown_local = top("local", MAP_MAX_LOCAL);
+    let node_of = |ip: IpAddr, mac: Option<&str>| -> Option<String> {
+        let (id, col) = resolve(ip, mac)?;
+        Some(match col {
+            "internet" if !shown_ext.contains(&id) => "internet-otros".to_string(),
+            "local" if !shown_local.contains(&id) => "local-otros".to_string(),
+            _ => id,
+        })
+    };
+
+    // Segunda pasada: nodos y enlaces.
+    let mut nodes: HashMap<String, Acc> = HashMap::new();
+    let mut links: HashMap<(String, String), Acc> = HashMap::new();
+    for &i in &kept {
+        let f = &l.flows[i];
+        let (Some(a), Some(b)) = (
+            node_of(f.src_ip, f.src_mac.as_deref()),
+            node_of(f.dst_ip, f.dst_mac.as_deref()),
+        ) else {
+            continue;
+        };
+        let bytes = f.bytes + f.bytes_rev;
+        let level = l.explanations[i].level;
+        nodes.entry(a.clone()).or_default().add(bytes, level);
+        if a != b {
+            nodes.entry(b.clone()).or_default().add(bytes, level);
+            let key = if a <= b { (a, b) } else { (b, a) };
+            links.entry(key).or_default().add(bytes, level);
+        }
+    }
+    let hidden = |col: &str, shown: &HashSet<String>| {
+        volume
+            .iter()
+            .filter(|(id, (_, c))| *c == col && !shown.contains(*id))
+            .count()
+    };
+    let (hidden_ext, hidden_local) = (
+        hidden("internet", &shown_ext),
+        hidden("local", &shown_local),
+    );
+    let mut router: Option<String> = None;
+    let mut out_nodes: Vec<Value> = nodes
+        .iter()
+        .map(|(id, acc)| {
+            let ip: Option<IpAddr> = id.parse().ok();
+            let host = ip.and_then(|ip| l.hosts.get(ip));
+            let (column, label, icon) = match (id.as_str(), ip) {
+                ("grupo", _) => ("group", "Toda la red local".to_string(), "group"),
+                ("internet-otros", _) => {
+                    ("internet", format!("{hidden_ext} sitios más"), "internet")
+                }
+                ("local-otros", _) => ("local", format!("{hidden_local} equipos más"), "device"),
+                (_, Some(ip)) if ip_scope(&ip) == "internet" && !ip.is_loopback() => (
+                    "internet",
+                    labels.get(id).cloned().unwrap_or_else(|| id.clone()),
+                    "internet",
+                ),
+                (_, Some(ip)) => {
+                    let icon = map_icon(host, &ip);
+                    let label = host.and_then(|h| h.short()).unwrap_or_else(|| {
+                        if ip.is_loopback() {
+                            "Este mismo equipo".into()
+                        } else {
+                            id.clone()
+                        }
+                    });
+                    let col = if icon == "router" && host.is_some_and(|h| h.role.is_some()) {
+                        "router"
+                    } else {
+                        "local"
+                    };
+                    (col, label, icon)
+                }
+                _ => ("local", id.clone(), "device"),
+            };
+            if column == "router" {
+                router = Some(id.clone());
+            }
+            json!({
+                "id": id, "ip": ip, "label": label, "icon": icon, "column": column,
+                "bytes": acc.bytes, "flows": acc.flows, "level": acc.level,
+                "host": host.map(host_json),
+            })
+        })
+        .collect();
+    out_nodes.sort_by(|a, b| {
+        b["bytes"]
+            .as_u64()
+            .cmp(&a["bytes"].as_u64())
+            .then(a["id"].as_str().cmp(&b["id"].as_str()))
+    });
+    let mut out_links: Vec<Value> = links
+        .iter()
+        .map(|((a, b), acc)| json!({ "a": a, "b": b, "bytes": acc.bytes, "flows": acc.flows, "level": acc.level }))
+        .collect();
+    out_links.sort_by(|x, y| y["bytes"].as_u64().cmp(&x["bytes"].as_u64()));
+    Response::json(
+        200,
+        &json!({ "nodes": out_nodes, "links": out_links, "router": router }),
+    )
 }
 
 /// Página de la lista global de paquetes.
@@ -866,6 +1246,7 @@ pub fn run(opts: GuiOptions) -> Result<()> {
     let listener = bind(opts.port)?;
     let port = listener.local_addr()?.port();
     let mut server = Server::new(port, opts.cfg.clone());
+    server.nicknames = Mutex::new(Nicknames::load());
     if opts.cfg.intel_feodo.is_some() || opts.cfg.intel_tor.is_some() {
         server.intel = Some(
             ThreatIntelDb::from_paths(
@@ -878,7 +1259,7 @@ pub fn run(opts: GuiOptions) -> Result<()> {
     let server = Arc::new(server);
     if let Some(path) = &opts.read {
         let name = display_name(&path.to_string_lossy());
-        server.replace_session(load(path, name, &opts.cfg)?);
+        server.replace_session(server.load(path, name)?);
     }
     let url = format!("http://127.0.0.1:{port}/");
     eprintln!("[+] Interfaz lista en {url}  ·  Ctrl+C para cerrar");
@@ -897,20 +1278,168 @@ mod tests {
     use socshark_testgen::{sample_pcap_packets, write_pcap};
     use std::io::{Read, Write};
 
-    fn demo_server() -> (Arc<Server>, PathBuf) {
+    fn server_with(packets: &[(u64, Vec<u8>)], name: &str) -> (Arc<Server>, PathBuf) {
         let path = std::env::temp_dir().join(format!(
-            "socshark-gui-test-{}-{:?}.pcap",
+            "socshark-gui-test-{}-{:?}-{name}",
             std::process::id(),
             std::thread::current().id()
         ));
-        write_pcap(&path, 1, &sample_pcap_packets()).unwrap();
+        write_pcap(&path, 1, packets).unwrap();
         let cfg = PipelineConfig {
             file_carving: true,
             ..PipelineConfig::default()
         };
-        let server = Arc::new(Server::new(8787, cfg.clone()));
-        server.replace_session(load(&path, "demo.pcap".into(), &cfg).unwrap());
+        let server = Arc::new(Server::new(8787, cfg));
+        server.replace_session(server.load(&path, name.into()).unwrap());
         (server, path)
+    }
+
+    fn demo_server() -> (Arc<Server>, PathBuf) {
+        server_with(&sample_pcap_packets(), "demo.pcap")
+    }
+
+    #[test]
+    fn mapa_de_la_red_de_casa() {
+        let (s, path) = server_with(&socshark_testgen::home_pcap_packets(), "casa.pcap");
+        let t = s.token.clone();
+        let h = "127.0.0.1:8787";
+        let (st, map) = get(&s, "/api/map", Some(&t), h);
+        assert_eq!(st, 200);
+        let nodes = map["nodes"].as_array().unwrap();
+        let node = |id: &str| nodes.iter().find(|n| n["id"] == id).cloned();
+        assert_eq!(map["router"], "192.168.1.1");
+        let router = node("192.168.1.1").unwrap();
+        assert_eq!(
+            (router["column"].as_str(), router["icon"].as_str()),
+            (Some("router"), Some("router"))
+        );
+        let printer = node("192.168.1.40").unwrap();
+        assert_eq!(printer["icon"], "printer");
+        assert_eq!(printer["label"], "HP OfficeJet Pro 8020");
+        assert_eq!(node("192.168.1.50").unwrap()["icon"], "computer");
+        assert_eq!(node("192.168.1.30").unwrap()["icon"], "phone");
+        assert_eq!(node("192.168.1.60").unwrap()["icon"], "tv");
+        // Internet por su nombre; los anuncios, en «toda la red».
+        assert_eq!(node("8.8.8.8").unwrap()["label"], "DNS de Google");
+        assert!(
+            node("192.168.1.255").is_none(),
+            "difusión de la red: «toda la red»"
+        );
+        let insta = node("157.240.5.174").unwrap();
+        assert_eq!(
+            (insta["column"].as_str(), insta["label"].as_str()),
+            (Some("internet"), Some("www.instagram.com"))
+        );
+        assert_eq!(node("grupo").unwrap()["column"], "group");
+        assert!(
+            node("0.0.0.0").is_none(),
+            "el DHCP sin dirección va al equipo por su MAC"
+        );
+        // El Telnet al router es el enlace marcado como peligro.
+        let links = map["links"].as_array().unwrap();
+        let pc_router = links
+            .iter()
+            .find(|l| {
+                let (a, b) = (l["a"].as_str().unwrap(), l["b"].as_str().unwrap());
+                (a, b) == ("192.168.1.1", "192.168.1.50")
+            })
+            .unwrap();
+        assert_eq!(pc_router["level"], "peligro");
+        // Mismos recortes que el resto: con filtro, solo lo del móvil.
+        let (_, only) = get(
+            &s,
+            "/api/map?filter=ip.addr+%3D%3D+192.168.1.30",
+            Some(&t),
+            h,
+        );
+        assert!(only["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|n| n["id"] != "192.168.1.40"));
+        let (st, _) = get(&s, "/api/map?filter=ip.addr+%3D%3D", Some(&t), h);
+        assert_eq!(st, 400);
+        std::fs::remove_file(path).ok();
+    }
+
+    /// Quién es quién de extremo a extremo: directorio, nombres en las
+    /// frases y en las tablas, y apodos que rehacen las frases.
+    #[test]
+    fn quien_es_quien_y_apodos() {
+        let (s, path) = server_with(&socshark_testgen::home_pcap_packets(), "casa.pcap");
+        let t = s.token.clone();
+        let h = "127.0.0.1:8787";
+
+        let (st, hosts) = get(&s, "/api/hosts", Some(&t), h);
+        assert_eq!(st, 200);
+        let find = |ip: &str| {
+            hosts
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|x| x["ip"] == ip)
+                .cloned()
+                .unwrap_or_else(|| panic!("{ip} en {hosts:#}"))
+        };
+        let phone = find("192.168.1.30");
+        assert_eq!(phone["name"], "iPhone-de-Ana");
+        assert_eq!(phone["random_mac"], true);
+        assert!(phone["key"].as_str().unwrap().starts_with("mac:"));
+        assert_eq!(find("192.168.1.1")["role"], "router");
+        assert_eq!(find("192.168.1.40")["vendor"], "HP");
+
+        let (_, flows) = get(&s, "/api/flows", Some(&t), h);
+        let rows = flows["flows"].as_array().unwrap();
+        assert!(rows.iter().any(|r| r["src_name"] == "iPhone-de-Ana"));
+        let headlines = || -> Vec<String> {
+            let (_, flows) = get(&s, "/api/flows", Some(&t), h);
+            flows["flows"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| r["explain"]["headline"].as_str().unwrap().to_string())
+                .collect()
+        };
+        assert!(headlines().iter().any(|x| x.contains("«iPhone-de-Ana»")));
+
+        let (_, stats) = get(&s, "/api/stats", Some(&t), h);
+        let ep = stats["endpoints"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["ip"] == "192.168.1.30")
+            .unwrap();
+        assert_eq!(ep["host"]["short"], "iPhone-de-Ana");
+
+        // Apodo: las frases pasan a usarlo y la sesión cambia de foto.
+        let (_, before) = get(&s, "/api/session", Some(&t), h);
+        let key = phone["key"].as_str().unwrap();
+        let r = call(
+            &s,
+            "POST",
+            &format!("/api/hosts/nick?key={key}&name=M%C3%B3vil%20de%20Ana"),
+            Some(&t),
+        );
+        assert_eq!(r.status, 200, "{}", String::from_utf8_lossy(&r.body));
+        let (_, after) = get(&s, "/api/session", Some(&t), h);
+        assert!(after["generation"].as_u64() > before["generation"].as_u64());
+        assert!(headlines()
+            .iter()
+            .any(|x| x.contains("«Móvil de Ana» (192.168.1.30)")));
+        assert!(!headlines().iter().any(|x| x.contains("iPhone-de-Ana")));
+        // Quitarlo devuelve el nombre anunciado; claves raras, rechazadas.
+        let r = call(
+            &s,
+            "POST",
+            &format!("/api/hosts/nick?key={key}&name="),
+            Some(&t),
+        );
+        assert_eq!(r.status, 200);
+        assert!(headlines().iter().any(|x| x.contains("«iPhone-de-Ana»")));
+        let r = call(&s, "POST", "/api/hosts/nick?key=../../etc&name=x", Some(&t));
+        assert_eq!(r.status, 400);
+        assert_eq!(call(&s, "GET", "/api/hosts/nick", Some(&t)).status, 405);
+        std::fs::remove_file(path).ok();
     }
 
     fn call(server: &Arc<Server>, method: &str, path: &str, token: Option<&str>) -> Response {
@@ -1245,11 +1774,19 @@ mod tests {
         let r = post(b"esto no es un pcap".to_vec(), "x.pcapng");
         assert_eq!(r.status, 400);
         let msg = String::from_utf8_lossy(&r.body).to_string();
-        assert!(msg.contains("no es un pcap clásico"), "{msg}");
+        assert!(msg.contains("no es una captura pcap ni pcapng"), "{msg}");
         assert!(
             !msg.contains("socshark-gui-"),
             "sin rutas temporales: {msg}"
         );
+
+        // Lo que guarda Wireshark por defecto (pcapng) se abre igual.
+        let ng = socshark_testgen::pcapng_bytes(1, &sample_pcap_packets(), Default::default());
+        let r = post(ng, "de-wireshark.pcapng");
+        assert_eq!(r.status, 200, "{}", String::from_utf8_lossy(&r.body));
+        let session = get(&s, "/api/session", Some(&t), "127.0.0.1:8787").1;
+        assert_eq!(session["packets"], 45);
+        assert_eq!(session["name"], "de-wireshark.pcapng");
 
         let path =
             std::env::temp_dir().join(format!("socshark-gui-up-{}.pcap", std::process::id()));

@@ -20,6 +20,7 @@ use socshark_core::{
 use socshark_dissectors::{DissectedPacket, DissectorPipeline};
 use socshark_flow::FlowKey;
 use socshark_soc::explain::{host_name, port_label};
+use socshark_soc::hosts::HostBook;
 use socshark_soc::summarize::fmt_bytes;
 
 /// Cota de bytes de tramas que se guardan en memoria. En un archivo, por
@@ -58,6 +59,8 @@ pub struct PacketIndex {
     /// Archivo: se alcanzó la cota y hay tramas sin contenido. En vivo: ya
     /// se descartaron paquetes antiguos.
     pub truncated: bool,
+    /// Quién es quién, aprendido de cada trama al indexarla.
+    pub hosts: HostBook,
 }
 
 impl PacketIndex {
@@ -76,6 +79,7 @@ impl PacketIndex {
             evicted_since_prune: 0,
             dissectors: DissectorPipeline::new(),
             truncated: false,
+            hosts: HostBook::new(),
         }
     }
 
@@ -92,12 +96,14 @@ impl PacketIndex {
 
     /// Añade una trama al final.
     pub fn push(&mut self, mut pkt: RawPacket) {
-        let fid = match self
-            .dissectors
-            .dissect(&pkt, self.link)
-            .as_ref()
-            .and_then(flow_id)
-        {
+        let id = match self.dissectors.dissect(&pkt, self.link) {
+            Some(dp) => {
+                self.hosts.observe(&dp);
+                flow_id(&dp)
+            }
+            None => None,
+        };
+        let fid = match id {
             Some(id) => self.intern(id),
             None => NO_FLOW,
         };
@@ -456,7 +462,7 @@ pub struct Timeline {
 }
 
 /// Identificador del flujo de un paquete, igual que lo calcula el agregador.
-fn flow_id(dp: &DissectedPacket) -> Option<String> {
+pub(crate) fn flow_id(dp: &DissectedPacket) -> Option<String> {
     let (src, dst) = (dp.src_ip()?, dp.dst_ip()?);
     let (sp, dpp) = ports(dp);
     Some(FlowKey::new(src, sp, dst, dpp, dp.transport).flow_id().0)

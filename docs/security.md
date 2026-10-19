@@ -152,6 +152,24 @@ hostil de la propia captura:
   conversaciones terminadas; lo más antiguo se descarta.
 - **Agotamiento**: cabeceras 16 KiB, cuerpo 512 MiB, lecturas con timeout
   de 30 s y tramas en memoria acotadas a 256 MiB.
+- **Nombres anunciados por la red** (DHCP, mDNS, LLMNR, NetBIOS): los
+  parsers acotan longitudes y opciones y limpian los nombres (solo
+  caracteres imprimibles, 63 como mucho) antes de usarlos; son
+  informativos y ninguna alerta depende de ellos (un equipo puede mentir).
+  Solo se aceptan para direcciones de la red local.
+- **Apodos**: se guardan en `apodos.json` en la carpeta de configuración
+  del usuario, con escritura atómica; las claves se validan (`mac:…` o
+  `ip:…`) y los apodos se limpian (40 caracteres, sin controles). Fichero
+  acotado a 2.000 entradas.
+- **Programa por conexión**: se lee la tabla de sockets del propio sistema
+  (`/proc` en Linux; `GetExtendedTcpTable` y
+  `QueryFullProcessImageNameW` en Windows). Solo lectura y solo de esta
+  máquina; nada sale de ella.
+- **Informe HTML**: todo dato de la captura pasa por un escapado HTML y el
+  archivo declara su propia CSP (`default-src 'none'`, sin scripts); hay
+  test con nombres DNS y de archivo maliciosos.
+- **pcapng**: tamaño de bloque acotado, paquetes de interfaces no
+  declaradas rechazados, test que corrompe cada byte del archivo.
 
 ## El descifrado TLS y la ética
 

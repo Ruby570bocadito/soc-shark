@@ -18,8 +18,10 @@
 pub mod carve;
 pub mod enrich;
 pub mod explain;
+pub mod hosts;
 pub mod intel;
 pub mod noise;
+mod oui_data;
 pub mod passive_dns;
 pub mod risk;
 pub mod siem;

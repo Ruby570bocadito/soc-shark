@@ -18,8 +18,11 @@ Wireshark responde a la pregunta *«¿qué hay en este paquete?»*. **soc-shark 
 |---|---|---|
 | **GUI estilo Wireshark, en lenguaje claro** | `socshark gui`: cada conversación contada en una frase con semáforo 🟢🟠🔴, alertas agrupadas en historias con «qué hacer», y vista de paquetes con capas explicadas y bytes resaltados ([docs/gui.md](docs/gui.md)) | **Implementado** |
 | **Red en tiempo real en la GUI** | Botón «En vivo»: eliges Wi-Fi/cable (con su IP y estado), la ventana se actualiza cada segundo y «Detener» es inmediato | **Implementado (Linux/macOS/Windows con Npcap)** |
-| **Funciones tipo Wireshark** | Lista completa de paquetes (virtual, cientos de miles), «Contenido» (seguir la conversación en texto o hex), estadísticas (protocolos, equipos, servicios, actividad en el tiempo), clic derecho «filtrar por…», columnas ordenables, paneles ajustables, guardar `.pcap` | **Implementado** |
-| **Atribución de proceso con eBPF** | Cada flujo muestra PID, binario y usuario que lo originó | Diseño (`docs/ebpf-design.md`) — Fase 3 |
+| **Funciones tipo Wireshark** | Lista completa de paquetes (virtual, cientos de miles), «Contenido» (seguir la conversación en texto o hex), estadísticas (protocolos, equipos, servicios, actividad en el tiempo), clic derecho «filtrar por…», columnas ordenables, paneles ajustables, abrir **pcap y pcapng**, guardar `.pcap` | **Implementado** |
+| **Quién es quién** | Cada equipo por su nombre («iPhone-de-Ana», «la impresora HP OfficeJet», «el router») aprendido de DHCP, mDNS, LLMNR y NetBIOS; fabricante por MAC (registro IEEE); apodos propios («Portátil de Ana»); en vivo, **qué programa** de tu ordenador abrió cada conexión | **Implementado (programa: Linux/Windows)** |
+| **Mapa de la red** | Dibujo de tus equipos, el router e Internet con quién habla con quién; lo peligroso en rojo; clic para filtrar | **Implementado** |
+| **Avisos e informe** | En vivo, notificación del sistema cuando aparece algo peligroso o raro; informe HTML en lenguaje claro para guardar, imprimir o enviar (`socshark report`) | **Implementado** |
+| **Atribución de proceso con eBPF** | Cada flujo muestra PID, binario y usuario que lo originó | **Parcial**: en vivo, por la tabla de sockets del sistema (Linux/Windows). eBPF: diseño (`docs/ebpf-design.md`) — Fase 3 |
 | **TLS 1.3 transparente** | Descifrado vía uprobes a `SSL_read/SSL_write`, sin `SSLKEYLOGFILE` | Diseño — Fase 3+ |
 | **Plugins WASM en sandbox** | Dissectors seguros escritos por la comunidad, sin riesgo de RCE | Diseño (`docs/wasm-plugins.md`) — Fase 4 |
 | **Decodificador CyberChef integrado** | Pipelines Base64→XOR→Zlib→JSON sobre payloads | Fase 4 |
@@ -40,7 +43,7 @@ Wireshark responde a la pregunta *«¿qué hay en este paquete?»*. **soc-shark 
 
 ## Estado actual: Fases 1-2 completas ✅ · Fase 3 piezas puras ✅ · Fase 4 piezas puras ✅
 
-El pipeline funciona de extremo a extremo sobre archivos **y en vivo**: **lectura/libpcap → disección (Ethernet/IPv4/IPv6/TCP/UDP/DNS/TLS, secuencial o en pool de N hilos) → agregación de flujos bidireccionales (JA4 + SNI + estadística de intervalos) → file carving opcional (T1036) → enriquecimiento SOC (incluidas listas Feodo/Tor) → filtro DSL → tabla/TUI/JSONL/follow/daemon/export ECS-Wazuh**. 186 tests automatizados cubren parsers (barrido anti-panic), JA4 (vectores oficiales FoxIO + NIST), SHA-256 (FIPS 180-4), pool concurrente, agregador, reensamblado, DSL, capa SOC (escaneo vertical/horizontal T1046, beaconing T1071, masquerading T1036, threat intel), backend de captura (incluido el tick sin tráfico en vivo), export SIEM e integración; el fuzzing determinista recorre millones de tramas mutadas en cada build.
+El pipeline funciona de extremo a extremo sobre archivos **y en vivo**: **lectura/libpcap → disección (Ethernet/IPv4/IPv6/TCP/UDP/DNS/TLS, secuencial o en pool de N hilos) → agregación de flujos bidireccionales (JA4 + SNI + estadística de intervalos) → file carving opcional (T1036) → enriquecimiento SOC (incluidas listas Feodo/Tor) → filtro DSL → tabla/TUI/JSONL/follow/daemon/export ECS-Wazuh**. 209 tests automatizados cubren parsers (barrido anti-panic), JA4 (vectores oficiales FoxIO + NIST), SHA-256 (FIPS 180-4), pool concurrente, agregador, reensamblado, DSL, capa SOC (escaneo vertical/horizontal T1046, beaconing T1071, masquerading T1036, threat intel), backend de captura (incluido el tick sin tráfico en vivo), export SIEM e integración; el fuzzing determinista recorre millones de tramas mutadas en cada build.
 
 ### Inicio rápido
 
@@ -72,7 +75,14 @@ cargo build --release
 # 4. O verla en la interfaz gráfica (se abre una ventana)
 ./target/release/socshark gui -r demo.pcap
 
-# 5. O ver tu red en tiempo real: botón «En vivo» (necesita permisos de captura)
+# 5. Quién es quién: una red de casa que se presenta sola (móvil, PC, impresora, tele, router)
+./target/release/socshark dev sample-pcap --escenario casa -o casa.pcap
+./target/release/socshark gui -r casa.pcap
+
+# 6. Un informe en lenguaje claro para guardar o enviar
+./target/release/socshark report -r casa.pcap -o informe.html
+
+# 7. O ver tu red en tiempo real: botón «En vivo» (necesita permisos de captura)
 sudo ./target/release/socshark gui
 ```
 
@@ -126,8 +136,8 @@ que incluye la demo desde la Fase 2 (respuesta AAAA incluida).
 ### Comandos
 
 ```bash
-# Interfaz gráfica: ventana con explicaciones en lenguaje claro
-socshark gui -r captura.pcap
+# Interfaz gráfica: ventana con explicaciones en lenguaje claro (pcap o pcapng)
+socshark gui -r captura.pcapng
 socshark gui                    # vacía: «En vivo» para ver la red, o abre/arrastra una captura
 
 # Tabla resumen (por defecto)
@@ -210,7 +220,7 @@ soc-shark/
 
 ## Calidad
 
-- **186 tests** unitarios y de integración (`cargo test --workspace`),
+- **209 tests** unitarios y de integración (`cargo test --workspace`),
   incluido el barrido anti-panic, el reensamblado con segmentos fuera de
   orden, el test de igualdad JSONL entre el pool de 4 hilos y el camino
   secuencial, el carving T1036 sobre el escenario demo y el E2E de threat

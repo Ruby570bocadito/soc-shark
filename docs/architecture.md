@@ -75,11 +75,11 @@ describe cómo está organizado el código para sostener ese plan.
 | Crate | Responsabilidad | Depende de |
 |---|---|---|
 | `socshark-core` | `EnrichedFlow`, `RawPacket`, `LinkType`, `PipelineConfig`, helpers DNS | — |
-| `socshark-capture` | Trait `CaptureSource`, lector pcap clásico y captura en vivo (FFI libpcap/dlopen, ADR-009) | core |
+| `socshark-capture` | Trait `CaptureSource`, lector pcap y pcapng, captura en vivo (FFI libpcap/Npcap, ADR-009) y programa dueño de cada socket local | core |
 | `socshark-dissectors` | Parsers Ethernet/IPv4/IPv6/TCP/UDP/DNS, `DissectorPipeline`, heurística L7, pool concurrente | core |
 | `socshark-flow` | `FlowAggregator`: claves canónicas, contadores, expiración, reensamblado TCP, export | core, dissectors |
 | `socshark-filter` | DSL: lexer, parser por precedencia, evaluador sobre flujos | core |
-| `socshark-soc` | Ruido de fondo, DNS pasivo, riesgo/mini-IDS, resúmenes humanos | core |
+| `socshark-soc` | Ruido de fondo, DNS pasivo, riesgo/mini-IDS, resúmenes humanos, lenguaje claro (`explain`) y quién es quién (`hosts`, ADR-014) | core, flow, dissectors |
 | `socshark-testgen` | Constructores de tramas con checksums reales + escenario demo | — (solo std) |
 | `socshark-cli` | Orquestación, CLI (clap), TUI (Ratatui, feature `tui`), `follow`, salida tabla/JSONL, tests de integración | todos |
 
@@ -106,7 +106,9 @@ imposible si solo mirara un paquete.
   local servida por el propio binario; el lenguaje claro que muestra lo
   produce el motor (`socshark-soc::explain`). El modelo de datos está
   serializado precisamente para desacoplar la interfaz del núcleo: la TUI y
-  la GUI consumen los mismos `EnrichedFlow` que imprime la tabla.
+  la GUI consumen los mismos `EnrichedFlow` que imprime la tabla. Los
+  nombres de los equipos (`socshark-soc::hosts`) también viven en el motor:
+  el informe HTML (`socshark report`) y la GUI comparten frases.
 
 ## Evolución prevista del pipeline
 

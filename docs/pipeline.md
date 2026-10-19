@@ -17,8 +17,11 @@ OBJETIVO          AF_XDP ─► ring ─► enrich(eBPF) ─► pool workers ─
 **Hoy (Fase 1).** El trait `CaptureSource` (crate `socshark-capture`) define
 el contrato: `next_packet()` devuelve `Ok(Some(RawPacket))` o `Ok(None)` al
 acabar, y `link_type()` informa de la capa 2. Sobre ese contrato existe el
-lector de **pcap clásico** (`PcapFileReader`): implementación propia en Rust
-puro que soporta los cuatro magics (micro/nanosegundos × big/little-endian),
+lector de **pcap clásico y pcapng** (`PcapFileReader`, detecta el formato
+por la cabecera; en pcapng lee secciones con su orden de bytes, interfaces
+con su resolución de tiempo y paquetes Enhanced/Simple): implementación
+propia en Rust puro que soporta los cuatro magics del pcap clásico
+(micro/nanosegundos × big/little-endian),
 valida versiones, acota `incl_len` a 256 MiB para resistir archivos
 corruptos, y distingue EOF limpio en límite de registro de archivo truncado a
 mitad de payload. Los tests cubren los seis comportamientos límite incluyendo
