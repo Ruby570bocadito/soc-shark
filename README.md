@@ -24,30 +24,31 @@ Wireshark responde a la pregunta *«¿qué hay en este paquete?»*. **soc-shark 
 | **Export SIEM** | JSONL → **ECS 8.x** y **Wazuh** con MITRE ATT&CK (TheHive pendiente) | **Implementado (ECS + Wazuh)** |
 | **IPv6 completo** | Dissector con extensiones, claves de flujo v4/v6 y literales v6 en el DSL | **Implementado** |
 | **Follow Stream** | Reensamblado TCP por dirección: orden, retransmisiones, huecos, hexdump | **Implementado** |
-| **Captura en vivo (libpcap)** | Daemon con pushdown BPF al kernel, sin dependencia en tiempo de compilación (dlopen) | **Implementado** |
+| **Captura en vivo (libpcap)** | Daemon con pushdown BPF al kernel, sin dependencia en tiempo de compilación (dlopen) | **Implementado (Linux/macOS)** |
 | **Pool de dissectors concurrente** | Disección por lotes en N hilos, salida idéntica al modo secuencial | **Implementado** |
 | **Fuzzing determinista en CI** | Corpus mutado sobre parsers + agregador + SOC + DSL, reproducible por semilla | **Implementado** |
 | **TUI interactiva (Ratatui)** | Lista Flow-First + panel de alertas + filtro DSL en vivo | **Implementado** |
 | **Paradigma Flow-First** | 1 línea = 1 sesión; expansión bajo demanda | **Núcleo implementado** |
-| **Mini-IDS heurístico** | Túnel DNS, escaneos SYN, puertos inseguros, beaconing, masquerading, threat intel | **Implementado** |
+| **Mini-IDS heurístico** | Túnel DNS, escaneo de puertos y barrido de red, puertos inseguros, beaconing, masquerading, threat intel | **Implementado** |
 | **DNS pasivo** | Dominio ↔ IP observados, etiqueta el resto de flujos (+ SNI del ClientHello desde F3) | **Implementado** |
 | **Smart Noise Dimming** | NTP/mDNS/SSDP marcados como ruido y atenuados | **Implementado** |
 
 ## Estado actual: Fases 1-2 completas ✅ · Fase 3 piezas puras ✅ · Fase 4 piezas puras ✅
 
-El pipeline funciona de extremo a extremo sobre archivos **y en vivo**: **lectura/libpcap → disección (Ethernet/IPv4/IPv6/TCP/UDP/DNS/TLS, secuencial o en pool de N hilos) → agregación de flujos bidireccionales (JA4 + SNI + estadística de intervalos) → file carving opcional (T1036) → enriquecimiento SOC (incluidas listas Feodo/Tor) → filtro DSL → tabla/TUI/JSONL/follow/daemon/export ECS-Wazuh**. 152 tests automatizados cubren parsers (barrido anti-panic), JA4 (vectores oficiales FoxIO + NIST), SHA-256 (FIPS 180-4), pool concurrente, agregador, reensamblado, DSL, capa SOC (beaconing T1071, masquerading T1036, threat intel), backend de captura, export SIEM e integración; el fuzzing determinista recorre millones de tramas mutadas en cada build.
+El pipeline funciona de extremo a extremo sobre archivos **y en vivo**: **lectura/libpcap → disección (Ethernet/IPv4/IPv6/TCP/UDP/DNS/TLS, secuencial o en pool de N hilos) → agregación de flujos bidireccionales (JA4 + SNI + estadística de intervalos) → file carving opcional (T1036) → enriquecimiento SOC (incluidas listas Feodo/Tor) → filtro DSL → tabla/TUI/JSONL/follow/daemon/export ECS-Wazuh**. 158 tests automatizados cubren parsers (barrido anti-panic), JA4 (vectores oficiales FoxIO + NIST), SHA-256 (FIPS 180-4), pool concurrente, agregador, reensamblado, DSL, capa SOC (escaneo vertical/horizontal T1046, beaconing T1071, masquerading T1036, threat intel), backend de captura (incluido el tick sin tráfico en vivo), export SIEM e integración; el fuzzing determinista recorre millones de tramas mutadas en cada build.
 
 ### Inicio rápido
 
 **Windows (copiar y pegar):** abre PowerShell, abre [`install.ps1`](install.ps1),
 copia **todo** su contenido y pégalo en la consola. El instalador: comprueba la
-plataforma → instala Git y Rust vía winget/rustup si faltan → clona el repositorio
+plataforma → instala Git, las Build Tools de C++ de Visual Studio (el enlazador
+que necesita Rust en Windows) y Rust vía winget/rustup si faltan → clona el repositorio
 (privado: pedirá un PAT) → compila en release → instala `socshark.exe` en
 `%USERPROFILE%\.socshark\bin` y lo añade al PATH de usuario → verifica el pipeline
 completo con el escenario demo. Es idempotente: si ya está instalado, actualiza.
-También funciona como script clásico: `.\install.ps1`. Para captura en vivo en
-Windows hace falta [Npcap](https://npcap.com/) con *WinPcap API-compatible Mode*
-(el análisis de archivos funciona sin él).
+También funciona como script clásico: `.\install.ps1`. La captura en vivo
+(`socshark daemon`) aún no está disponible en Windows; el análisis de archivos pcap
+funciona completo.
 
 Requisitos (Linux/macOS o manual en Windows): Rust 1.75+ (`rustup install stable`).
 
@@ -58,23 +59,23 @@ cargo build --release
 # 2. Generar una captura de demostración con eventos SOC interesantes
 ./target/release/socshark dev sample-pcap -o demo.pcap
 
-# 3. Analizarla
-./target/release/socshark capture -r demo.pcap
+# 3. Analizarla (con file carving para ver también la descarga encubierta)
+./target/release/socshark capture -r demo.pcap --carve-files
 ```
 
-Salida real de la demo (33 paquetes → 13 flujos relevantes, ruido excluido):
+Salida real de la demo (45 paquetes → 20 flujos relevantes, ruido excluido):
 
 ```text
-═══ soc-shark · 13 flujos (demo.pcap) ═══
+═══ soc-shark · 20 flujos (demo.pcap) ═══
 FLUJO                                                        L7        PAQ      BYTES  RIESGO  ALERTAS
-udp/192.168.1.30:53100-198.51.100.23:8080                    ?           8      848 B      20  BEACONING
 tcp/93.184.216.34:80-192.168.1.20:40112                      HTTP        4      956 B      55  FILE-MASQUERADING
+udp/192.168.1.30:53100-198.51.100.23:8080                    ?           8      848 B      20  BEACONING
 tcp/93.184.216.34:443-192.168.1.10:52000                     TLS         7      583 B       0  -
 udp/2001:4860:4860::8888:53-fd00::10:53010                   DNS         2      216 B       0  -
+tcp/192.168.1.1:22-192.168.1.30:40001                        ?           3      162 B      30  PORT-SCAN
 udp/8.8.8.8:53-192.168.1.10:53001                            DNS         2      158 B       0  -
 udp/8.8.8.8:53-192.168.1.30:53002                            DNS         1      137 B      45  DNS-TUNNELING
-tcp/93.184.216.34:80-192.168.1.20:40111                      HTTP        1      101 B       0  -
-tcp/192.168.1.1:22-192.168.1.30:40001                        ?           1       54 B      30  PORT-SCAN
+tcp/192.168.1.1:21-192.168.1.30:40001                        ?           2      108 B      30  PORT-SCAN
 ...
 
 ─── Alertas SOC ───
@@ -82,13 +83,20 @@ tcp/192.168.1.1:22-192.168.1.30:40001                        ?           1      
   tipo real ≠ extensión declarada en factura.jpg · MITRE T1036
 ▸ (alta) Posible túnel DNS · udp/8.8.8.8:53-192.168.1.30:53002 ·
   qname 'az3k9...chfdgs.tun.evil.example' (77 caracteres, entropía 5.09 ≥ 3.50) · MITRE T1048.003
-▸ (media) Posible escaneo de puertos · tcp/192.168.1.1:22-192.168.1.30:40001 ·
-  5 SYNs sin respuesta hacia 192.168.1.1:22 · MITRE T1046
+▸ (media) Posible escaneo de puertos · tcp/192.168.1.1:21-192.168.1.30:40001 ·
+  192.168.1.30 probó 12 puertos distintos de 192.168.1.1 sin establecer conexión · MITRE T1046
+...
 ▸ (media) Comunicación periódica (beacon) · udp/192.168.1.30:53100-198.51.100.23:8080 ·
   intervalo medio 30.0s con jitter ±0.0% en 7 intervalos · MITRE T1071
 
-Estadísticas: 33 paquetes leídos · 33 diseccionados · 0 descartados · 15 flujos
+Estadísticas: 45 paquetes leídos · 45 diseccionados · 0 descartados · 22 flujos
 ```
+
+Las 12 sondas del **escaneo de puertos** (T1046) alertan sea cual sea la
+respuesta del gateway: el 22 abierto (SYN/ACK y el escáner aborta con RST),
+el 21/25/110 cerrados (RST/ACK) y el resto filtrados. Las sondas al 23 y al
+3306 no disparan las reglas de telnet ni de base de datos: un SYN sin
+respuesta no transporta credenciales.
 
 El flujo TLS lleva la **huella JA4** del ClientHello (`t13d0208h2_777cda164f4b_af51ac0c444f`)
 y el **SNI** declarado por el cliente (`store.ejemplo-corporativo.com`) —
@@ -142,6 +150,8 @@ socshark capture -r captura.pcap --workers 4
 socshark daemon --list
 socshark daemon -i eth0 --bpf "tcp port 443" --json flujos.jsonl
 socshark daemon -i eth0 --min-risk 30 --flush-secs 5   # alertas por stderr
+# Ctrl+C (o SIGTERM) cierra ordenadamente: exporta los flujos vivos al JSONL;
+# un segundo Ctrl+C fuerza la salida
 
 # Fuzzing determinista (el mismo motor que corre en CI)
 socshark dev fuzz --seed 42 --iterations 20000
@@ -181,7 +191,7 @@ soc-shark/
 
 ## Calidad
 
-- **152 tests** unitarios y de integración (`cargo test --workspace`),
+- **158 tests** unitarios y de integración (`cargo test --workspace`),
   incluido el barrido anti-panic, el reensamblado con segmentos fuera de
   orden, el test de igualdad JSONL entre el pool de 4 hilos y el camino
   secuencial, el carving T1036 sobre el escenario demo y el E2E de threat

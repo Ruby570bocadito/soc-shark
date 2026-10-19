@@ -79,6 +79,32 @@
 
     # --- Paso 2: Rust (rustup + toolchain estable) --------------------
     Step 'Paso 2/6 - Comprobando toolchain de Rust'
+    # El toolchain MSVC de Rust enlaza con link.exe: sin las Build Tools de
+    # C++ de Visual Studio, `cargo build` falla con "linker link.exe not found".
+    $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+    $vcComp  = if ($arch -eq 'aarch64') { 'Microsoft.VisualStudio.Component.VC.Tools.ARM64' }
+               else                     { 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64' }
+    function HasVcTools {
+        if (-not (Test-Path $vswhere)) { return $false }
+        return [bool](& $vswhere -latest -products * -requires $vcComp -property installationPath)
+    }
+    if (-not (HasVcTools)) {
+        if (Get-Command winget -ErrorAction SilentlyContinue) {
+            Write-Host '   Instalando Visual Studio Build Tools (C++) con winget: ~2-3 GB, varios minutos, acepta el UAC...'
+            $vsArgs = "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --add $vcComp --includeRecommended"
+            winget install --id Microsoft.VisualStudio.2022.BuildTools -e --source winget --accept-source-agreements --accept-package-agreements --override $vsArgs | Out-Null
+        } else {
+            Warn 'winget no esta disponible.'
+        }
+    }
+    if (-not (HasVcTools)) {
+        Write-Host '[X] Faltan las Build Tools de C++ de Visual Studio (Rust las necesita para enlazar).' -ForegroundColor Red
+        Write-Host '    Descargalas de https://visualstudio.microsoft.com/visual-cpp-build-tools/' -ForegroundColor Red
+        Write-Host '    marca "Desarrollo para el escritorio con C++" y vuelve a ejecutar este instalador.' -ForegroundColor Red
+        return
+    }
+    Ok 'Build Tools de C++ (MSVC) presentes'
+
     $cargoExe = $null
     foreach ($cand in @((Get-Command cargo -ErrorAction SilentlyContinue).Source,
                         "$env:USERPROFILE\.cargo\bin\cargo.exe")) {
@@ -180,17 +206,11 @@
         else { Ok 'Pipeline completo verificado: generacion -> diseccion -> agregacion -> motor SOC' }
     }
 
-    # --- Npcap (solo necesario para captura en vivo) ------------------
+    # --- Captura en vivo ---------------------------------------------
     Step 'Extra: captura en vivo'
-    $npcap = @("$env:SystemRoot\System32\Npcap\wpcap.dll", "$env:SystemRoot\System32\wpcap.dll") |
-             Where-Object { Test-Path $_ } | Select-Object -First 1
-    if ($npcap) {
-        Ok "Npcap detectado: $npcap - el comando 'socshark daemon' esta listo"
-    } else {
-        Warn 'Para captura en vivo en Windows hace falta Npcap (analisis offline funciona sin el).'
-        Write-Host  '    Instalalo desde https://npcap.com/ (marca "WinPcap API-compatible Mode").' -ForegroundColor Gray
-        Write-Host  '    El daemon necesita consola con privilegios de administrador.' -ForegroundColor Gray
-    }
+    Warn "La captura en vivo ('socshark daemon') aun no esta disponible en Windows: solo Linux/macOS."
+    Write-Host  '    El analisis de archivos funciona completo. Captura con Wireshark/tshark y guarda' -ForegroundColor Gray
+    Write-Host  '    en formato pcap clasico (no pcapng): tshark -i 1 -F pcap -w captura.pcap' -ForegroundColor Gray
 
     # --- Resumen final ------------------------------------------------
     Write-Host ''
@@ -199,9 +219,9 @@
     Write-Host '   socshark capture -r captura.pcap --json -' -ForegroundColor White
     Write-Host '   socshark capture -r captura.pcap -f "flow.risk >= 30"' -ForegroundColor White
     Write-Host '   socshark tui -r captura.pcap          <- interfaz TUI' -ForegroundColor White
-    Write-Host '   socshark follow -r captura.pcap <id>  <- seguir stream TCP' -ForegroundColor White
-    Write-Host '   socshark daemon --list                <- interfaces para captura en vivo' -ForegroundColor White
-    Write-Host '   socshark dev fuzz --iters 50000       <- fuzzing determinista' -ForegroundColor White
+    Write-Host '   socshark follow -r captura.pcap --flow 1.2.3.4:443  <- seguir stream TCP' -ForegroundColor White
+    Write-Host '   socshark export -r captura.pcap -F ecs -o ecs.jsonl <- export a SIEM' -ForegroundColor White
+    Write-Host '   socshark dev fuzz --iterations 50000  <- fuzzing determinista' -ForegroundColor White
     Write-Host '============================================================' -ForegroundColor Cyan
     Write-Host ' Documentacion: docs/ dentro del repositorio (docs/tui.md para la TUI).' -ForegroundColor DarkGray
     Write-Host ''

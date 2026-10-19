@@ -19,9 +19,18 @@ pub struct PipelineConfig {
     pub dns_entropy_threshold: f64,
     /// Longitud mínima del qname (caracteres) para sospecha de túnel DNS.
     pub dns_tunnel_min_len: usize,
-    /// Número de SYNs "en seco" (sin ACK de respuesta) desde una misma origen
-    /// hacia un mismo puerto destino antes de alertar posible escaneo.
-    pub scan_syn_threshold: u32,
+    /// Puertos distintos de un mismo host que un origen debe probar sin
+    /// llegar a establecer conexión para alertar escaneo vertical (T1046).
+    pub scan_port_threshold: u32,
+    /// Hosts distintos en un mismo puerto que un origen debe probar sin
+    /// llegar a establecer conexión para alertar barrido horizontal (T1046).
+    /// Más alto que el vertical: el descubrimiento de red de Windows
+    /// (SMB/NetBIOS) toca muchos hosts del mismo puerto de forma legítima.
+    pub scan_host_threshold: u32,
+    /// Intentos fallidos del mismo origen al mismo servicio (host:puerto)
+    /// para avisar de reintentos (servicio caído, C2 muerto o sondeo
+    /// insistente) cuando no llegan a ser un escaneo.
+    pub repeated_attempt_threshold: u32,
     /// Recolectar segmentos TCP por dirección para el reensamblado
     /// (`socshark follow`). Añade hasta 1 MiB de memoria por dirección
     /// activa, así que va desactivado por defecto.
@@ -67,7 +76,9 @@ impl Default for PipelineConfig {
             detect_noise: true,
             dns_entropy_threshold: 3.5,
             dns_tunnel_min_len: 30,
-            scan_syn_threshold: 4,
+            scan_port_threshold: 10,
+            scan_host_threshold: 20,
+            repeated_attempt_threshold: 4,
             collect_streams: false,
             workers: 1,
             beacon_min_intervals: 6,
@@ -90,6 +101,8 @@ mod tests {
         let cfg = PipelineConfig::default();
         assert!(cfg.max_flows > 0);
         assert!(cfg.dns_entropy_threshold > 3.0 && cfg.dns_entropy_threshold < 4.0);
-        assert!(cfg.scan_syn_threshold >= 3);
+        assert!(cfg.scan_port_threshold >= 5);
+        assert!(cfg.scan_host_threshold >= cfg.scan_port_threshold);
+        assert!(cfg.repeated_attempt_threshold >= 3);
     }
 }

@@ -15,7 +15,7 @@ use crate::ScanTracker;
 pub struct SocContext {
     /// Caché dominio ↔ IP construida con las respuestas DNS observadas.
     pub passive_dns: PassiveDnsDb,
-    /// Tracker de escaneos SYN entre flujos.
+    /// Tracker de intentos de conexión fallidos (escaneos) entre flujos.
     pub scan_tracker: ScanTracker,
     /// Threat intel offline (Fase 4): `None` si no se cargó ninguna lista.
     pub intel: Option<ThreatIntelDb>,
@@ -74,10 +74,8 @@ pub fn enrich_all(ctx: &mut SocContext, flows: &mut [EnrichedFlow], cfg: &Pipeli
                 .collect();
         }
 
-        let scan_hits = ctx
-            .scan_tracker
-            .hits(&(flow.src_ip, flow.dst_ip, flow.dst_port));
-        risk::assess(flow, scan_hits, cfg);
+        let scan = ctx.scan_tracker.signals(flow);
+        risk::assess(flow, scan, cfg);
         flow.human_summary = summarize::summarize(flow);
     }
 }
@@ -120,26 +118,75 @@ mod tests {
         assert!(!flows[1].human_summary.is_empty());
     }
 
+    /// Desenlaces de una sonda como contadores (syn, ack, rst) del flujo.
+    const FILTRADO: (u32, u32, u32) = (1, 0, 0); // SYN sin respuesta
+    const CERRADO: (u32, u32, u32) = (1, 1, 1); // SYN → RST/ACK
+    const ABIERTO: (u32, u32, u32) = (2, 1, 1); // SYN → SYN/ACK → RST
+
+    /// Sonda de 10.0.0.9 a `dst:dport` con el desenlace dado.
+    fn sonda(dst: &str, sport: u16, dport: u16, (syn, ack, rst): (u32, u32, u32)) -> EnrichedFlow {
+        let mut f = flujo_basico(6, sport, dport);
+        f.src_ip = "10.0.0.9".parse().unwrap();
+        f.dst_ip = dst.parse().unwrap();
+        f.tcp_flags.syn = syn;
+        f.tcp_flags.ack = ack;
+        f.tcp_flags.rst = rst;
+        f
+    }
+
     #[test]
-    fn escaneo_entre_flujos_alerta_a_todos_los_involucrados() {
-        let cfg = PipelineConfig::default(); // umbral 4 SYNs
-        let mut flows: Vec<EnrichedFlow> = (0..5u16)
-            .map(|i| {
-                let mut f = flujo_basico(6, 40000 + i, 22);
-                f.dst_ip = "10.0.0.1".parse().unwrap();
-                f.src_ip = "10.0.0.9".parse().unwrap();
-                f.tcp_flags.syn = 1;
-                f
+    fn escaneo_vertical_alerta_a_todas_las_sondas_sea_cual_sea_la_respuesta() {
+        let cfg = PipelineConfig::default(); // umbral 10 puertos
+                                             // Como `nmap -sS`: puerto origen fijo; 22 abierto (SYN/ACK + RST),
+                                             // 21/25/110 cerrados (RST/ACK) y el resto filtrados (sin respuesta).
+        let mut flows: Vec<EnrichedFlow> = [21, 22, 23, 25, 80, 110, 135, 139, 445, 3306]
+            .into_iter()
+            .map(|p| match p {
+                22 => sonda("10.0.0.1", 40001, p, ABIERTO),
+                21 | 25 | 110 => sonda("10.0.0.1", 40001, p, CERRADO),
+                _ => sonda("10.0.0.1", 40001, p, FILTRADO),
             })
             .collect();
         let mut ctx = SocContext::default();
         enrich_all(&mut ctx, &mut flows, &cfg);
 
         for f in &flows {
-            assert!(
-                f.alerts.iter().any(|a| a.id == "PORT-SCAN"),
-                "cada SYN del escaneo debe llevar alerta"
-            );
+            let ids: Vec<&str> = f.alerts.iter().map(|a| a.id.as_str()).collect();
+            assert_eq!(ids, ["PORT-SCAN"], "sonda al {}: {ids:?}", f.dst_port);
+        }
+    }
+
+    #[test]
+    fn barrido_horizontal_entre_lotes_del_daemon() {
+        let cfg = PipelineConfig::default(); // umbral 20 hosts
+        let mut ctx = SocContext::default();
+        // El contexto persiste entre lotes (daemon): 19 hosts no alertan...
+        let mut lote1: Vec<EnrichedFlow> = (1..20)
+            .map(|h| sonda(&format!("10.0.1.{h}"), 40000 + h, 445, FILTRADO))
+            .collect();
+        enrich_all(&mut ctx, &mut lote1, &cfg);
+        assert!(lote1.iter().all(|f| f.alerts.is_empty()));
+        // ...y el vigésimo, en un lote posterior, sí.
+        let mut lote2 = vec![sonda("10.0.1.20", 40020, 445, FILTRADO)];
+        enrich_all(&mut ctx, &mut lote2, &cfg);
+        assert_eq!(lote2[0].alerts[0].id, "NETWORK-SWEEP");
+        assert_eq!(lote2[0].alerts[0].mitre.as_deref(), Some("T1046"));
+    }
+
+    #[test]
+    fn reintentos_al_mismo_puerto_no_son_escaneo() {
+        let cfg = PipelineConfig::default();
+        // 5 SYNs al 22 con puertos origen distintos: un cliente que insiste
+        // contra un servicio caído, no un escaneo de puertos.
+        let mut flows: Vec<EnrichedFlow> = (0..5u16)
+            .map(|i| sonda("10.0.0.1", 40000 + i, 22, FILTRADO))
+            .collect();
+        let mut ctx = SocContext::default();
+        enrich_all(&mut ctx, &mut flows, &cfg);
+        for f in &flows {
+            assert!(!f.alerts.iter().any(|a| a.id == "PORT-SCAN"));
+            assert_eq!(f.alerts[0].id, "REPEATED-ATTEMPTS");
+            assert_eq!(f.alerts[0].severity, socshark_core::Severity::Low);
         }
     }
 }

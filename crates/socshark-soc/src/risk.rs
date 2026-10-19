@@ -6,9 +6,16 @@
 //!
 //! Reglas Fase 1:
 //! - `R1` Posible túnel DNS: qname largo + entropía alta → T1048.003.
-//! - `R2` Escaneo SYN puro entre flujos → T1046.
+//! - `R2` Escaneo sobre intentos de conexión fallidos entre flujos:
+//!   vertical (muchos puertos de un host, `PORT-SCAN`) y horizontal (un
+//!   puerto en muchos hosts, `NETWORK-SWEEP`) → T1046. Si no llega a
+//!   escaneo, los reintentos al mismo servicio dan un aviso de severidad
+//!   baja (`REPEATED-ATTEMPTS`, sin técnica).
 //! - `R3` Telnet (23/tcp) en texto claro → T1021.
 //! - `R4` Bases de datos expuestas (3306/5432/1433/6379/27017).
+//!
+//! R3 y R4 exigen que la conexión no sea una sonda fallida: un SYN sin
+//! respuesta al 23 durante un escaneo no transporta credenciales.
 //!
 //! Reglas Fase 3:
 //! - `R5` Beaconing por regularidad de intervalos → T1071: los intervalos
@@ -26,6 +33,8 @@
 use socshark_core::{Alert, EnrichedFlow, L7Protocol, Severity, Transport};
 
 use socshark_core::config::PipelineConfig;
+
+use crate::{is_failed_connect, ScanSignals};
 
 /// Entropía de Shannon por carácter (bits/símbolo) sobre los bytes UTF-8.
 ///
@@ -54,11 +63,10 @@ pub fn shannon_entropy(s: &str) -> f64 {
 
 /// Evalúa todas las reglas sobre un flujo y rellena `risk_score` + `alerts`.
 ///
-/// `scan_hits` es el número de SYNs en seco acumulados por el
-/// [`crate::ScanTracker`] para el (origen, destino, puerto destino) de este
-/// flujo; se pasa desde `enrich_all` para que la regla R2 funcione entre
-/// flujos.
-pub fn assess(flow: &mut EnrichedFlow, scan_hits: u32, cfg: &PipelineConfig) {
+/// `scan` son las señales que el [`crate::ScanTracker`] acumuló para el
+/// origen y destino de este flujo; se pasan desde `enrich_all` para que la
+/// regla R2 funcione entre flujos.
+pub fn assess(flow: &mut EnrichedFlow, scan: ScanSignals, cfg: &PipelineConfig) {
     let mut score: u32 = 0;
 
     // R1: túnel DNS (exfiltración/C2 por DNS) — MITRE T1048.003.
@@ -87,23 +95,55 @@ pub fn assess(flow: &mut EnrichedFlow, scan_hits: u32, cfg: &PipelineConfig) {
         }
     }
 
-    // R2: escaneo de puertos SYN puro — MITRE T1046.
-    if scan_hits >= cfg.scan_syn_threshold && flow.tcp_flags.ack == 0 {
-        score += 30;
-        flow.alerts.push(Alert {
-            id: "PORT-SCAN".into(),
-            name: "Posible escaneo de puertos".into(),
-            severity: Severity::Medium,
-            detail: format!(
-                "{} SYNs sin respuesta hacia {}:{} desde esta origen",
-                scan_hits, flow.dst_ip, flow.dst_port
-            ),
-            mitre: Some("T1046".into()),
-        });
+    // R2: escaneo y barrido de red — MITRE T1046. Solo sobre sondas: el
+    // flujo de un escáner nunca llega a establecerse.
+    let failed = is_failed_connect(flow);
+    if failed {
+        let vertical = scan.distinct_ports >= cfg.scan_port_threshold;
+        let horizontal = scan.distinct_hosts >= cfg.scan_host_threshold;
+        if vertical {
+            flow.alerts.push(Alert {
+                id: "PORT-SCAN".into(),
+                name: "Posible escaneo de puertos".into(),
+                severity: Severity::Medium,
+                detail: format!(
+                    "{} probó {} puertos distintos de {} sin establecer conexión",
+                    flow.src_ip, scan.distinct_ports, flow.dst_ip
+                ),
+                mitre: Some("T1046".into()),
+            });
+        }
+        if horizontal {
+            flow.alerts.push(Alert {
+                id: "NETWORK-SWEEP".into(),
+                name: "Posible barrido de red".into(),
+                severity: Severity::Medium,
+                detail: format!(
+                    "{} probó el puerto {} en {} hosts distintos sin establecer conexión",
+                    flow.src_ip, flow.dst_port, scan.distinct_hosts
+                ),
+                mitre: Some("T1046".into()),
+            });
+        }
+        if vertical || horizontal {
+            score += 30;
+        } else if scan.attempts >= cfg.repeated_attempt_threshold {
+            score += 10;
+            flow.alerts.push(Alert {
+                id: "REPEATED-ATTEMPTS".into(),
+                name: "Intentos de conexión repetidos".into(),
+                severity: Severity::Low,
+                detail: format!(
+                    "{} intentos de {} a {}:{} sin llegar a establecer conexión",
+                    scan.attempts, flow.src_ip, flow.dst_ip, flow.dst_port
+                ),
+                mitre: None,
+            });
+        }
     }
 
     // R3: administración remota insegura (telnet en texto claro) — T1021.
-    if flow.transport == Transport::Tcp && flow.dst_port == 23 {
+    if flow.transport == Transport::Tcp && flow.dst_port == 23 && !failed {
         score += 35;
         flow.alerts.push(Alert {
             id: "INSECURE-PORT".into(),
@@ -120,6 +160,7 @@ pub fn assess(flow: &mut EnrichedFlow, scan_hits: u32, cfg: &PipelineConfig) {
     // R4: bases de datos expuestas.
     if flow.transport == Transport::Tcp
         && matches!(flow.dst_port, 3306 | 5432 | 1433 | 6379 | 27017)
+        && !failed
     {
         score += 25;
         flow.alerts.push(Alert {
@@ -252,7 +293,7 @@ mod tests {
         let mut legible = flujo_basico(17, 53001, 53);
         legible.l7_protocol = L7Protocol::Dns;
         legible.dns = Some(qname_dns("www.ejemplo-corporativo.com"));
-        assess(&mut legible, 0, &cfg);
+        assess(&mut legible, ScanSignals::default(), &cfg);
         assert!(legible.alerts.is_empty(), "un qname normal no debe alertar");
 
         let mut tunel = flujo_basico(17, 53002, 53);
@@ -260,7 +301,7 @@ mod tests {
         tunel.dns = Some(qname_dns(
             "az3k9t2wq7xm5vb8n4rj6yp1chfdgsaz3k9t2wq7xm5vb8n4rj6yp1chfdgs.tun.evil.example",
         ));
-        assess(&mut tunel, 0, &cfg);
+        assess(&mut tunel, ScanSignals::default(), &cfg);
         assert_eq!(tunel.alerts[0].id, "DNS-TUNNELING");
         assert_eq!(tunel.alerts[0].mitre.as_deref(), Some("T1048.003"));
         assert!(tunel.risk_score >= 45);
@@ -270,24 +311,122 @@ mod tests {
     fn telnet_y_bd_disparan_reglas() {
         let cfg = PipelineConfig::default();
         let mut tel = flujo_basico(6, 40000, 23);
-        assess(&mut tel, 0, &cfg);
+        assess(&mut tel, ScanSignals::default(), &cfg);
         assert_eq!(tel.alerts[0].id, "INSECURE-PORT");
         assert_eq!(tel.alerts[0].mitre.as_deref(), Some("T1021"));
         assert!(tel.risk_score >= 35);
 
         let mut db = flujo_basico(6, 40001, 6379);
-        assess(&mut db, 0, &cfg);
+        assess(&mut db, ScanSignals::default(), &cfg);
         assert_eq!(db.alerts[0].id, "EXPOSED-DB");
         assert!(db.risk_score >= 25);
+    }
+
+    fn sonda(dport: u16) -> EnrichedFlow {
+        let mut f = flujo_basico(6, 40000, dport);
+        f.tcp_flags.syn = 1;
+        f
+    }
+
+    #[test]
+    fn sonda_fallida_a_telnet_o_bd_no_alerta_r3_r4() {
+        let cfg = PipelineConfig::default();
+        for port in [23, 3306] {
+            let mut f = sonda(port);
+            assess(&mut f, ScanSignals::default(), &cfg);
+            assert!(
+                f.alerts.is_empty(),
+                "SYN sin respuesta a {port}: {:?}",
+                f.alerts
+            );
+            assert_eq!(f.risk_score, 0);
+        }
+    }
+
+    #[test]
+    fn r2_escaneo_vertical_horizontal_y_reintentos() {
+        let cfg = PipelineConfig::default();
+        let ids = |s: ScanSignals| {
+            let mut f = sonda(22);
+            assess(&mut f, s, &cfg);
+            let ids: Vec<String> = f.alerts.iter().map(|a| a.id.clone()).collect();
+            (ids, f.risk_score)
+        };
+
+        let (v, score) = ids(ScanSignals {
+            distinct_ports: cfg.scan_port_threshold,
+            ..Default::default()
+        });
+        assert_eq!(v, ["PORT-SCAN"]);
+        assert_eq!(score, 30);
+
+        let (h, _) = ids(ScanSignals {
+            distinct_hosts: cfg.scan_host_threshold,
+            ..Default::default()
+        });
+        assert_eq!(h, ["NETWORK-SWEEP"]);
+
+        // Vertical y horizontal a la vez: dos alertas, el riesgo suma una vez.
+        let (ambos, score) = ids(ScanSignals {
+            distinct_ports: 99,
+            distinct_hosts: 99,
+            attempts: 99,
+        });
+        assert_eq!(ambos, ["PORT-SCAN", "NETWORK-SWEEP"]);
+        assert_eq!(score, 30);
+
+        // Reintentos al mismo servicio sin variedad de puertos/hosts.
+        let (r, score) = ids(ScanSignals {
+            distinct_ports: 1,
+            distinct_hosts: 1,
+            attempts: cfg.repeated_attempt_threshold,
+        });
+        assert_eq!(r, ["REPEATED-ATTEMPTS"]);
+        assert_eq!(score, 10);
+
+        // Por debajo de todos los umbrales: nada.
+        let (nada, _) = ids(ScanSignals {
+            distinct_ports: cfg.scan_port_threshold - 1,
+            distinct_hosts: cfg.scan_host_threshold - 1,
+            attempts: cfg.repeated_attempt_threshold - 1,
+        });
+        assert!(nada.is_empty());
+
+        // Una conexión establecida nunca es escaneo, aunque el origen escanee.
+        let mut ok = flujo_basico(6, 40000, 22);
+        ok.tcp_flags.syn = 2;
+        ok.tcp_flags.ack = 5;
+        ok.tcp_flags.psh = 2;
+        assess(
+            &mut ok,
+            ScanSignals {
+                distinct_ports: 99,
+                distinct_hosts: 99,
+                attempts: 99,
+            },
+            &cfg,
+        );
+        assert!(ok.alerts.is_empty());
     }
 
     #[test]
     fn riesgo_tiene_tope_100() {
         let cfg = PipelineConfig::default();
         let mut f = flujo_basico(6, 40002, 23);
-        assess(&mut f, 99, &cfg); // scan (30) + telnet (35): sin tope serían 65,
-                                  // con más reglas podría pasar: debe saturar
-        assert!(f.risk_score <= 100);
+        f.threat_intel = vec![
+            crate::intel::TAG_FEODO.to_string(),
+            crate::intel::TAG_TOR.to_string(),
+        ];
+        f.extracted_files = vec![socshark_core::ExtractedFile {
+            name: "factura.jpg".into(),
+            size: 1,
+            sha256: None,
+            magic: Some("PE32".into()),
+            masquerading_suspect: true,
+        }];
+        // telnet 35 + Feodo 45 + Tor 20 + PE 15 + encubrimiento 40 = 155.
+        assess(&mut f, ScanSignals::default(), &cfg);
+        assert_eq!(f.risk_score, 100);
     }
 
     #[test]
@@ -300,7 +439,7 @@ mod tests {
             mean_micros: 30_000_000,
             std_micros: 200_000, // ±0.67%: jitter de reloj realista
         });
-        assess(&mut f, 0, &cfg);
+        assess(&mut f, ScanSignals::default(), &cfg);
         let alert = f
             .alerts
             .iter()
@@ -322,7 +461,7 @@ mod tests {
             mean_micros: 12_000_000,
             std_micros: 9_000_000, // CV 0.75
         });
-        assess(&mut humano, 0, &cfg);
+        assess(&mut humano, ScanSignals::default(), &cfg);
         assert!(!humano.alerts.iter().any(|a| a.id == "BEACONING"));
 
         // NTP (ruido de fondo): regular por diseño pero marcado como ruido.
@@ -333,7 +472,7 @@ mod tests {
             mean_micros: 1_024_000_000, // poll NTP típico (17 min): fuera de ventana
             std_micros: 1_000,
         });
-        assess(&mut ntp, 0, &cfg);
+        assess(&mut ntp, ScanSignals::default(), &cfg);
         assert!(!ntp.alerts.iter().any(|a| a.id == "BEACONING"));
 
         // Intervalo por debajo del mínimo (retransmisiones/push interactivo).
@@ -343,7 +482,7 @@ mod tests {
             mean_micros: 50_000, // 50 ms
             std_micros: 100,
         });
-        assess(&mut rapido, 0, &cfg);
+        assess(&mut rapido, ScanSignals::default(), &cfg);
         assert!(!rapido.alerts.iter().any(|a| a.id == "BEACONING"));
     }
 
@@ -360,7 +499,7 @@ mod tests {
             magic: Some("PE32".into()),
             masquerading_suspect: true,
         }];
-        assess(&mut encubierto, 0, &cfg);
+        assess(&mut encubierto, ScanSignals::default(), &cfg);
         let alert = encubierto
             .alerts
             .iter()
@@ -384,7 +523,7 @@ mod tests {
             magic: Some("PE32".into()),
             masquerading_suspect: false,
         }];
-        assess(&mut honesto, 0, &cfg);
+        assess(&mut honesto, ScanSignals::default(), &cfg);
         assert!(!honesto.alerts.iter().any(|a| a.id == "FILE-MASQUERADING"));
         assert_eq!(
             honesto.risk_score, 15,
@@ -398,7 +537,7 @@ mod tests {
 
         let mut c2 = flujo_basico(6, 47000, 8080);
         c2.threat_intel = vec![crate::intel::TAG_FEODO.to_string()];
-        assess(&mut c2, 0, &cfg);
+        assess(&mut c2, ScanSignals::default(), &cfg);
         let alert = c2
             .alerts
             .iter()
@@ -410,7 +549,7 @@ mod tests {
 
         let mut tor = flujo_basico(6, 47001, 9001);
         tor.threat_intel = vec![crate::intel::TAG_TOR.to_string()];
-        assess(&mut tor, 0, &cfg);
+        assess(&mut tor, ScanSignals::default(), &cfg);
         let alert = tor
             .alerts
             .iter()
@@ -421,7 +560,7 @@ mod tests {
 
         // Sin etiquetas no hay alertas R7 (camino por defecto).
         let mut limpio = flujo_basico(6, 47002, 443);
-        assess(&mut limpio, 0, &cfg);
+        assess(&mut limpio, ScanSignals::default(), &cfg);
         assert!(!limpio
             .alerts
             .iter()

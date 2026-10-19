@@ -3,6 +3,56 @@
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/)
 y [SemVer](https://semver.org/lang/es/).
 
+## [Sin publicar]
+
+### Corregido
+
+- **Mini-IDS: la regla de escaneo no detectaba escaneos de puertos reales.**
+  Contaba SYNs por (origen, destino, *mismo* puerto) y descartaba cualquier
+  flujo con ACK; un `nmap -sS` de 100 puertos daba 0 alertas (un SYN por
+  puerto, y los cerrados responden RST/ACK) y lo que alertaba eran
+  reintentos al mismo puerto. Ahora R2 trabaja sobre *sondas fallidas*
+  (SYN sin datos ni FIN: sin respuesta, RST/ACK o half-open) y emite
+  `PORT-SCAN` (≥ 10 puertos de un host, T1046), `NETWORK-SWEEP` (mismo
+  puerto en ≥ 20 hosts, T1046) o, si no llega a escaneo,
+  `REPEATED-ATTEMPTS` (≥ 4 intentos al mismo servicio, severidad baja).
+  `PipelineConfig::scan_syn_threshold` se sustituye por
+  `scan_port_threshold`, `scan_host_threshold` y
+  `repeated_attempt_threshold`.
+- `INSECURE-PORT` (telnet) y `EXPOSED-DB` ya no saltan con una sonda
+  fallida: un SYN sin respuesta al 23 no transporta credenciales.
+- Escenario demo: el escaneo pasa a ser de 12 puertos del gateway con
+  puertos abiertos, cerrados y filtrados (45 paquetes, 20 flujos).
+- **Daemon: sin tráfico no volvía nunca del bucle de lectura.** En Linux el
+  timeout de libpcap no garantiza que `pcap_next_ex` regrese, así que
+  `--duration`, la expiración de flujos y los informes de estado esperaban
+  al siguiente paquete. El handle va ahora en modo no bloqueante con
+  `poll` propio sobre `pcap_get_selectable_fd`.
+- **Daemon: Ctrl-C/SIGTERM perdían los flujos vivos y el JSONL en búfer.**
+  Ahora cierran de forma ordenada exportándolo todo; un segundo Ctrl-C
+  fuerza la salida.
+
+- **Captura en vivo: SIGSEGV en la primera llamada a libpcap.** `sym_as`
+  convertía la dirección de `dlsym` con `ptr::read(p)`, que lee los primeros
+  bytes del *código* de la función en lugar de usar la dirección; ahora usa
+  `transmute_copy(&p)`. Afectaba a `daemon -i`, `daemon --list` y a los tests
+  de `socshark-capture` en cualquier máquina con libpcap instalada (el CI de
+  GitHub fallaba por esto desde la 0.4.0).
+- `pcap_activate`: los avisos (`rc > 0`, p. ej. promiscuo no soportado) ya no
+  abortan la captura, y los errores genéricos muestran el mensaje de
+  `pcap_geterr` en lugar de una cadena vacía.
+- `clippy -D warnings` vuelve a pasar en toolchains anteriores a
+  `clippy::chunks_exact_to_as_chunks` (p. ej. 1.97): los `allow` incluyen
+  `unknown_lints`.
+- **Windows: el proyecto no compilaba.** `live.rs` reexportaba dos veces el
+  backend stub (E0252) y al stub le faltaba `kernel_stats`. Verificado con
+  `clippy` para `x86_64-pc-windows-msvc` y los 152 tests como `.exe`
+  (`x86_64-pc-windows-gnu` bajo Wine).
+- `install.ps1`: comprueba e instala (winget) las Build Tools de C++ de
+  Visual Studio, sin las que `cargo build` falla con `link.exe not found`;
+  deja de anunciar el daemon como disponible en Windows (allí solo hay
+  stub) y corrige los ejemplos `dev fuzz --iterations` y `follow --flow`.
+
 ## [0.6.0] — 2026-10-16
 
 ### Añadido (Fase 4, piezas puras: file carving, threat intel, export SIEM)

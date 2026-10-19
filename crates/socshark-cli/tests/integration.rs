@@ -27,11 +27,11 @@ fn pipeline_end_to_end_sin_ruido() {
     // El ruido (NTP + mDNS) no debe aparecer por defecto.
     assert!(out.flows.iter().all(|f| !f.is_background_noise));
 
-    // Escenario esperado: 1 DNS + 1 TLS + 1 túnel DNS + 5 escaneo + 1 SSH
-    // + 2 HTTP (index + descarga encubierta, Fase 4) + 1 DNS-IPv6 (Fase 2)
-    // + 1 beacon UDP (Fase 3) = 13 flujos.
+    // Escenario esperado: 1 DNS + 1 TLS + 1 túnel DNS + 12 sondas del
+    // escaneo + 1 SSH + 2 HTTP (index + descarga encubierta, Fase 4)
+    // + 1 DNS-IPv6 (Fase 2) + 1 beacon UDP (Fase 3) = 20 flujos.
     let ids: Vec<String> = out.flows.iter().map(|f| f.flow_id.0.clone()).collect();
-    assert_eq!(out.flows.len(), 13, "flujos obtenidos: {ids:#?}");
+    assert_eq!(out.flows.len(), 20, "flujos obtenidos: {ids:#?}");
 
     // Túnel DNS detectado con su mapeo MITRE.
     let tunel = out
@@ -42,13 +42,26 @@ fn pipeline_end_to_end_sin_ruido() {
     assert!(tunel.risk_score >= 45);
     assert_eq!(tunel.alerts[0].mitre.as_deref(), Some("T1048.003"));
 
-    // Los 5 SYNs del escaneo deben quedar alertados (uno por flujo).
-    let escaneos = out
+    // Las 12 sondas del escaneo quedan alertadas, respondiera el puerto o
+    // no (abierto, cerrado con RST o filtrado), y solo como escaneo: la
+    // sonda al 23 no es telnet en claro ni la del 3306 una BD expuesta.
+    let sondas: Vec<_> = out
         .flows
         .iter()
         .filter(|f| f.alerts.iter().any(|a| a.id == "PORT-SCAN"))
-        .count();
-    assert_eq!(escaneos, 5, "los 5 SYNs del escaneo deben marcarse");
+        .collect();
+    assert_eq!(sondas.len(), socshark_testgen::SCAN_PORTS.len());
+    for f in &sondas {
+        assert_eq!(f.alerts.len(), 1, "{}: {:?}", f.flow_id.0, f.alerts);
+        assert_eq!(f.alerts[0].mitre.as_deref(), Some("T1046"));
+    }
+    // La sesión SSH legítima al mismo gateway no forma parte del escaneo.
+    let ssh = out
+        .flows
+        .iter()
+        .find(|f| f.l7_protocol == L7Protocol::Ssh)
+        .expect("debe existir la sesión SSH");
+    assert!(ssh.alerts.is_empty());
 
     // El flujo TLS debe estar cerrado limpiamente con sus direcciones bien.
     let tls = out
@@ -116,9 +129,9 @@ fn filtro_dsl_y_ruido() {
     let path = demo_pcap("filtro");
     let cfg = PipelineConfig::default();
 
-    // Con ruido: 13 + NTP + mDNS = 15.
+    // Con ruido: 20 + NTP + mDNS = 22.
     let todo = run_capture(&path, None, true, &cfg).unwrap();
-    assert_eq!(todo.flows.len(), 15);
+    assert_eq!(todo.flows.len(), 22);
     assert!(todo.flows.iter().any(|f| f.is_background_noise));
 
     // DSL: solo el flujo TLS toca el 443.
@@ -133,7 +146,7 @@ fn filtro_dsl_y_ruido() {
 
     // DSL: riesgo alto.
     let por_riesgo = run_capture(&path, Some("flow.risk >= 30"), false, &cfg).unwrap();
-    assert_eq!(por_riesgo.flows.len(), 6); // 5 escaneo + 1 túnel (el beacon vale 20)
+    assert_eq!(por_riesgo.flows.len(), 13); // 12 sondas + 1 túnel (el beacon vale 20)
 
     // DSL Fase 3: huella JA4 y SNI del escenario.
     let por_ja4 = run_capture(

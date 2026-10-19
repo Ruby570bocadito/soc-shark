@@ -493,6 +493,9 @@ pub fn client_hello(sni: &str, alpn: &[u8]) -> Vec<u8> {
     out
 }
 
+/// Puertos que sondea el escaneo del escenario demo (12 ≥ umbral de 10).
+pub const SCAN_PORTS: [u16; 12] = [21, 22, 23, 25, 80, 110, 135, 139, 445, 3306, 3389, 8080];
+
 /// Escenario demo completo: tráfico variado con eventos SOC interesantes.
 ///
 /// Devuelve `(timestamp_micros, trama)` lista para [`write_pcap`]. Contiene:
@@ -500,7 +503,7 @@ pub fn client_hello(sni: &str, alpn: &[u8]) -> Vec<u8> {
 ///    realista (produce huella JA4 y SNI desde la Fase 3).
 /// 2. Ruido de fondo: NTP y mDNS.
 /// 3. Posible túnel DNS (qname largo de alta entropía, TXT al resolver).
-/// 4. Escaneo SYN hacia el gateway (5 SYNs, puertos origen distintos).
+/// 4. Escaneo SYN de 12 puertos del gateway (abiertos, cerrados y filtrados).
 /// 5. Banner SSH y petición HTTP en texto claro.
 /// 6. Descarga HTTP de un ejecutable encubierto como imagen (Fase 4):
 ///    `factura.jpg` cuya cabecera es PE32 → con `--carve-files` dispara la
@@ -685,23 +688,78 @@ pub fn sample_pcap_packets() -> Vec<(u64, Vec<u8>)> {
         ),
     ));
 
-    // 5) Escaneo SYN: 5 conexiones de un solo SYN al 22 del gateway.
-    for i in 0..5u16 {
+    // 5) Escaneo SYN tipo `nmap -sS` de 12 puertos del gateway, con puerto
+    //    origen fijo y los tres desenlaces: 22 abierto (SYN/ACK y el
+    //    escáner aborta con RST), 21/25/110 cerrados (RST/ACK) y el resto
+    //    filtrados (sin respuesta). Incluye 23 y 3306: una sonda no es una
+    //    sesión telnet ni un acceso a la base de datos.
+    for (i, port) in SCAN_PORTS.into_iter().enumerate() {
+        let t = t0 + 3_000_000 + i as u64 * 100_000;
         p.push((
-            t0 + 3_000_000 + i as u64 * 100_000,
+            t,
             frame_tcp(
                 MAC_HOST_C,
                 MAC_ROUTER,
                 HOST_C,
                 GATEWAY,
-                40001 + i,
-                22,
+                40001,
+                port,
                 1,
                 0,
                 flags::SYN,
                 &[],
             ),
         ));
+        match port {
+            22 => {
+                p.push((
+                    t + 1_000,
+                    frame_tcp(
+                        MAC_ROUTER,
+                        MAC_HOST_C,
+                        GATEWAY,
+                        HOST_C,
+                        port,
+                        40001,
+                        500,
+                        2,
+                        flags::SYN_ACK,
+                        &[],
+                    ),
+                ));
+                p.push((
+                    t + 2_000,
+                    frame_tcp(
+                        MAC_HOST_C,
+                        MAC_ROUTER,
+                        HOST_C,
+                        GATEWAY,
+                        40001,
+                        port,
+                        2,
+                        0,
+                        flags::RST,
+                        &[],
+                    ),
+                ));
+            }
+            21 | 25 | 110 => p.push((
+                t + 1_000,
+                frame_tcp(
+                    MAC_ROUTER,
+                    MAC_HOST_C,
+                    GATEWAY,
+                    HOST_C,
+                    port,
+                    40001,
+                    0,
+                    2,
+                    flags::RST | flags::ACK,
+                    &[],
+                ),
+            )),
+            _ => {}
+        }
     }
 
     // 6) Banner SSH.
@@ -880,9 +938,10 @@ mod tests {
     #[test]
     fn escenario_demo_genera_paquetes_validos() {
         let pkts = sample_pcap_packets();
-        // 2 DNS + 7 TLS + 2 ruido + 1 túnel + 5 escaneo + 1 SSH + 1 HTTP
-        // + 4 descarga encubierta (Fase 4) + 2 DNS-IPv6 + 8 beacon = 33.
-        assert_eq!(pkts.len(), 33);
+        // 2 DNS + 7 TLS + 2 ruido + 1 túnel + 17 escaneo (12 SYN + SYN/ACK
+        // y RST del 22 + 3 RST/ACK) + 1 SSH + 1 HTTP + 4 descarga encubierta
+        // (Fase 4) + 2 DNS-IPv6 + 8 beacon = 45.
+        assert_eq!(pkts.len(), 45);
         // Todas las tramas deben ser >= 34 bytes (eth + ip mínimo).
         assert!(pkts.iter().all(|(_, d)| d.len() >= 34));
     }
