@@ -1,254 +1,232 @@
-# soc-shark
+<div align="center">
 
-<img src="docs/img/logo.svg" width="80" align="right" alt="Logo de soc-shark: una aleta de tiburón cortando una ola">
+<img src="docs/img/logo.svg" width="112" alt="SOC SHARK logo: a shark fin cutting through a wave">
 
-**Analizador de tráfico de red orientado a SOC/Blue Team, diseñado para superar a Wireshark en el flujo de trabajo del analista de seguridad.**
+# SOC SHARK
 
-Wireshark responde a la pregunta *«¿qué hay en este paquete?»*. **soc-shark responde a *«¿qué está pasando en mi red y qué me debería preocupar?»*.** Ese es el cambio de paradigma que guía todo el proyecto: sesiones en lugar de paquetes, significado en lugar de hex, alertas en lugar de scrolling manual.
+**Your network, explained in plain language.**<br>
+A modern, friendly alternative to Wireshark for SOC / Blue Team analysts — and for everyone else.
+
+**English** · [Español](README.es.md)
 
 [![CI](https://github.com/Ruby570bocadito/soc-shark/actions/workflows/ci.yml/badge.svg)](https://github.com/Ruby570bocadito/soc-shark/actions/workflows/ci.yml)
-![Estado](https://img.shields.io/badge/fase-2%20de%204%20completa-blue)
-![Licencia](https://img.shields.io/badge/licencia-MIT-green)
+![Version](https://img.shields.io/badge/version-0.7.0-0e7490)
+![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20Linux%20%7C%20macOS-1fb5cc)
+![Rust](https://img.shields.io/badge/rust-1.75%2B-orange)
+![License](https://img.shields.io/badge/license-MIT-green)
 
-![La GUI de soc-shark: historias, conversaciones en lenguaje claro y explicación](docs/img/gui-explicacion.png)
+<a href="docs/media/demo.mp4"><img src="docs/media/demo.webp" width="900" alt="35-second tour: open a capture, read what happened, inspect packets, statistics, the network map and dark mode"></a>
+
+<sub>▶ 35-second tour of the app · <a href="docs/media/demo.mp4">watch it as MP4</a></sub>
+
+</div>
 
 ---
 
-## Características clave (visión de producto)
+## ⚡ Install in one line
 
-| Función | Descripción | Estado |
-|---|---|---|
-| **GUI estilo Wireshark, en lenguaje claro** | `socshark gui`: cada conversación contada en una frase con semáforo 🟢🟠🔴, alertas agrupadas en historias con «qué hacer», y vista de paquetes con capas explicadas y bytes resaltados ([docs/gui.md](docs/gui.md)) | **Implementado** |
-| **Red en tiempo real en la GUI** | Botón «En vivo»: eliges Wi-Fi/cable (con su IP y estado), la ventana se actualiza cada segundo y «Detener» es inmediato | **Implementado (Linux/macOS/Windows con Npcap)** |
-| **Funciones tipo Wireshark** | Lista completa de paquetes (virtual, cientos de miles), «Contenido» (seguir la conversación en texto o hex), estadísticas (protocolos, equipos, servicios, actividad en el tiempo), clic derecho «filtrar por…», columnas ordenables, paneles ajustables, abrir **pcap y pcapng**, guardar `.pcap` | **Implementado** |
-| **Quién es quién** | Cada equipo por su nombre («iPhone-de-Ana», «la impresora HP OfficeJet», «el router») aprendido de DHCP, mDNS, LLMNR y NetBIOS; fabricante por MAC (registro IEEE); apodos propios («Portátil de Ana»); en vivo, **qué programa** de tu ordenador abrió cada conexión | **Implementado (programa: Linux/Windows)** |
-| **Mapa de la red** | Dibujo de tus equipos, el router e Internet con quién habla con quién; lo peligroso en rojo; clic para filtrar | **Implementado** |
-| **Avisos e informe** | En vivo, notificación del sistema cuando aparece algo peligroso o raro; informe HTML en lenguaje claro para guardar, imprimir o enviar (`socshark report`) | **Implementado** |
-| **Atribución de proceso con eBPF** | Cada flujo muestra PID, binario y usuario que lo originó | **Parcial**: en vivo, por la tabla de sockets del sistema (Linux/Windows). eBPF: diseño (`docs/ebpf-design.md`) — Fase 3 |
-| **TLS 1.3 transparente** | Descifrado vía uprobes a `SSL_read/SSL_write`, sin `SSLKEYLOGFILE` | Diseño — Fase 3+ |
-| **Plugins WASM en sandbox** | Dissectors seguros escritos por la comunidad, sin riesgo de RCE | Diseño (`docs/wasm-plugins.md`) — Fase 4 |
-| **Decodificador CyberChef integrado** | Pipelines Base64→XOR→Zlib→JSON sobre payloads | Fase 4 |
-| **Detección pasiva y fingerprinting** | JA4 (spec FoxIO), SNI, entropía, beaconing (T1071) | **Implementado (JA4 + beaconing)** |
-| **File carving HTTP + Masquerading** | Archivos de respuestas HTTP con SHA-256, magic bytes propio y alerta T1036 (magic ≠ extensión / doble extensión) | **Implementado** |
-| **Threat intel offline** | Listas Feodo (C2, IP/CIDR v4-v6) y salidas de Tor → alertas T1071.001 / T1090.003 | **Implementado (listas; GeoIP/ASN pendiente)** |
-| **Export SIEM** | JSONL → **ECS 8.x** y **Wazuh** con MITRE ATT&CK (TheHive pendiente) | **Implementado (ECS + Wazuh)** |
-| **IPv6 completo** | Dissector con extensiones, claves de flujo v4/v6 y literales v6 en el DSL | **Implementado** |
-| **Follow Stream** | Reensamblado TCP por dirección: orden, retransmisiones, huecos, hexdump | **Implementado** |
-| **Captura en vivo (libpcap / Npcap)** | GUI y daemon con pushdown BPF al kernel, sin dependencia en tiempo de compilación (dlopen / LoadLibrary) | **Implementado (Linux/macOS/Windows)** |
-| **Pool de dissectors concurrente** | Disección por lotes en N hilos, salida idéntica al modo secuencial | **Implementado** |
-| **Fuzzing determinista en CI** | Corpus mutado sobre parsers + agregador + SOC + DSL, reproducible por semilla | **Implementado** |
-| **TUI interactiva (Ratatui)** | Lista Flow-First + panel de alertas + filtro DSL en vivo | **Implementado** |
-| **Paradigma Flow-First** | 1 línea = 1 sesión; expansión bajo demanda | **Núcleo implementado** |
-| **Mini-IDS heurístico** | Túnel DNS, escaneo de puertos y barrido de red, puertos inseguros, beaconing, masquerading, threat intel | **Implementado** |
-| **DNS pasivo** | Dominio ↔ IP observados, etiqueta el resto de flujos (+ SNI del ClientHello desde F3) | **Implementado** |
-| **Smart Noise Dimming** | NTP/mDNS/SSDP marcados como ruido y atenuados | **Implementado** |
+> Builds from source, installs everything it needs (Git, Rust, the C linker and,
+> on Linux, libpcap), puts `socshark` on your `PATH` and checks it with a demo
+> capture. Run it again any time to update.
 
-## Estado actual: Fases 1-2 completas ✅ · Fase 3 piezas puras ✅ · Fase 4 piezas puras ✅
+### Windows · PowerShell
 
-El pipeline funciona de extremo a extremo sobre archivos **y en vivo**: **lectura/libpcap → disección (Ethernet/IPv4/IPv6/TCP/UDP/DNS/TLS, secuencial o en pool de N hilos) → agregación de flujos bidireccionales (JA4 + SNI + estadística de intervalos) → file carving opcional (T1036) → enriquecimiento SOC (incluidas listas Feodo/Tor) → filtro DSL → tabla/TUI/JSONL/follow/daemon/export ECS-Wazuh**. 209 tests automatizados cubren parsers (barrido anti-panic), JA4 (vectores oficiales FoxIO + NIST), SHA-256 (FIPS 180-4), pool concurrente, agregador, reensamblado, DSL, capa SOC (escaneo vertical/horizontal T1046, beaconing T1071, masquerading T1036, threat intel), backend de captura (incluido el tick sin tráfico en vivo), export SIEM e integración; el fuzzing determinista recorre millones de tramas mutadas en cada build.
-
-### Inicio rápido
-
-**Windows (copiar y pegar):** abre PowerShell, abre [`install.ps1`](install.ps1),
-copia **todo** su contenido y pégalo en la consola. El instalador: comprueba la
-plataforma → instala Git, las Build Tools de C++ de Visual Studio (el enlazador
-que necesita Rust en Windows) y Rust vía winget/rustup si faltan → clona el repositorio
-(privado: pedirá un PAT) → compila en release → instala `socshark.exe` en
-`%USERPROFILE%\.socshark\bin` y lo añade al PATH de usuario → verifica el pipeline
-completo con el escenario demo. Es idempotente: si ya está instalado, actualiza.
-También funciona como script clásico: `.\install.ps1`. Para ver la red **en
-tiempo real** en Windows instala [Npcap](https://npcap.com) (el driver de Wireshark;
-si ya tienes Wireshark, normalmente ya está) con «WinPcap API-compatible Mode»
-marcado, y abre `socshark gui` → **En vivo**. Si pide permisos, abre la consola
-como administrador. Sin Npcap, abrir capturas `.pcap` funciona completo.
-
-Requisitos (Linux/macOS o manual en Windows): Rust 1.75+ (`rustup install stable`).
-
-```bash
-# 1. Compilar
-cargo build --release
-
-# 2. Generar una captura de demostración con eventos SOC interesantes
-./target/release/socshark dev sample-pcap -o demo.pcap
-
-# 3. Analizarla (con file carving para ver también la descarga encubierta)
-./target/release/socshark capture -r demo.pcap --carve-files
-
-# 4. O verla en la interfaz gráfica (se abre una ventana)
-./target/release/socshark gui -r demo.pcap
-
-# 5. Quién es quién: una red de casa que se presenta sola (móvil, PC, impresora, tele, router)
-./target/release/socshark dev sample-pcap --escenario casa -o casa.pcap
-./target/release/socshark gui -r casa.pcap
-
-# 6. Un informe en lenguaje claro para guardar o enviar
-./target/release/socshark report -r casa.pcap -o informe.html
-
-# 7. O ver tu red en tiempo real: botón «En vivo» (necesita permisos de captura)
-sudo ./target/release/socshark gui
+```powershell
+$env:GH_TOKEN = "ghp_your_token"   # only while the repository is private
+irm https://raw.githubusercontent.com/Ruby570bocadito/soc-shark/main/install.ps1 -Headers @{ Authorization = "token $env:GH_TOKEN" } | iex
 ```
 
-Salida real de la demo (45 paquetes → 20 flujos relevantes, ruido excluido):
-
-```text
-═══ soc-shark · 20 flujos (demo.pcap) ═══
-FLUJO                                                        L7        PAQ      BYTES  RIESGO  ALERTAS
-tcp/93.184.216.34:80-192.168.1.20:40112                      HTTP        4      956 B      55  FILE-MASQUERADING
-udp/192.168.1.30:53100-198.51.100.23:8080                    ?           8      848 B      20  BEACONING
-tcp/93.184.216.34:443-192.168.1.10:52000                     TLS         7      583 B       0  -
-udp/2001:4860:4860::8888:53-fd00::10:53010                   DNS         2      216 B       0  -
-tcp/192.168.1.1:22-192.168.1.30:40001                        ?           3      162 B      30  PORT-SCAN
-udp/8.8.8.8:53-192.168.1.10:53001                            DNS         2      158 B       0  -
-udp/8.8.8.8:53-192.168.1.30:53002                            DNS         1      137 B      45  DNS-TUNNELING
-tcp/192.168.1.1:21-192.168.1.30:40001                        ?           2      108 B      30  PORT-SCAN
-...
-
-─── Alertas SOC ───
-▸ (alta) Archivo transferido con identidad falseada · tcp/93.184.216.34:80-192.168.1.20:40112 ·
-  tipo real ≠ extensión declarada en factura.jpg · MITRE T1036
-▸ (alta) Posible túnel DNS · udp/8.8.8.8:53-192.168.1.30:53002 ·
-  qname 'az3k9...chfdgs.tun.evil.example' (77 caracteres, entropía 5.09 ≥ 3.50) · MITRE T1048.003
-▸ (media) Posible escaneo de puertos · tcp/192.168.1.1:21-192.168.1.30:40001 ·
-  192.168.1.30 probó 12 puertos distintos de 192.168.1.1 sin establecer conexión · MITRE T1046
-...
-▸ (media) Comunicación periódica (beacon) · udp/192.168.1.30:53100-198.51.100.23:8080 ·
-  intervalo medio 30.0s con jitter ±0.0% en 7 intervalos · MITRE T1071
-
-Estadísticas: 45 paquetes leídos · 45 diseccionados · 0 descartados · 22 flujos
-```
-
-Las 12 sondas del **escaneo de puertos** (T1046) alertan sea cual sea la
-respuesta del gateway: el 22 abierto (SYN/ACK y el escáner aborta con RST),
-el 21/25/110 cerrados (RST/ACK) y el resto filtrados. Las sondas al 23 y al
-3306 no disparan las reglas de telnet ni de base de datos: un SYN sin
-respuesta no transporta credenciales.
-
-El flujo TLS lleva la **huella JA4** del ClientHello (`t13d0208h2_777cda164f4b_af51ac0c444f`)
-y el **SNI** declarado por el cliente (`store.ejemplo-corporativo.com`) —
-consultables en JSONL y con `tls.ja4` / `tls.sni` en el DSL. El flujo del
-beacon hacia `198.51.100.23:8080` dispara la alerta **BEACONING** (T1071)
-por regularidad de intervalos (Fase 3). El flujo
-tcp/...40112 es la **descarga encubierta** que incluye la demo desde la
-Fase 4: `factura.jpg` cuyo contenido es un PE32 — con `--carve-files` el
-motor extrae el archivo (SHA-256 + magic) y la regla R6 alerta **T1036**;
-sin carving es solo otra sesión HTTP. El flujo
-`udp/2001:4860:4860::8888:53-...` es el intercambio **DNS sobre IPv6**
-que incluye la demo desde la Fase 2 (respuesta AAAA incluida).
-
-### Comandos
+### Linux / macOS · bash
 
 ```bash
-# Interfaz gráfica: ventana con explicaciones en lenguaje claro (pcap o pcapng)
-socshark gui -r captura.pcapng
-socshark gui                    # vacía: «En vivo» para ver la red, o abre/arrastra una captura
+export GH_TOKEN=ghp_your_token     # only while the repository is private
+curl -fsSL -H "Authorization: token $GH_TOKEN" https://raw.githubusercontent.com/Ruby570bocadito/soc-shark/main/install.sh | bash
+```
 
-# Tabla resumen (por defecto)
-socshark capture -r captura.pcap
+Then open the app:
 
-# Volcado JSONL completo a fichero o stdout
-socshark capture -r captura.pcap --json flujos.jsonl
-socshark capture -r captura.pcap --json - | jq '.risk_score'
+```bash
+socshark gui
+```
 
-# Filtrar con el DSL (ver docs/filter-dsl.md)
-socshark capture -r captura.pcap -f "tcp.port == 443"
-socshark capture -r captura.pcap -f "ip.version == 6 || flow.risk >= 50"
-socshark capture -r captura.pcap -f "!(flow.noise)" --show-noise
+<details>
+<summary>About the token, live capture permissions and what each installer does</summary>
 
-# File carving: extrae archivos HTTP y detecta encubrimiento (T1036)
-socshark capture -r captura.pcap --carve-files
-socshark capture -r captura.pcap --carve-files -f "file.masquerading == true"
+- **Token**: while the repository is private, create a
+  [GitHub token](https://github.com/settings/tokens) with read access to the
+  repository (fine-grained: *Contents → Read-only*). The installers use it only
+  for that download: it is never written to `.git/config`. When the repository
+  is public, drop the token line and the `-Headers …` / `-H …` part.
+- **Windows** ([`install.ps1`](install.ps1)): installs Git, the Visual Studio C++
+  Build Tools (the linker Rust needs) and Rust with winget/rustup if missing,
+  builds in release mode, installs `socshark.exe` into
+  `%USERPROFILE%\.socshark\bin` and adds it to your user `PATH`. For **live
+  capture** install [Npcap](https://npcap.com) (already there if you have
+  Wireshark) with *WinPcap API-compatible Mode* ticked.
+- **Linux** ([`install.sh`](install.sh)): installs `git`, a C compiler,
+  `libpcap` and `setcap` with apt, dnf, yum, pacman, zypper or apk, then Rust
+  with rustup, builds, installs into `~/.local/bin` and grants the binary the
+  capture permission (`cap_net_raw,cap_net_admin`, the same one Wireshark's
+  `dumpcap` gets), so **live capture works without sudo**.
+- **macOS**: same script; live capture needs `sudo` (or Wireshark's ChmodBPF).
+- Options (environment variables): `SOCSHARK_REF` (branch or tag, e.g.
+  `v0.7.0`), `SOCSHARK_DIR` (source folder), `SOCSHARK_BIN` (Linux install
+  folder), `SOCSHARK_NO_SETCAP=1`.
 
-# Threat intel offline: listas Feodo/Tor (se descargan aparte)
-socshark capture -r captura.pcap --intel-feodo feodo.txt --intel-tor tor-exits.txt
+</details>
 
-# Export a SIEM: ECS (Elastic) o Wazuh, con carving e intel si se piden
-socshark export -r captura.pcap -F ecs -o ecs.jsonl
-socshark export -r captura.pcap -F wazuh -o wazuh.jsonl --carve-files
+## Why SOC SHARK
 
-# Seguir un stream TCP reensamblado (texto o hexdump)
-socshark follow -r captura.pcap --flow "93.184.216.34:443"
-socshark follow -r captura.pcap --flow "93.184.216.34:443" --hex
+Wireshark answers *"what is inside this packet?"*. **SOC SHARK answers *"what
+is happening on my network, and what should I worry about?"*** Conversations
+instead of packets, meaning instead of hex, alerts instead of endless
+scrolling:
 
-# Explorar la captura con la TUI (Flow-First + alertas + filtro DSL)
-socshark tui -r captura.pcap
+- every conversation is **one sentence** — *"The computer «DESKTOP-AB12» used
+  Telnet with the router"* — with a ✓ / ! / ✕ status;
+- alerts are grouped into **stories** with **what to do** and the
+  MITRE ATT&CK technique;
+- and when you need the detail, it is all there, Wireshark-style: every
+  packet, its layers explained field by field, and its bytes.
 
-# Disección en paralelo (la salida es idéntica al modo secuencial)
-socshark capture -r captura.pcap --workers 4
+## Features
 
-# Captura en vivo: listar interfaces y monitorizar con pushdown BPF
+| Feature | What it does |
+|---|---|
+| 🪟 **GUI** | Conversations in plain language, stories with *what to do*, packet list with layers and highlighted bytes, *Follow stream*, statistics, right-click filters, filter language, light/dark theme. Opens **pcap and pcapng**, saves `.pcap`. |
+| 🔴 **Live** | Watch your network in real time: pick Wi-Fi or cable (with its IP and status), the window refreshes every second, *Stop* is instant. Windows (Npcap), Linux and macOS. |
+| 🏷️ **Who is who** | Devices by name (*iPhone-de-Ana*, *HP OfficeJet*, *the router*) learned from DHCP, mDNS, LLMNR and NetBIOS; vendor by MAC; your own nicknames; live, **which program** on your computer opened each connection. |
+| 🗺️ **Network map** | Your devices, the router and the Internet, and who talks to whom; danger in red; click to filter. |
+| 🔔 **Alerts & report** | System notification when something dangerous or odd shows up; a plain-language HTML report to save, print or send. |
+| 💻 **TUI** | Flow-First terminal interface (Ratatui): one line per conversation, alerts panel, live DSL filter. |
+| 🛡️ **SOC engine** | Mini-IDS: DNS tunnelling, port and network scans, beaconing (T1071), disguised files (T1036), insecure services; JA4 fingerprints and SNI; HTTP file carving with SHA-256; offline threat intel (Feodo, Tor); TCP stream reassembly; full IPv6. |
+| 📤 **SIEM export** | JSONL, **Elastic ECS 8.x** and **Wazuh**, with MITRE ATT&CK mapping. |
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/img/gui-explicacion.png" alt="Stories and conversations explained in plain language"><br><sub><b>What happened</b>: stories, conversations and what to do</sub></td>
+    <td width="50%"><img src="docs/img/gui-mapa.png" alt="Map of a home network"><br><sub><b>Network map</b>: devices by name, the router and the Internet</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/img/gui-paquetes.png" alt="Packet list with layers and bytes"><br><sub><b>Packets</b>: every packet, layers explained, bytes highlighted</sub></td>
+    <td><img src="docs/img/gui-estadisticas.png" alt="Statistics"><br><sub><b>Statistics</b>: activity over time, protocols and services</sub></td>
+  </tr>
+  <tr>
+    <td colspan="2"><img src="docs/img/tui.png" alt="The terminal interface (TUI)"><br><sub><b>TUI</b>: the same analysis in the terminal — <code>socshark tui -r capture.pcap</code></sub></td>
+  </tr>
+</table>
+
+> The interface and the detailed documentation are in Spanish for now.
+
+## Usage
+
+```bash
+# Graphical interface: live network, or open / drag a capture (pcap or pcapng)
+socshark gui
+socshark gui -r capture.pcapng
+
+# Terminal interface
+socshark tui -r capture.pcap
+
+# Plain-language report (one HTML file to save, print or send)
+socshark report -r capture.pcap -o report.html
+
+# Summary table, JSONL and the filter language (docs/filter-dsl.md)
+socshark capture -r capture.pcap
+socshark capture -r capture.pcap --json - | jq '.risk_score'
+socshark capture -r capture.pcap -f "tcp.port == 443 || flow.risk >= 50"
+
+# Carve HTTP files and detect disguised ones (T1036); offline threat intel
+socshark capture -r capture.pcap --carve-files
+socshark capture -r capture.pcap --intel-feodo feodo.txt --intel-tor tor-exits.txt
+
+# Follow a reassembled TCP stream
+socshark follow -r capture.pcap --flow "93.184.216.34:443"
+
+# Export to a SIEM
+socshark export -r capture.pcap -F ecs -o ecs.jsonl
+socshark export -r capture.pcap -F wazuh -o wazuh.jsonl
+
+# Live capture from the command line (BPF pushed down to the kernel)
 socshark daemon --list
-socshark daemon -i eth0 --bpf "tcp port 443" --json flujos.jsonl
-socshark daemon -i eth0 --min-risk 30 --flush-secs 5   # alertas por stderr
-# Ctrl+C (o SIGTERM) cierra ordenadamente: exporta los flujos vivos al JSONL;
-# un segundo Ctrl+C fuerza la salida
+socshark daemon -i eth0 --bpf "tcp port 443" --json flows.jsonl
 
-# Fuzzing determinista (el mismo motor que corre en CI)
-socshark dev fuzz --seed 42 --iterations 20000
+# No capture at hand? Generate one: an attack demo, or a home network
+socshark dev sample-pcap -o demo.pcap
+socshark dev sample-pcap --escenario casa -o home.pcap
 ```
 
-## Estructura del repositorio
+## Build from source
+
+Requirements: [Rust 1.75+](https://rustup.rs) and a C linker. Live capture
+also needs libpcap (Linux; built into macOS) or [Npcap](https://npcap.com)
+(Windows) at run time — it is loaded on the fly, nothing to link at build
+time.
+
+```bash
+git clone https://github.com/Ruby570bocadito/soc-shark.git
+cd soc-shark
+./install.sh                     # or: cargo build --release
+./target/release/socshark gui -r examples/demo.pcap
+```
+
+Live capture on Linux without the installer: grant the permission once with
+`sudo setcap cap_net_raw,cap_net_admin=eip "$(command -v socshark)"`, or run
+it with `sudo`.
+
+## Project status
+
+| Area | Status |
+|---|---|
+| Capture (files + live), dissectors, flow aggregation, filter DSL | ✅ Done |
+| SOC engine: mini-IDS, JA4, beaconing, file carving, threat intel, SIEM export | ✅ Done |
+| GUI (live, who is who, map, alerts, report) and TUI | ✅ Done |
+| Process attribution with eBPF (today: the system socket table, Linux/Windows) | 🟡 Designed — [ebpf-design.md](docs/ebpf-design.md) |
+| Transparent TLS 1.3 decryption (uprobes on `SSL_read/SSL_write`) | 🔵 Planned |
+| Sandboxed WASM plugins · CyberChef-style decoder · GeoIP/ASN · TheHive | 🔵 Planned — [roadmap.md](docs/roadmap.md) |
+
+Quality: 200+ unit and integration tests, deterministic fuzzing in CI,
+`clippy -D warnings` and `rustfmt` with no exceptions, panic-free parsers
+(malformed or hostile packets yield `None`, never a crash) and a minimal set
+of dependencies.
+
+<details>
+<summary>Repository layout</summary>
 
 ```text
 soc-shark/
 ├── crates/
-│   ├── socshark-core/         # EnrichedFlow, paquetes crudos, configuración
-│   ├── socshark-capture/      # CaptureSource + lector pcap + captura en vivo (FFI libpcap/dlopen)
-│   ├── socshark-dissectors/   # Ethernet, IPv4/6, TCP, UDP, DNS + pool concurrente
-│   ├── socshark-flow/         # Agregador de flujos bidireccionales
-│   ├── socshark-filter/       # DSL de filtrado (lexer, parser, evaluador)
-│   ├── socshark-soc/          # Ruido, DNS pasivo, riesgo, lenguaje claro (explain), carving (T1036), threat intel, export ECS/Wazuh
-│   ├── socshark-ebpf-common/  # Tipos compartidos probe/userspace eBPF (repr(C), no_std)
-│   ├── socshark-testgen/      # Constructores de tramas + demo + primitivas de fuzzing
-│   └── socshark-cli/          # Binario `socshark` (capture/gui/daemon/follow/tui/export/fuzz) + tests
-│       └── assets/gui/        # Frontend de la GUI (HTML/CSS/JS, incrustado en el binario)
-├── docs/                      # Documentación completa (índice en docs/index.md)
-│   ├── architecture.md        # Visión general y decisiones técnicas
-│   ├── pipeline.md            # Las 4 etapas del pipeline
-│   ├── data-model.md          # EnrichedFlow campo por campo
-│   ├── security.md            # Modelo de privilegios y threat model
-│   ├── filter-dsl.md          # Gramática y campos del DSL
-│   ├── gui.md                 # La GUI: uso, API local y seguridad
-│   ├── tui.md                 # La TUI Flow-First (atajos, paneles, diseño)
-│   ├── ebpf-design.md         # Diseño eBPF (procesos, TLS, correlación)
-│   ├── wasm-plugins.md        # Diseño del sandbox de plugins
-│   ├── soc-features.md        # Funciones SOC (Flow-First, IDS, carving, intel, SIEM)
-│   ├── soc-mitre-mapping.md   # Detecciones ↔ MITRE ATT&CK
-│   ├── siem-export.md         # Contrato de export ECS/Wazuh campo a campo
-│   ├── roadmap.md             # Fases 0-4 con criterios de aceptación
-│   └── decisions.md           # ADRs (decisiones de arquitectura)
-├── examples/demo.pcap         # Captura de demostración lista para analizar
-└── .github/workflows/ci.yml   # fmt + clippy -D warnings + test + build
+│   ├── socshark-core/         # EnrichedFlow, raw packets, configuration
+│   ├── socshark-capture/      # pcap/pcapng reader + live capture (libpcap/Npcap FFI, dlopen)
+│   ├── socshark-dissectors/   # Ethernet, IPv4/6, TCP, UDP, DNS, TLS, DHCP… + concurrent pool
+│   ├── socshark-flow/         # Bidirectional flow aggregator
+│   ├── socshark-filter/       # Filter DSL (lexer, parser, evaluator)
+│   ├── socshark-soc/          # Noise, passive DNS, risk, plain language, carving, intel, SIEM export
+│   ├── socshark-ebpf-common/  # Types shared between eBPF probes and user space
+│   ├── socshark-testgen/      # Frame builders, demo scenarios, fuzzing primitives
+│   └── socshark-cli/          # The `socshark` binary: gui, tui, capture, report, daemon…
+├── docs/                      # Documentation (Spanish) — start at docs/index.md
+├── examples/demo.pcap         # Demo capture
+├── install.ps1 · install.sh   # One-line installers
+└── .github/workflows/ci.yml   # fmt + clippy + tests + fuzzing
 ```
 
-## Calidad
+</details>
 
-- **209 tests** unitarios y de integración (`cargo test --workspace`),
-  incluido el barrido anti-panic, el reensamblado con segmentos fuera de
-  orden, el test de igualdad JSONL entre el pool de 4 hilos y el camino
-  secuencial, el carving T1036 sobre el escenario demo y el E2E de threat
-  intel con lista Feodo de laboratorio.
-- **Fuzzing determinista en CI**: `socshark dev fuzz` muta el corpus demo
-  (bit flips, truncados, empalmes, mentiras de snaplen) y lo pasa por el
-  pipeline completo; un fallo se reproduce con la semilla impresa. En un
-  portátil medio: ~1 millón de tramas por segundo en release.
-- **`cargo clippy -D warnings`** y **`cargo fmt --check`** en CI, sin excepciones.
-- **Parsers sin `panic`**: todo acceso a bytes está acotado; los paquetes
-  malformados (incluidos los crafted por un atacante) producen `None`, nunca un crash.
-- **Dependencias mínimas**: `serde`, `serde_json`, `thiserror`, `clap`,
-  `anyhow` y —tras la feature `tui`, desactivable— `ratatui` + `crossterm`.
-  La captura en vivo usa FFI propio sobre libpcap (o `wpcap.dll` de Npcap
-  en Windows) cargada al vuelo: ni cabeceras ni enlazado en tiempo de
-  compilación (ADR-009).
+**Documentation** (Spanish): [index](docs/index.md) · [GUI](docs/gui.md) ·
+[TUI](docs/tui.md) · [architecture](docs/architecture.md) ·
+[filter DSL](docs/filter-dsl.md) · [MITRE ATT&CK mapping](docs/soc-mitre-mapping.md) ·
+[SIEM export](docs/siem-export.md) · [security model](docs/security.md) ·
+[changelog](CHANGELOG.md)
 
-## Ética y uso responsable
+## Responsible use
 
-soc-shark es una herramienta **defensiva** para analistas de SOC, Blue Team e
-investigadores. Capturar tráfico de redes que no administras puede ser ilegal
-en tu jurisdicción. Úsala exclusivamente en redes propias o con autorización
-explícita y, en entornos laborales, conforme a tu política de monitorización.
-El diseño de privilegios (`docs/security.md`) está pensado para que la
-herramienta sea difícil de abusar incluso comprometida.
+SOC SHARK is a **defensive** tool for SOC and Blue Team analysts, researchers
+and anyone who wants to understand their own network. Capturing traffic on
+networks you do not manage may be illegal where you live: use it only on your
+own networks or with explicit permission and, at work, according to your
+monitoring policy.
 
-## Licencia
+## License
 
-MIT — ver [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE).

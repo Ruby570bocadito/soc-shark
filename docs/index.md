@@ -6,7 +6,7 @@ en [decisions.md](decisions.md) (ADR-007).
 
 ## Guía de lectura por perfil
 
-- **Quiero probarlo ya** → [README](../README.md#inicio-rápido) y [filter-dsl.md](filter-dsl.md).
+- **Quiero probarlo ya** → [README](../README.es.md) (instalación en una línea; [in English](../README.md)) y [filter-dsl.md](filter-dsl.md).
 - **Quiero una ventana fácil de entender, o ver mi red en tiempo real** → [gui.md](gui.md).
 - **Quiero entender cómo funciona** → [architecture.md](architecture.md) →
   [pipeline.md](pipeline.md) → [data-model.md](data-model.md).
