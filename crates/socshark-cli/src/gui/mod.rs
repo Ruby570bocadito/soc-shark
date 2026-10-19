@@ -353,6 +353,7 @@ impl Server {
             }),
             ("GET", ["packets"]) => self.with_loaded(|l| packets_page(l, req)),
             ("GET", ["stats"]) => self.with_loaded(|l| stats_json(l, req)),
+            ("GET", ["map"]) => self.with_loaded(|l| map_json(l, req)),
             ("GET", ["hosts"]) => self.with_loaded(|l| {
                 Response::json(
                     200,
@@ -421,8 +422,8 @@ impl Server {
             ("POST", ["open"]) => self.open_upload(req),
             (
                 _,
-                ["session" | "stories" | "flows" | "packets" | "stats" | "hosts" | "timeline"
-                | "save.pcap" | "live" | "open", ..],
+                ["session" | "stories" | "flows" | "packets" | "stats" | "map" | "hosts"
+                | "timeline" | "save.pcap" | "live" | "open", ..],
             ) => Response::error(405, "método no permitido"),
             _ => Response::error(404, "no existe"),
         }
@@ -662,7 +663,14 @@ fn proto_name(f: &EnrichedFlow) -> &'static str {
 /// Dónde está una dirección, dicho para personas.
 fn ip_scope(ip: &IpAddr) -> &'static str {
     match ip {
-        IpAddr::V4(v4) if v4.is_multicast() || v4.is_broadcast() => "grupo",
+        // x.x.x.255 privada: la difusión de una red /24 (la de casa).
+        IpAddr::V4(v4)
+            if v4.is_multicast()
+                || v4.is_broadcast()
+                || (v4.is_private() && v4.octets()[3] == 255) =>
+        {
+            "grupo"
+        }
         IpAddr::V4(v4) if v4.is_private() || v4.is_loopback() || v4.is_link_local() => "local",
         IpAddr::V6(v6) if v6.is_multicast() => "grupo",
         IpAddr::V6(v6)
@@ -874,6 +882,239 @@ impl<'a> ViewFilter<'a> {
     }
 }
 
+/// Sitios de Internet que se dibujan por separado en el mapa (el resto se
+/// agrupa en «otros sitios»).
+const MAP_MAX_EXTERNAL: usize = 12;
+/// Equipos de la red local que se dibujan como mucho.
+const MAP_MAX_LOCAL: usize = 40;
+
+/// Icono de un equipo en el mapa, por lo que se sabe de él.
+fn map_icon(h: Option<&socshark_soc::hosts::HostInfo>, ip: &IpAddr) -> &'static str {
+    use socshark_soc::hosts::Role;
+    if ip.is_loopback() {
+        return "computer";
+    }
+    let Some(h) = h else { return "device" };
+    match h.role {
+        Some(Role::Router) => return "router",
+        Some(Role::ThisComputer) => return "computer",
+        None => {}
+    }
+    let hint = h.vendor_hint.unwrap_or("");
+    // El nombre que el equipo se pone suele decir qué es.
+    let name = h.name.as_deref().unwrap_or("").to_lowercase();
+    let named = |words: &[&str]| words.iter().any(|w| name.contains(w));
+    if named(&[
+        "iphone", "ipad", "android", "galaxy", "pixel", "redmi", "xiaomi", "huawei", "movil",
+        "móvil", "phone",
+    ]) {
+        return "phone";
+    }
+    if named(&[
+        "desktop-",
+        "laptop",
+        "portatil",
+        "portátil",
+        "macbook",
+        "imac",
+        "-pc",
+        "thinkpad",
+    ]) {
+        return "computer";
+    }
+    if named(&["tv", "tele", "chromecast", "roku", "firestick"]) {
+        return "tv";
+    }
+    match h.kind.unwrap_or("") {
+        "la impresora" => "printer",
+        "el Chromecast" | "el Fire TV" | "el dispositivo AirPlay" => "tv",
+        "el altavoz" => "speaker",
+        "el ordenador" => "computer",
+        _ if hint.contains("impresora") => "printer",
+        _ if hint.contains("router") || hint.contains("Wi-Fi") => "router",
+        _ if hint.contains("móvil") => "phone",
+        _ if hint.contains("televisión") => "tv",
+        _ if h.os == Some("Windows") || hint.contains("ordenador") => "computer",
+        _ if h.os == Some("Android") => "phone",
+        _ => "device",
+    }
+}
+
+/// El mapa de la red: equipos de casa, router, sitios de Internet y quién
+/// habla con quién (con los mismos recortes que la ventana).
+fn map_json(l: &Loaded, req: &Request) -> Response {
+    let sel = match ViewFilter::from_request(l, req) {
+        Ok(f) => f,
+        Err(resp) => return resp,
+    };
+    #[derive(Default)]
+    struct Acc {
+        bytes: u64,
+        flows: u64,
+        level: Option<Level>,
+    }
+    impl Acc {
+        fn add(&mut self, bytes: u64, level: Level) {
+            self.bytes += bytes;
+            self.flows += 1;
+            self.level = Some(self.level.map_or(level, |l| l.max(level)));
+        }
+    }
+    // Un extremo: equipo de casa, sitio de Internet o «toda la red».
+    let resolve = |ip: IpAddr, mac: Option<&str>| -> Option<(String, &'static str)> {
+        if ip.is_unspecified() {
+            // Aún sin dirección (DHCP): se reconoce por su MAC si se puede.
+            let h = mac.and_then(|m| l.hosts.by_mac(m))?;
+            return Some((h.ip.to_string(), "local"));
+        }
+        Some(match ip_scope(&ip) {
+            "grupo" => ("grupo".to_string(), "group"),
+            "local" => (ip.to_string(), "local"),
+            _ if ip.is_loopback() => (ip.to_string(), "local"),
+            _ => (ip.to_string(), "internet"),
+        })
+    };
+
+    // Primera pasada: cuánto mueve cada extremo, para elegir los que se dibujan.
+    let kept: Vec<usize> = (0..l.flows.len()).filter(|&i| sel.keep_flow(i)).collect();
+    let mut volume: HashMap<String, (u64, &'static str)> = HashMap::new();
+    let mut labels: HashMap<String, String> = HashMap::new();
+    for &i in &kept {
+        let f = &l.flows[i];
+        let bytes = f.bytes + f.bytes_rev;
+        for (ip, mac) in [
+            (f.src_ip, f.src_mac.as_deref()),
+            (f.dst_ip, f.dst_mac.as_deref()),
+        ] {
+            if let Some((id, col)) = resolve(ip, mac) {
+                volume.entry(id).or_insert((0, col)).0 += bytes;
+            }
+        }
+        // Un sitio de Internet se llama por su nombre: el de la web pedida
+        // (SNI) o el dominio resuelto, salvo en DNS (ahí el dominio es lo
+        // que se preguntó, no quién responde), o un servidor conocido.
+        let named = match f.l7_protocol {
+            L7Protocol::Dns => None,
+            _ => f.tls_sni.as_deref().or(f.resolved_domain.as_deref()),
+        };
+        if let Some(name) = named.or_else(|| socshark_soc::explain::well_known_name(f.dst_ip)) {
+            labels
+                .entry(f.dst_ip.to_string())
+                .or_insert_with(|| name.to_string());
+        }
+    }
+    let top = |col: &str, max: usize| -> HashSet<String> {
+        let mut v: Vec<(&String, u64)> = volume
+            .iter()
+            .filter(|(_, (_, c))| *c == col)
+            .map(|(id, (b, _))| (id, *b))
+            .collect();
+        v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+        v.into_iter().take(max).map(|(id, _)| id.clone()).collect()
+    };
+    let shown_ext = top("internet", MAP_MAX_EXTERNAL);
+    let shown_local = top("local", MAP_MAX_LOCAL);
+    let node_of = |ip: IpAddr, mac: Option<&str>| -> Option<String> {
+        let (id, col) = resolve(ip, mac)?;
+        Some(match col {
+            "internet" if !shown_ext.contains(&id) => "internet-otros".to_string(),
+            "local" if !shown_local.contains(&id) => "local-otros".to_string(),
+            _ => id,
+        })
+    };
+
+    // Segunda pasada: nodos y enlaces.
+    let mut nodes: HashMap<String, Acc> = HashMap::new();
+    let mut links: HashMap<(String, String), Acc> = HashMap::new();
+    for &i in &kept {
+        let f = &l.flows[i];
+        let (Some(a), Some(b)) = (
+            node_of(f.src_ip, f.src_mac.as_deref()),
+            node_of(f.dst_ip, f.dst_mac.as_deref()),
+        ) else {
+            continue;
+        };
+        let bytes = f.bytes + f.bytes_rev;
+        let level = l.explanations[i].level;
+        nodes.entry(a.clone()).or_default().add(bytes, level);
+        if a != b {
+            nodes.entry(b.clone()).or_default().add(bytes, level);
+            let key = if a <= b { (a, b) } else { (b, a) };
+            links.entry(key).or_default().add(bytes, level);
+        }
+    }
+    let hidden = |col: &str, shown: &HashSet<String>| {
+        volume
+            .iter()
+            .filter(|(id, (_, c))| *c == col && !shown.contains(*id))
+            .count()
+    };
+    let (hidden_ext, hidden_local) = (
+        hidden("internet", &shown_ext),
+        hidden("local", &shown_local),
+    );
+    let mut router: Option<String> = None;
+    let mut out_nodes: Vec<Value> = nodes
+        .iter()
+        .map(|(id, acc)| {
+            let ip: Option<IpAddr> = id.parse().ok();
+            let host = ip.and_then(|ip| l.hosts.get(ip));
+            let (column, label, icon) = match (id.as_str(), ip) {
+                ("grupo", _) => ("group", "Toda la red local".to_string(), "group"),
+                ("internet-otros", _) => {
+                    ("internet", format!("{hidden_ext} sitios más"), "internet")
+                }
+                ("local-otros", _) => ("local", format!("{hidden_local} equipos más"), "device"),
+                (_, Some(ip)) if ip_scope(&ip) == "internet" && !ip.is_loopback() => (
+                    "internet",
+                    labels.get(id).cloned().unwrap_or_else(|| id.clone()),
+                    "internet",
+                ),
+                (_, Some(ip)) => {
+                    let icon = map_icon(host, &ip);
+                    let label = host.and_then(|h| h.short()).unwrap_or_else(|| {
+                        if ip.is_loopback() {
+                            "Este mismo equipo".into()
+                        } else {
+                            id.clone()
+                        }
+                    });
+                    let col = if icon == "router" && host.is_some_and(|h| h.role.is_some()) {
+                        "router"
+                    } else {
+                        "local"
+                    };
+                    (col, label, icon)
+                }
+                _ => ("local", id.clone(), "device"),
+            };
+            if column == "router" {
+                router = Some(id.clone());
+            }
+            json!({
+                "id": id, "ip": ip, "label": label, "icon": icon, "column": column,
+                "bytes": acc.bytes, "flows": acc.flows, "level": acc.level,
+                "host": host.map(host_json),
+            })
+        })
+        .collect();
+    out_nodes.sort_by(|a, b| {
+        b["bytes"]
+            .as_u64()
+            .cmp(&a["bytes"].as_u64())
+            .then(a["id"].as_str().cmp(&b["id"].as_str()))
+    });
+    let mut out_links: Vec<Value> = links
+        .iter()
+        .map(|((a, b), acc)| json!({ "a": a, "b": b, "bytes": acc.bytes, "flows": acc.flows, "level": acc.level }))
+        .collect();
+    out_links.sort_by(|x, y| y["bytes"].as_u64().cmp(&x["bytes"].as_u64()));
+    Response::json(
+        200,
+        &json!({ "nodes": out_nodes, "links": out_links, "router": router }),
+    )
+}
+
 /// Página de la lista global de paquetes.
 fn packets_page(l: &Loaded, req: &Request) -> Response {
     let sel = match ViewFilter::from_request(l, req) {
@@ -1031,6 +1272,70 @@ mod tests {
 
     fn demo_server() -> (Arc<Server>, PathBuf) {
         server_with(&sample_pcap_packets(), "demo.pcap")
+    }
+
+    #[test]
+    fn mapa_de_la_red_de_casa() {
+        let (s, path) = server_with(&socshark_testgen::home_pcap_packets(), "casa.pcap");
+        let t = s.token.clone();
+        let h = "127.0.0.1:8787";
+        let (st, map) = get(&s, "/api/map", Some(&t), h);
+        assert_eq!(st, 200);
+        let nodes = map["nodes"].as_array().unwrap();
+        let node = |id: &str| nodes.iter().find(|n| n["id"] == id).cloned();
+        assert_eq!(map["router"], "192.168.1.1");
+        let router = node("192.168.1.1").unwrap();
+        assert_eq!(
+            (router["column"].as_str(), router["icon"].as_str()),
+            (Some("router"), Some("router"))
+        );
+        let printer = node("192.168.1.40").unwrap();
+        assert_eq!(printer["icon"], "printer");
+        assert_eq!(printer["label"], "HP OfficeJet Pro 8020");
+        assert_eq!(node("192.168.1.50").unwrap()["icon"], "computer");
+        assert_eq!(node("192.168.1.30").unwrap()["icon"], "phone");
+        assert_eq!(node("192.168.1.60").unwrap()["icon"], "tv");
+        // Internet por su nombre; los anuncios, en «toda la red».
+        assert_eq!(node("8.8.8.8").unwrap()["label"], "DNS de Google");
+        assert!(
+            node("192.168.1.255").is_none(),
+            "difusión de la red: «toda la red»"
+        );
+        let insta = node("157.240.5.174").unwrap();
+        assert_eq!(
+            (insta["column"].as_str(), insta["label"].as_str()),
+            (Some("internet"), Some("www.instagram.com"))
+        );
+        assert_eq!(node("grupo").unwrap()["column"], "group");
+        assert!(
+            node("0.0.0.0").is_none(),
+            "el DHCP sin dirección va al equipo por su MAC"
+        );
+        // El Telnet al router es el enlace marcado como peligro.
+        let links = map["links"].as_array().unwrap();
+        let pc_router = links
+            .iter()
+            .find(|l| {
+                let (a, b) = (l["a"].as_str().unwrap(), l["b"].as_str().unwrap());
+                (a, b) == ("192.168.1.1", "192.168.1.50")
+            })
+            .unwrap();
+        assert_eq!(pc_router["level"], "peligro");
+        // Mismos recortes que el resto: con filtro, solo lo del móvil.
+        let (_, only) = get(
+            &s,
+            "/api/map?filter=ip.addr+%3D%3D+192.168.1.30",
+            Some(&t),
+            h,
+        );
+        assert!(only["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|n| n["id"] != "192.168.1.40"));
+        let (st, _) = get(&s, "/api/map?filter=ip.addr+%3D%3D", Some(&t), h);
+        assert_eq!(st, 400);
+        std::fs::remove_file(path).ok();
     }
 
     /// Quién es quién de extremo a extremo: directorio, nombres en las

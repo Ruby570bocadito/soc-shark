@@ -16,6 +16,15 @@
   <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></symbol>
   <symbol id="i-save" viewBox="0 0 24 24"><path d="M12 3v11m0 0-4.5-4.5M12 14l4.5-4.5M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
   <symbol id="i-side" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M9 4v16" stroke="currentColor" stroke-width="2"/></symbol>
+  <symbol id="m-router" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="12" width="18" height="7" rx="2"/><path d="M7 12 5.5 5M17 12l1.5-7"/></g><circle cx="7.5" cy="15.5" r="1.2" fill="currentColor"/><circle cx="11" cy="15.5" r="1.2" fill="currentColor"/></symbol>
+  <symbol id="m-computer" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></g></symbol>
+  <symbol id="m-phone" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M11 18.5h2"/></g></symbol>
+  <symbol id="m-printer" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M7 9V3h10v6"/><rect x="3" y="9" width="18" height="8" rx="2"/><rect x="7" y="14" width="10" height="7"/></g></symbol>
+  <symbol id="m-tv" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="2.5" y="5" width="19" height="12" rx="2"/><path d="M8 21h8M12 17v4"/></g></symbol>
+  <symbol id="m-speaker" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8"><rect x="6" y="2.5" width="12" height="19" rx="3"/><circle cx="12" cy="14" r="3.5"/></g><circle cx="12" cy="7" r="1.2" fill="currentColor"/></symbol>
+  <symbol id="m-device" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="3" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="12" r="2" fill="currentColor"/></symbol>
+  <symbol id="m-internet" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="4" ry="9"/><path d="M3 12h18"/></g></symbol>
+  <symbol id="m-group" viewBox="0 0 24 24"><circle cx="12" cy="12" r="2" fill="currentColor"/><path d="M7.8 7.8a6 6 0 0 0 0 8.4M16.2 7.8a6 6 0 0 1 0 8.4M4.9 4.9a10 10 0 0 0 0 14.2M19.1 4.9a10 10 0 0 1 0 14.2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
   <symbol id="i-theme" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 3.5a8.5 8.5 0 0 1 0 17z"/></symbol>
 </svg>
 
@@ -35,6 +44,7 @@
     <button type="button" role="tab" data-view="flows" aria-selected="true" title="Quién habla con quién (1)">Conversaciones</button>
     <button type="button" role="tab" data-view="packets" aria-selected="false" title="Todos los paquetes, uno a uno (2)">Paquetes</button>
     <button type="button" role="tab" data-view="stats" aria-selected="false" title="Protocolos, equipos y actividad (3)">Estadísticas</button>
+    <button type="button" role="tab" data-view="map" aria-selected="false" title="Dibujo de quién habla con quién (4)">Mapa</button>
   </nav>
   <div class="spacer"></div>
   <div class="segmented" role="group" aria-label="Nivel de detalle">
@@ -121,6 +131,10 @@
     <section id="view-stats" class="view" aria-label="Estadísticas" hidden>
       <div id="stats" class="stats"></div>
     </section>
+
+    <section id="view-map" class="view" aria-label="Mapa de la red" hidden>
+      <div id="map" class="map"></div>
+    </section>
   </div>
 </main>
 
@@ -204,7 +218,7 @@
       <li><b>Lo que ha pasado</b> (izquierda) resume lo importante. Pulsa <em>Ver conversaciones</em> para ver las que forman cada historia.</li>
       <li><b>Conversaciones</b>: cada fila es una conversación completa entre dos equipos. <span class="dot ok">✓</span> normal · <span class="dot raro">!</span> raro · <span class="dot peligro">✕</span> peligro.</li>
       <li>Abajo, <b>Explicación</b> cuenta qué pasó y qué hacer; <b>Paquetes</b>, cada paquete con sus capas y bytes; <b>Contenido</b>, lo que se dijeron tal cual.</li>
-      <li><b>Paquetes</b> (arriba) es la lista completa, paquete a paquete, como en Wireshark. <b>Estadísticas</b>: protocolos, equipos que más hablan y actividad en el tiempo.</li>
+      <li><b>Paquetes</b> (arriba) es la lista completa, paquete a paquete, como en Wireshark. <b>Estadísticas</b>: protocolos, equipos que más hablan y actividad en el tiempo. <b>Mapa</b>: un dibujo de tu red, el router e Internet, con quién habla con quién.</li>
       <li><b>Clic derecho</b> en cualquier fila: filtrar por ese equipo, puerto o conversación, u ocultarlo.</li>
       <li><b>Quién es quién</b>: los equipos que se presentan solos en la red (móviles, ordenadores, impresoras, teles) aparecen con su nombre y su marca; el router, como «el router». Puedes <b>ponerles nombre</b> («Portátil de Ana») desde su explicación o con clic derecho. En vivo, además, se ve <b>qué programa</b> de tu ordenador hizo cada conexión.</li>
       <li>Las palabras <span class="term demo">subrayadas</span> tienen explicación: pasa el ratón por encima. Los separadores entre paneles se pueden arrastrar.</li>
@@ -215,7 +229,7 @@
       <li><kbd>Ctrl</kbd>+<kbd>O</kbd> abrir captura</li>
       <li><kbd>Ctrl</kbd>+<kbd>S</kbd> guardar .pcap</li>
       <li><kbd>/</kbd> escribir un filtro</li>
-      <li><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> cambiar de vista</li>
+      <li><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> <kbd>4</kbd> cambiar de vista</li>
       <li><kbd>↑</kbd> <kbd>↓</kbd> moverse por la lista</li>
       <li><kbd>Ctrl</kbd>+<kbd>B</kbd> mostrar/ocultar el resumen</li>
       <li><kbd>F1</kbd> esta ayuda</li>

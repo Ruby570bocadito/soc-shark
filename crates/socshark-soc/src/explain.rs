@@ -183,6 +183,11 @@ fn well_known_host(ip: IpAddr) -> Option<&'static str> {
     })
 }
 
+/// Nombre conocido de un servidor público sin artículo («DNS de Google»).
+pub fn well_known_name(ip: IpAddr) -> Option<&'static str> {
+    well_known_host(ip).map(|n| n.strip_prefix("el ").unwrap_or(n))
+}
+
 /// Una IP contada para personas: «el DNS de Google (8.8.8.8)», «el equipo
 /// 192.168.1.30», «el servidor 93.184.216.34», «la red local (multicast)».
 pub fn host_name(ip: IpAddr) -> String {

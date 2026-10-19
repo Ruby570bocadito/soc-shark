@@ -1619,6 +1619,254 @@
     return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 2.5 ? 2.5 : n <= 5 ? 5 : 10) * mag;
   }
 
+  // ------------------------------------------------------------ mapa de la red
+
+  const MAP_ROW = 62;
+
+  async function loadMap({ quiet = false } = {}) {
+    const box = $("#map");
+    state.lastStats = Date.now();
+    const q = viewQuery();
+    if (!quiet && box.childElementCount) box.style.opacity = "0.6";
+    let data;
+    try {
+      data = await api(`/api/map${q ? "?" + q : ""}`);
+    } catch (err) {
+      box.style.opacity = "";
+      if (!quiet) toast(`No se pudo dibujar el mapa: ${err.message}`);
+      return;
+    }
+    box.style.opacity = "";
+    const top = box.scrollTop;
+    renderMap(box, data);
+    box.scrollTop = top;
+  }
+
+  const levelLabel = (lv) => (lv && lv !== "ok" ? LEVEL[lv].label.toLowerCase() : null);
+
+  function renderMap(box, data) {
+    clear(box);
+    box.append(
+      h(
+        "div",
+        { class: "map-head" },
+        h("h2", null, "Mapa de la red"),
+        h(
+          "p",
+          { class: "sub" },
+          "A la izquierda, los equipos de tu red; en el centro, el router (la puerta a Internet); a la derecha, los sitios de Internet. ",
+          "Cuanto más gruesa la línea, más datos. Pulsa un equipo para ver solo lo suyo.",
+        ),
+      ),
+    );
+    if (!data.nodes.length) {
+      box.append(h("p", { class: "chart-empty" }, liveRunning() ? "Escuchando… el mapa se dibuja en cuanto haya tráfico." : "No hay conversaciones que dibujar con estos filtros."));
+      return;
+    }
+    const byId = new Map(data.nodes.map((n) => [n.id, n]));
+    const locals = data.nodes.filter((n) => n.column === "local");
+    const externals = data.nodes.filter((n) => n.column === "internet");
+    const group = data.nodes.find((n) => n.column === "group");
+    const routerNode = data.router ? byId.get(data.router) : null;
+
+    // Por dónde se sale a Internet: el router, o un cruce si no se conoce.
+    const needsGateway = data.links.some((l) => {
+      const a = byId.get(l.a);
+      const b = byId.get(l.b);
+      return a && b && (a.column === "internet") !== (b.column === "internet");
+    });
+    const W = Math.max(760, box.clientWidth - 34);
+    const rows = Math.max(locals.length, externals.length, 3);
+    const H = rows * MAP_ROW + 70 + (group ? 70 : 0);
+    const xL = 96;
+    const xC = Math.round(W * 0.48);
+    const xR = Math.round(W - 250);
+    const spread = (list, i) => 60 + ((i + 0.5) * (rows * MAP_ROW)) / list.length;
+    const pos = new Map();
+    locals.forEach((n, i) => pos.set(n.id, { x: xL, y: spread(locals, i) }));
+    externals.forEach((n, i) => pos.set(n.id, { x: xR, y: spread(externals, i) }));
+    const gw = { x: xC, y: 60 + (rows * MAP_ROW) / 2 };
+    if (routerNode) pos.set(routerNode.id, gw);
+    if (group) pos.set(group.id, { x: xC, y: H - 40 });
+
+    // Enlaces agregados: equipo↔router (todo lo que sale por él) y
+    // router↔sitio; entre equipos de casa, arcos; con «toda la red», rectas.
+    const edges = new Map();
+    const addEdge = (key, from, to, l, members) => {
+      const e = edges.get(key) || { from, to, bytes: 0, flows: 0, level: "ok", members: new Set() };
+      e.bytes += l.bytes;
+      e.flows += l.flows;
+      if (RANK[l.level] > RANK[e.level]) e.level = l.level;
+      for (const m of members) e.members.add(m);
+      edges.set(key, e);
+    };
+    const gwId = routerNode ? routerNode.id : "__gw";
+    for (const l of data.links) {
+      const a = byId.get(l.a);
+      const b = byId.get(l.b);
+      if (!a || !b) continue;
+      const ext = a.column === "internet" ? a : b.column === "internet" ? b : null;
+      const other = ext === a ? b : a;
+      if (ext && other.column !== "internet") {
+        if (other.id !== gwId) addEdge(`${other.id}>gw`, other.id, gwId, l, [other.id, ext.id, gwId]);
+        addEdge(`gw>${ext.id}`, gwId, ext.id, l, [other.id, ext.id, gwId]);
+      } else if ((a.id === gwId && b.column === "local") || (b.id === gwId && a.column === "local")) {
+        const loc = a.id === gwId ? b : a;
+        addEdge(`${loc.id}>gw`, loc.id, gwId, l, [loc.id, gwId]);
+      } else {
+        addEdge(`${a.id}|${b.id}`, a.id, b.id, l, [a.id, b.id]);
+      }
+    }
+    const maxB = Math.max(1, ...[...edges.values()].map((e) => e.bytes));
+    const where = (id) => (id === "__gw" ? gw : pos.get(id));
+
+    const svg = s("svg", { class: "map-svg", viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: "img", "aria-label": "Mapa de la red" });
+    const colTitle = (x, text, anchor) => s("text", { class: "col-title", x, y: 22, "text-anchor": anchor }, text);
+    svg.append(colTitle(xL - 20, "Tu red", "start"), colTitle(xC, needsGateway || routerNode ? "Router" : "", "middle"), colTitle(xR - 20, "Internet", "start"));
+    const edgeLayer = s("g");
+    const nodeLayer = s("g");
+    svg.append(edgeLayer, nodeLayer);
+    const edgeEls = [];
+    for (const e of edges.values()) {
+      const p1 = where(e.from);
+      const p2 = where(e.to);
+      if (!p1 || !p2) continue;
+      let d;
+      const localPair = byId.get(e.from)?.column === "local" && byId.get(e.to)?.column === "local";
+      if (localPair && p1.x === p2.x) {
+        // Arco hacia la izquierda entre dos equipos de casa.
+        const bulge = Math.min(80, 26 + Math.abs(p2.y - p1.y) * 0.2);
+        d = `M${p1.x},${p1.y} C${p1.x - bulge},${p1.y} ${p2.x - bulge},${p2.y} ${p2.x},${p2.y}`;
+      } else {
+        const mx = (p1.x + p2.x) / 2;
+        d = `M${p1.x},${p1.y} C${mx},${p1.y} ${mx},${p2.y} ${p2.x},${p2.y}`;
+      }
+      const width = 1.5 + 6.5 * Math.sqrt(e.bytes / maxB);
+      const path = s("path", { class: `edge ${e.level}`, d, "stroke-width": width.toFixed(1) });
+      const hit = s("path", { class: "edge-hit", d });
+      const name = (id) => (id === "__gw" ? "la salida a Internet" : byId.get(id)?.label || id);
+      const tip = () => {
+        const lv = levelLabel(e.level);
+        showTipAt(
+          { left: hitPoint.x, right: hitPoint.x, top: hitPoint.y, bottom: hitPoint.y },
+          h("span", { class: "tv" }, fmtBytes(e.bytes)),
+          `${name(e.from)} ↔ ${name(e.to)} · ${plural(e.flows, "conversación", "conversaciones")}`,
+          lv ? ` · ${lv}` : "",
+        );
+      };
+      let hitPoint = { x: 0, y: 0 };
+      hit.addEventListener("pointermove", (ev) => {
+        hitPoint = { x: ev.clientX + 8, y: ev.clientY + 8 };
+        tip();
+      });
+      hit.addEventListener("pointerleave", hideTip);
+      edgeLayer.append(path, hit);
+      edgeEls.push({ path, members: e.members });
+    }
+
+    const nodeEls = new Map();
+    const focus = (id, on) => {
+      svg.classList.toggle("focus", on);
+      for (const el of nodeEls.values()) el.classList.remove("on");
+      for (const ed of edgeEls) ed.path.classList.toggle("on", on && ed.members.has(id));
+      if (!on) return;
+      nodeEls.get(id)?.classList.add("on");
+      for (const ed of edgeEls) if (ed.members.has(id)) for (const m of ed.members) nodeEls.get(m)?.classList.add("on");
+    };
+    const drawNode = (n, p, labelSide) => {
+      const lv = n.level && n.level !== "ok" ? n.level : null;
+      const g = s("g", { class: `node${lv ? " " + lv : ""}`, transform: `translate(${p.x},${p.y})`, tabindex: n.ip ? "0" : null, role: n.ip ? "button" : null });
+      g.append(s("circle", { class: "body", r: 20 }), s("use", { href: `#m-${n.icon}`, x: -11, y: -11, width: 22, height: 22 }));
+      if (lv) {
+        // Gravedad con icono, no solo color.
+        g.append(s("circle", { class: `badge-dot ${lv}`, cx: 15, cy: -15, r: 8 }), s("text", { class: "badge-txt", x: 15, y: -11.5, "text-anchor": "middle" }, LEVEL[lv].icon));
+      }
+      const short = n.label.length > 26 ? n.label.slice(0, 25) + "…" : n.label;
+      const showIp = n.ip && n.ip !== n.label;
+      if (labelSide === "below") {
+        g.append(s("text", { class: "lbl", x: 0, y: 36, "text-anchor": "middle" }, short));
+        if (showIp) g.append(s("text", { class: "lbl-sub", x: 0, y: 51, "text-anchor": "middle" }, n.ip));
+      } else {
+        g.append(s("text", { class: "lbl", x: 28, y: showIp ? -1 : 4 }, short));
+        if (showIp) g.append(s("text", { class: "lbl-sub", x: 28, y: 14 }, n.ip));
+      }
+      const facts = hostFacts(n.host);
+      g.addEventListener("pointerenter", () => {
+        focus(n.id, true);
+        const r = g.getBoundingClientRect();
+        showTipAt(
+          r,
+          h("b", null, n.label),
+          [n.ip && n.ip !== n.label ? n.ip : null, `${fmtBytes(n.bytes)} en ${plural(n.flows, "conversación", "conversaciones")}`, levelLabel(n.level) ? `hay algo ${levelLabel(n.level) === "peligro" ? "peligroso" : "raro"}` : null, ...facts]
+            .filter(Boolean)
+            .join(" · "),
+        );
+      });
+      g.addEventListener("pointerleave", () => {
+        focus(n.id, false);
+        hideTip();
+      });
+      if (n.ip) {
+        const go = () => applyAsFilter(exprHost(n.ip));
+        g.addEventListener("click", go);
+        g.addEventListener("keydown", (ev) => ev.key === "Enter" && go());
+        g.addEventListener("contextmenu", (ev) => {
+          ev.preventDefault();
+          openMenu(ev.clientX, ev.clientY, hostMenu(n.ip, n.label !== n.ip ? n.label : null));
+        });
+      }
+      nodeLayer.append(g);
+      nodeEls.set(n.id, g);
+    };
+    for (const n of locals) drawNode(n, pos.get(n.id), "right");
+    for (const n of externals) drawNode(n, pos.get(n.id), "right");
+    if (routerNode) drawNode(routerNode, gw, "below");
+    else if (needsGateway) {
+      const g = s("g", { class: "node gateway", transform: `translate(${gw.x},${gw.y})` });
+      g.append(s("circle", { class: "body", r: 9 }), s("text", { class: "lbl-sub", x: 0, y: 26, "text-anchor": "middle" }, "salida a Internet"));
+      nodeLayer.append(g);
+      nodeEls.set("__gw", g);
+    }
+    if (group) drawNode(group, pos.get(group.id), "below");
+    box.append(h("div", { class: "map-canvas" }, svg));
+
+    box.append(
+      h(
+        "div",
+        { class: "map-legend" },
+        h("span", null, h("i", { class: "lg-line" }), "más grosor = más datos"),
+        h("span", null, dot("peligro"), "peligro"),
+        h("span", null, dot("raro"), "raro"),
+        h("span", { class: "sub" }, "Pasa el ratón por un equipo para ver con quién habla."),
+      ),
+      h(
+        "details",
+        { class: "as-table" },
+        h("summary", null, "Ver como lista"),
+        h(
+          "table",
+          { class: "grid" },
+          h("thead", null, h("tr", null, ["Quién", "Con quién", "Conversaciones", "Datos", ""].map((c, i) => h("th", { class: i >= 2 && i < 4 ? "num" : null }, h("span", null, c))))),
+          h(
+            "tbody",
+            null,
+            data.links.map((l) =>
+              h(
+                "tr",
+                { class: l.level !== "ok" ? l.level : null },
+                h("td", null, byId.get(l.a)?.label || l.a),
+                h("td", null, byId.get(l.b)?.label || l.b),
+                h("td", { class: "num" }, nf.format(l.flows)),
+                h("td", { class: "num" }, fmtBytes(l.bytes)),
+                h("td", null, l.level !== "ok" ? badge(l.level) : null),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   // ------------------------------------------------------------ menú contextual
 
   const menu = $("#ctx");
@@ -1835,6 +2083,8 @@
         pkRender();
       } else if (state.view === "stats" && (Date.now() - state.lastStats > 2500 || !liveRunning())) {
         loadStats({ quiet: true });
+      } else if (state.view === "map" && (Date.now() - state.lastStats > 2500 || !liveRunning())) {
+        loadMap({ quiet: true });
       }
       renderStatus();
     } catch (err) {
@@ -2154,13 +2404,14 @@
   // ------------------------------------------------------------ vistas y paneles
 
   function switchView(view) {
-    if (!["flows", "packets", "stats"].includes(view)) view = "flows";
+    if (!["flows", "packets", "stats", "map"].includes(view)) view = "flows";
     state.view = view;
     pref("view", view);
     for (const b of $$(".views [role=tab]")) b.setAttribute("aria-selected", String(b.dataset.view === view));
     $("#view-flows").hidden = view !== "flows";
     $("#view-packets").hidden = view !== "packets";
     $("#view-stats").hidden = view !== "stats";
+    $("#view-map").hidden = view !== "map";
     renderStoryChip();
     renderView();
   }
@@ -2171,7 +2422,8 @@
     else if (state.view === "packets") {
       if (state.pk.key !== `${gen()}|${viewQuery()}`) pkReset();
       else pkRender();
-    } else loadStats();
+    } else if (state.view === "map") loadMap();
+    else loadStats();
     renderStatus();
   }
 
@@ -2392,7 +2644,11 @@
     let resizeTimer = 0;
     window.addEventListener("resize", () => {
       clearTimeout(resizeTimer);
-      resizeTimer = setTimeout(() => state.view === "stats" && state.session?.loaded && loadStats({ quiet: true }), 250);
+      resizeTimer = setTimeout(() => {
+        if (!state.session?.loaded) return;
+        if (state.view === "stats") loadStats({ quiet: true });
+        if (state.view === "map") loadMap({ quiet: true });
+      }, 250);
     });
 
     document.addEventListener("pointerdown", (e) => {
@@ -2402,7 +2658,7 @@
     document.addEventListener("scroll", closeMenu, true);
 
     document.addEventListener("keydown", (e) => {
-      const typing = e.target.closest && e.target.closest("input, select, textarea");
+      const typing = e.target.closest && e.target.closest("input:not([type=checkbox]):not([type=radio]), select, textarea");
       const dialogOpen = document.querySelector("dialog[open]");
       const ctrl = e.ctrlKey || e.metaKey;
       if (!menu.hidden) {
@@ -2440,8 +2696,8 @@
       } else if (e.key === "/") {
         e.preventDefault();
         $("#filter-input").focus();
-      } else if (["1", "2", "3"].includes(e.key) && !ctrl && !e.altKey) {
-        switchView(["flows", "packets", "stats"][Number(e.key) - 1]);
+      } else if (["1", "2", "3", "4"].includes(e.key) && !ctrl && !e.altKey) {
+        switchView(["flows", "packets", "stats", "map"][Number(e.key) - 1]);
       } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
         e.preventDefault();
         const d = e.key === "ArrowDown" ? 1 : -1;
@@ -2506,11 +2762,12 @@
     renderHistory();
     if (pref("side") === "0") toggleSidebar(false);
     const view = pref("view");
-    state.view = ["flows", "packets", "stats"].includes(view) ? view : "flows";
+    state.view = ["flows", "packets", "stats", "map"].includes(view) ? view : "flows";
     for (const b of $$(".views [role=tab]")) b.setAttribute("aria-selected", String(b.dataset.view === state.view));
     $("#view-flows").hidden = state.view !== "flows";
     $("#view-packets").hidden = state.view !== "packets";
     $("#view-stats").hidden = state.view !== "stats";
+    $("#view-map").hidden = state.view !== "map";
   }
 
   async function start() {

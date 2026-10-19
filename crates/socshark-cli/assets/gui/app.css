@@ -33,6 +33,7 @@
   --in-bar: #eb6834;
   /* gráficas (paleta de referencia validada) */
   --chart-surface: #ffffff;
+  --edge: #8a95a5;
   --series-1: #2a78d6;
   --series-1-hover: #1c5cab;
   --grid: #e1e0d9;
@@ -79,6 +80,7 @@
   --in-bg: #3a2214;
   --in-bar: #d95926;
   --chart-surface: #121922;
+  --edge: #6a788b;
   --series-1: #3987e5;
   --series-1-hover: #6da7ec;
   --grid: #222c38;
@@ -122,6 +124,7 @@
     --in-bg: #3a2214;
     --in-bar: #d95926;
     --chart-surface: #121922;
+  --edge: #6a788b;
     --series-1: #3987e5;
     --series-1-hover: #6da7ec;
     --grid: #222c38;
@@ -519,6 +522,40 @@ pre.json { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; ove
 .scope { font-size: 11.5px; border-radius: 999px; padding: 0 7px; border: 1px solid var(--border); color: var(--muted); white-space: nowrap; }
 .scope.local { border-color: var(--ok); color: var(--ok); }
 .scope.internet { border-color: var(--accent); color: var(--accent); }
+
+/* ------------------------------------------------------------ mapa */
+.map { overflow: auto; height: 100%; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 16px; }
+.map-head h2 { font-size: 15px; }
+.map-head .sub { margin: 4px 0 8px; max-width: 110ch; }
+.map-canvas { overflow-x: auto; }
+.map-svg { display: block; }
+.map-svg text { font-family: var(--sans); fill: var(--text); }
+.map-svg .col-title { fill: var(--muted); font-size: 11.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .6px; }
+.map-svg .edge { fill: none; stroke: var(--edge); stroke-linecap: round; transition: opacity .15s; }
+.map-svg .edge.raro { stroke: var(--raro); }
+.map-svg .edge.peligro { stroke: var(--peligro); }
+.map-svg .edge-hit { fill: none; stroke: transparent; stroke-width: 14; cursor: help; }
+.map-svg .node { cursor: pointer; transition: opacity .15s; }
+.map-svg .node:focus-visible { outline: none; }
+.map-svg .node:focus-visible .body { stroke: var(--accent); stroke-width: 3; }
+.map-svg .node .body { fill: var(--panel); stroke: var(--border-strong); stroke-width: 1.5; }
+.map-svg .node.raro .body { stroke: var(--raro); stroke-width: 2.5; }
+.map-svg .node.peligro .body { stroke: var(--peligro); stroke-width: 2.5; }
+.map-svg .node use { color: var(--text); }
+.map-svg .node.gateway { cursor: default; }
+.map-svg .node.gateway .body { fill: var(--edge); stroke: none; }
+.map-svg .badge-dot.raro { fill: var(--raro); }
+.map-svg .badge-dot.peligro { fill: var(--peligro); }
+.map-svg .badge-txt { fill: var(--on-status); font-size: 10.5px; font-weight: 700; pointer-events: none; }
+/* Halo del color del fondo: las líneas no tachan los nombres. */
+.map-svg .lbl, .map-svg .lbl-sub { paint-order: stroke; stroke: var(--panel); stroke-width: 4px; stroke-linejoin: round; }
+.map-svg .lbl { font-size: 13px; font-weight: 600; }
+.map-svg .lbl-sub { font-size: 11.5px; fill: var(--muted); font-family: var(--mono); }
+.map-svg.focus .edge:not(.on) { opacity: .12; }
+.map-svg.focus .node:not(.on) { opacity: .3; }
+.map-legend { display: flex; flex-wrap: wrap; gap: 6px 18px; align-items: center; font-size: 12.5px; color: var(--muted); margin-top: 8px; }
+.map-legend span { display: inline-flex; gap: 6px; align-items: center; }
+.lg-line { display: inline-block; width: 26px; height: 0; border-top: 5px solid var(--edge); border-radius: 3px; }
 
 /* ------------------------------------------------------------ barra de estado */
 .statusbar {
