@@ -5,12 +5,25 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="socshark-token" content="__SOCSHARK_TOKEN__">
 <title>soc-shark</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230e7490'/%3E%3Cpath d='M6 21c4-1 7-6 9-13 2 6 5 10 11 13-7-1-13 0-20 0z' fill='%23fff'/%3E%3C/svg%3E">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%2322c3d8'/%3E%3Cstop offset='.55' stop-color='%230e7490'/%3E%3Cstop offset='1' stop-color='%230a3550'/%3E%3C/linearGradient%3E%3ClinearGradient id='w' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%230a5f78'/%3E%3Cstop offset='1' stop-color='%23052436'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='15' fill='url(%23g)'/%3E%3Cpath d='M12 43C24 39 33 27 41 11.5c.8-1.5 2.6-1.2 2.6.5C42 25 44 36 52 43v5H12z' fill='%23fff'/%3E%3Cpath d='M0 46H4.5c6 0 7.75-3.6 13.75-3.6s7.75 3.6 13.75 3.6 7.75-3.6 13.75-3.6 7.75 3.6 13.75 3.6H64v3a15 15 0 0 1-15 15H15A15 15 0 0 1 0 49z' fill='url(%23w)'/%3E%3Cpath d='M4.5 46c6 0 7.75-3.6 13.75-3.6s7.75 3.6 13.75 3.6 7.75-3.6 13.75-3.6 7.75 3.6 13.75 3.6' fill='none' stroke='%23fff' stroke-width='3.8' stroke-linecap='round'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="/app.css">
 <script src="/app.js" defer></script>
 </head>
 <body>
 <svg class="sprite" aria-hidden="true">
+  <defs><linearGradient id="logo-g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#22c3d8"/><stop offset=".55" stop-color="#0e7490"/><stop offset="1" stop-color="#0a3550"/></linearGradient><linearGradient id="logo-w" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0a5f78"/><stop offset="1" stop-color="#052436"/></linearGradient></defs>
+  <symbol id="logo" viewBox="0 0 64 64"><rect width="64" height="64" rx="15" fill="url(#logo-g)"/><path d="M12 43C24 39 33 27 41 11.5c.8-1.5 2.6-1.2 2.6.5C42 25 44 36 52 43v5H12z" fill="#fff"/><path d="M0 46H4.5c6 0 7.75-3.6 13.75-3.6s7.75 3.6 13.75 3.6 7.75-3.6 13.75-3.6 7.75 3.6 13.75 3.6H64v3a15 15 0 0 1-15 15H15A15 15 0 0 1 0 49z" fill="url(#logo-w)"/><path d="M4.5 46c6 0 7.75-3.6 13.75-3.6s7.75 3.6 13.75 3.6 7.75-3.6 13.75-3.6 7.75 3.6 13.75 3.6" fill="none" stroke="#fff" stroke-width="3.8" stroke-linecap="round"/></symbol>
+  <symbol id="lv-ok" viewBox="0 0 24 24"><path d="m6.5 12.5 3.6 3.6 7.4-8.2" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="lv-raro" viewBox="0 0 24 24"><path d="M12 6.2v7.6" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"/><circle cx="12" cy="18" r="1.75" fill="currentColor"/></symbol>
+  <symbol id="lv-peligro" viewBox="0 0 24 24"><path d="m7.6 7.6 8.8 8.8m0-8.8-8.8 8.8" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round"/></symbol>
+  <symbol id="v-flows" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6.5h11m0 0-3-3m3 3-3 3M20 17.5H9m0 0 3-3m-3 3 3 3"/></g></symbol>
+  <symbol id="v-packets" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M9 6h11M9 12h11M9 18h11"/></g><circle cx="4.5" cy="6" r="1.4"/><circle cx="4.5" cy="12" r="1.4"/><circle cx="4.5" cy="18" r="1.4"/></symbol>
+  <symbol id="v-stats" viewBox="0 0 24 24"><rect x="4" y="12" width="3.6" height="8" rx="1"/><rect x="10.2" y="5" width="3.6" height="15" rx="1"/><rect x="16.4" y="9" width="3.6" height="11" rx="1"/></symbol>
+  <symbol id="v-map" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6.5 7.5 11 11m2 0 4.5-3.5M12 13.5V17"/><circle cx="5" cy="6" r="2.5"/><circle cx="19" cy="6" r="2.5"/><circle cx="12" cy="12" r="2.5"/><circle cx="12" cy="19.5" r="2.5"/></g></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="10.5" cy="10.5" r="6"/><path d="m15 15 5 5"/></g></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="m6.5 6.5 11 11m0-11-11 11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+  <symbol id="i-help" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.6 2.6 0 1 1 3.6 2.4c-.7.3-1.1.9-1.1 1.6v.6"/></g><circle cx="12" cy="17" r="1.2"/></symbol>
+  <symbol id="i-who" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11.5V5a2 2 0 0 1 2-2h6.5L21 12.5 12.5 21z"/></g><circle cx="7.5" cy="7.5" r="1.6"/></symbol>
   <symbol id="i-open" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v1H7.5a2 2 0 0 0-1.9 1.4L3 19z"/><path d="M5.6 11.4A2 2 0 0 1 7.5 10H22l-2.6 8.6A2 2 0 0 1 17.5 20H3z"/></symbol>
   <symbol id="i-live" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.5"/><path d="M5.6 5.6a9 9 0 0 0 0 12.8M18.4 5.6a9 9 0 0 1 0 12.8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
   <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></symbol>
@@ -31,9 +44,9 @@
 </svg>
 
 <header class="toolbar">
-  <div class="brand" aria-label="soc-shark">
-    <svg class="logo" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8"/><path d="M6 21c4-1 7-6 9-13 2 6 5 10 11 13-7-1-13 0-20 0z"/></svg>
-    <span>soc-shark</span>
+  <div class="brand" role="img" aria-label="soc-shark">
+    <svg class="logo" aria-hidden="true"><use href="#logo"/></svg>
+    <span class="wordmark" aria-hidden="true">soc-<b>shark</b></span>
   </div>
   <div class="tb-group" role="group" aria-label="Captura">
     <button id="open-btn" class="tb-btn" type="button" title="Abrir una captura guardada (Ctrl+O)"><svg><use href="#i-open"/></svg><span>Abrir</span></button>
@@ -45,10 +58,10 @@
   </div>
   <input id="file-input" type="file" accept=".pcap,.cap,.dmp,.pcapng" hidden>
   <nav class="views" role="tablist" aria-label="Vista">
-    <button type="button" role="tab" data-view="flows" aria-selected="true" title="Quién habla con quién (1)">Conversaciones</button>
-    <button type="button" role="tab" data-view="packets" aria-selected="false" title="Todos los paquetes, uno a uno (2)">Paquetes</button>
-    <button type="button" role="tab" data-view="stats" aria-selected="false" title="Protocolos, equipos y actividad (3)">Estadísticas</button>
-    <button type="button" role="tab" data-view="map" aria-selected="false" title="Dibujo de quién habla con quién (4)">Mapa</button>
+    <button type="button" role="tab" data-view="flows" aria-selected="true" title="Quién habla con quién (1)"><svg><use href="#v-flows"/></svg><span>Conversaciones</span></button>
+    <button type="button" role="tab" data-view="packets" aria-selected="false" title="Todos los paquetes, uno a uno (2)"><svg><use href="#v-packets"/></svg><span>Paquetes</span></button>
+    <button type="button" role="tab" data-view="stats" aria-selected="false" title="Protocolos, equipos y actividad (3)"><svg><use href="#v-stats"/></svg><span>Estadísticas</span></button>
+    <button type="button" role="tab" data-view="map" aria-selected="false" title="Dibujo de quién habla con quién (4)"><svg><use href="#v-map"/></svg><span>Mapa</span></button>
   </nav>
   <div class="spacer"></div>
   <div class="segmented" role="group" aria-label="Nivel de detalle">
@@ -57,7 +70,7 @@
   </div>
   <button id="side-btn" class="tb-icon" type="button" title="Mostrar u ocultar el resumen (Ctrl+B)" aria-label="Panel de resumen" aria-pressed="true"><svg><use href="#i-side"/></svg></button>
   <button id="theme-btn" class="tb-icon" type="button" title="Cambiar entre tema claro y oscuro" aria-label="Cambiar tema"><svg><use href="#i-theme"/></svg></button>
-  <button id="help-btn" class="tb-icon" type="button" title="Ayuda y glosario (F1)" aria-label="Ayuda">?</button>
+  <button id="help-btn" class="tb-icon" type="button" title="Ayuda y glosario (F1)" aria-label="Ayuda"><svg><use href="#i-help"/></svg></button>
 </header>
 
 <section class="filterbar" aria-label="Filtros">
@@ -67,10 +80,11 @@
     <label class="chip check" title="DNS, anuncios de la red local, hora… lo que los equipos hacen solos"><input id="noise-toggle" type="checkbox"> Tráfico de fondo</label>
   </div>
   <form id="filter-form" class="filter-form" autocomplete="off">
+    <span class="search-ico" aria-hidden="true"><svg><use href="#i-search"/></svg></span>
     <input id="filter-input" type="search" spellcheck="false" list="filter-history" placeholder="Filtro (pulsa /), p. ej.  ip.addr == 192.168.1.30  ·  tcp.port == 443  ·  flow.risk >= 30" aria-label="Filtro" aria-describedby="filter-error">
     <datalist id="filter-history"></datalist>
     <button class="btn" type="submit">Aplicar</button>
-    <button id="filter-clear" class="btn ghost" type="button" title="Quitar el filtro" aria-label="Quitar el filtro">✕</button>
+    <button id="filter-clear" class="btn ghost" type="button" title="Quitar el filtro" aria-label="Quitar el filtro"><svg><use href="#i-x"/></svg></button>
   </form>
   <div id="story-chip" class="story-chip" hidden></div>
   <div id="filter-error" class="filter-error" role="alert"></div>
@@ -146,23 +160,42 @@
 
 <div id="welcome" class="welcome" hidden>
   <div class="welcome-card">
-    <svg class="logo big" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8"/><path d="M6 21c4-1 7-6 9-13 2 6 5 10 11 13-7-1-13 0-20 0z"/></svg>
-    <h1>Entiende lo que pasa en tu red</h1>
-    <p>Mira tu red en tiempo real o abre una captura guardada: soc-shark te la explica en lenguaje claro. Quién habla con quién, qué es normal y qué deberías revisar.</p>
-    <div class="welcome-actions">
-      <button id="welcome-live" class="btn primary big" type="button">Ver mi red en vivo</button>
-      <button id="welcome-open" class="btn big" type="button">Abrir captura…</button>
+    <div class="hero">
+      <svg class="hero-waves" viewBox="0 0 600 120" preserveAspectRatio="none" aria-hidden="true"><path d="M0 70c50 0 75-18 125-18s75 18 125 18 75-18 125-18 75 18 125 18 75-18 100-18v68H0z"/><path d="M0 92c50 0 75-14 125-14s75 14 125 14 75-14 125-14 75 14 125 14 75-14 100-14v42H0z"/></svg>
+      <svg class="logo hero-logo" aria-hidden="true"><use href="#logo"/></svg>
+      <div class="wordmark big" aria-hidden="true">soc-<b>shark</b></div>
     </div>
-    <p class="hint">También puedes arrastrar un archivo .pcap a esta ventana.</p>
-    <details class="howto">
-      <summary>¿No tienes ninguna captura?</summary>
-      <ul>
-        <li>Genera una de ejemplo en la consola: <code>socshark dev sample-pcap -o demo.pcap</code></li>
-        <li>Con Wireshark: <em>Archivo → Guardar como</em> (pcapng o pcap, valen los dos).</li>
-        <li>Con tshark: <code>tshark -i 1 -a duration:60 -w captura.pcapng</code></li>
-        <li>Para probar el «quién es quién»: <code>socshark dev sample-pcap --escenario casa -o casa.pcap</code></li>
+    <div class="welcome-body">
+      <h1>Entiende lo que pasa en tu red</h1>
+      <p class="welcome-lead">Mira tu red en tiempo real o abre una captura guardada: soc-shark te la explica en lenguaje claro. Quién habla con quién, qué es normal y qué deberías revisar.</p>
+      <div class="start">
+        <button id="welcome-live" class="start-card primary" type="button">
+          <span class="start-ico"><svg><use href="#i-live"/></svg></span>
+          <b>Ver mi red en vivo</b>
+          <span>Escucha la red de este equipo y te explica cada conversación al momento.</span>
+        </button>
+        <button id="welcome-open" class="start-card" type="button">
+          <span class="start-ico"><svg><use href="#i-open"/></svg></span>
+          <b>Abrir una captura…</b>
+          <span>.pcap o .pcapng de Wireshark o tcpdump. También puedes arrastrarla a esta ventana.</span>
+        </button>
+      </div>
+      <ul class="features">
+        <li><svg><use href="#i-who"/></svg><b>Quién es quién</b><span>Nombres, marcas y programas</span></li>
+        <li><svg><use href="#v-map"/></svg><b>Mapa</b><span>Tu red, el router e Internet</span></li>
+        <li><svg><use href="#i-bell"/></svg><b>Avisos</b><span>Si pasa algo, te enteras</span></li>
+        <li><svg><use href="#i-report"/></svg><b>Informe</b><span>Para guardar o enviar</span></li>
       </ul>
-    </details>
+      <details class="howto">
+        <summary>¿No tienes ninguna captura?</summary>
+        <ul>
+          <li>Genera una de ejemplo en la consola: <code>socshark dev sample-pcap -o demo.pcap</code></li>
+          <li>Con Wireshark: <em>Archivo → Guardar como</em> (pcapng o pcap, valen los dos).</li>
+          <li>Con tshark: <code>tshark -i 1 -a duration:60 -w captura.pcapng</code></li>
+          <li>Para probar el «quién es quién»: <code>socshark dev sample-pcap --escenario casa -o casa.pcap</code></li>
+        </ul>
+      </details>
+    </div>
   </div>
 </div>
 
@@ -173,7 +206,7 @@
 
 <dialog id="live-dlg" class="dlg">
   <form id="live-form" method="dialog">
-    <div class="dlg-head"><h2>Ver la red en vivo</h2><button class="tb-icon" type="button" data-close aria-label="Cerrar">✕</button></div>
+    <div class="dlg-head"><h2>Ver la red en vivo</h2><button class="tb-icon" type="button" data-close aria-label="Cerrar"><svg><use href="#i-x"/></svg></button></div>
     <div class="dlg-body">
       <p class="lead-sm">Elige por dónde escuchar. soc-shark solo <b>mira</b>: no envía nada ni cambia tu red.</p>
       <div id="iface-list" class="iface-list" role="radiogroup" aria-label="Interfaz de red"></div>
@@ -195,7 +228,7 @@
 
 <dialog id="nick-dlg" class="dlg">
   <form id="nick-form" method="dialog">
-    <div class="dlg-head"><h2>Ponerle nombre a un equipo</h2><button class="tb-icon" type="button" data-close aria-label="Cerrar">✕</button></div>
+    <div class="dlg-head"><h2>Ponerle nombre a un equipo</h2><button class="tb-icon" type="button" data-close aria-label="Cerrar"><svg><use href="#i-x"/></svg></button></div>
     <div class="dlg-body">
       <p id="nick-who" class="lead-sm"></p>
       <label class="field">
@@ -215,13 +248,13 @@
 </dialog>
 
 <dialog id="help" class="dlg help">
-  <form method="dialog" class="dlg-head"><h2>Ayuda</h2><button class="tb-icon" aria-label="Cerrar">✕</button></form>
+  <form method="dialog" class="dlg-head"><h2>Ayuda</h2><button class="tb-icon" aria-label="Cerrar"><svg><use href="#i-x"/></svg></button></form>
   <div class="dlg-body help-body">
     <h3>Cómo se usa</h3>
     <ul>
-      <li><b>En vivo</b> muestra tu red en tiempo real; <b>Abrir</b> carga una captura guardada (.pcap). <b>Guardar</b> la guarda para Wireshark o para más tarde.</li>
+      <li><b>En vivo</b> muestra tu red en tiempo real; <b>Abrir</b> carga una captura guardada (.pcap o .pcapng). <b>Guardar</b> la guarda para Wireshark o para más tarde.</li>
       <li><b>Lo que ha pasado</b> (izquierda) resume lo importante. Pulsa <em>Ver conversaciones</em> para ver las que forman cada historia.</li>
-      <li><b>Conversaciones</b>: cada fila es una conversación completa entre dos equipos. <span class="dot ok">✓</span> normal · <span class="dot raro">!</span> raro · <span class="dot peligro">✕</span> peligro.</li>
+      <li><b>Conversaciones</b>: cada fila es una conversación completa entre dos equipos. <span class="dot ok"><svg><use href="#lv-ok"/></svg></span> normal · <span class="dot raro"><svg><use href="#lv-raro"/></svg></span> raro · <span class="dot peligro"><svg><use href="#lv-peligro"/></svg></span> peligro.</li>
       <li>Abajo, <b>Explicación</b> cuenta qué pasó y qué hacer; <b>Paquetes</b>, cada paquete con sus capas y bytes; <b>Contenido</b>, lo que se dijeron tal cual.</li>
       <li><b>Paquetes</b> (arriba) es la lista completa, paquete a paquete, como en Wireshark. <b>Estadísticas</b>: protocolos, equipos que más hablan y actividad en el tiempo. <b>Mapa</b>: un dibujo de tu red, el router e Internet, con quién habla con quién.</li>
       <li><b>Clic derecho</b> en cualquier fila: filtrar por ese equipo, puerto o conversación, u ocultarlo.</li>

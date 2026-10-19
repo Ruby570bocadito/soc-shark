@@ -45,6 +45,9 @@
     }
   }
 
+  /** Icono del sprite de index.html (SVG: centrado igual en todas las fuentes). */
+  const icon = (id, cls) => s("svg", { class: cls || null, "aria-hidden": "true" }, s("use", { href: `#${id}` }));
+
   function clear(el) {
     while (el.firstChild) el.removeChild(el.firstChild);
     return el;
@@ -126,9 +129,9 @@
   // ------------------------------------------------------------ formato
 
   const LEVEL = {
-    ok: { icon: "✓", label: "Normal" },
-    raro: { icon: "!", label: "Raro" },
-    peligro: { icon: "✕", label: "Peligro" },
+    ok: { label: "Normal" },
+    raro: { label: "Raro" },
+    peligro: { label: "Peligro" },
   };
   const RANK = { ok: 0, raro: 1, peligro: 2 };
   const STATE_ES = { Active: "activa", Idle: "sin cerrar", Closed: "cerrada" };
@@ -269,12 +272,12 @@
   }
 
   function dot(level) {
-    const l = LEVEL[level] || LEVEL.ok;
-    return h("span", { class: `dot ${level}`, title: l.label, "aria-label": l.label }, l.icon);
+    const lv = LEVEL[level] ? level : "ok";
+    return h("span", { class: `dot ${lv}`, role: "img", title: LEVEL[lv].label, "aria-label": LEVEL[lv].label }, icon(`lv-${lv}`));
   }
   function badge(level) {
-    const l = LEVEL[level] || LEVEL.ok;
-    return h("span", { class: `badge ${level}` }, `${l.icon} ${l.label}`);
+    const lv = LEVEL[level] ? level : "ok";
+    return h("span", { class: `badge ${lv}` }, icon(`lv-${lv}`), LEVEL[lv].label);
   }
   function mitreLink(id) {
     if (!id || !/^T\d{4}(\.\d{3})?$/.test(id)) return null;
@@ -439,7 +442,12 @@
     const ses = state.session;
     if (!ses || !ses.loaded) return;
     const stat = (cls, n, label) =>
-      h("div", { class: `stat ${cls}` }, h("span", { class: "n" }, nf.format(n)), h("span", { class: "l" }, label));
+      h(
+        "div",
+        { class: `stat ${cls}${n ? "" : " zero"}` },
+        h("span", { class: "n" }, dot(cls), nf.format(n)),
+        h("span", { class: "l" }, label),
+      );
     ov.append(
       stat("peligro", ses.levels.peligro, ses.levels.peligro === 1 ? "peligro" : "peligros"),
       stat("raro", ses.levels.raro, ses.levels.raro === 1 ? "cosa rara" : "cosas raras"),
@@ -465,7 +473,8 @@
         h(
           "li",
           { class: "all-good" },
-          h("b", null, waiting ? "Escuchando…" : "✓ No hemos visto nada preocupante"),
+          waiting ? h("span", { class: "listening", "aria-hidden": "true" }) : dot("ok"),
+          h("b", null, waiting ? "Escuchando…" : "No hemos visto nada preocupante"),
           waiting
             ? "En cuanto pase algo por la red aparecerá aquí, explicado."
             : "Puedes revisar igualmente las conversaciones si buscas algo concreto.",
@@ -533,7 +542,7 @@
     const danger = important.some((st) => st.level === "peligro");
     const head = important.find((st) => st.level === "peligro") || important[0];
     const more = important.length > 1 ? ` (y ${important.length - 1} más)` : "";
-    toast(`${danger ? "✕ Peligro" : "! Algo raro"}: ${head.title}${more}`, danger ? "error" : "info");
+    toast([dot(danger ? "peligro" : "raro"), h("span", null, `${danger ? "Peligro" : "Algo raro"}: ${head.title}${more}`)], danger ? "error" : "info");
     if (!document.hasFocus()) {
       state.unseen += important.length;
       updateTitle();
@@ -588,7 +597,7 @@
             renderStatus();
           },
         },
-        "✕",
+        icon("i-x"),
       ),
     );
   }
@@ -1747,7 +1756,13 @@
     const W = Math.max(760, box.clientWidth - 34);
     const rows = Math.max(locals.length, externals.length, 3);
     const H = rows * MAP_ROW + 70 + (group ? 70 : 0);
-    const xL = 96;
+    // Los nombres de casa van a la izquierda de su equipo: las líneas salen
+    // por la derecha y así no los tachan. Ancho aproximado del texto.
+    const labelW = Math.max(
+      40,
+      ...locals.map((n) => Math.max(Math.min(n.label.length, 26) * 7.4, n.ip && n.ip !== n.label ? n.ip.length * 7 : 0)),
+    );
+    const xL = Math.round(Math.min(270, labelW + 46));
     const xC = Math.round(W * 0.48);
     const xR = Math.round(W - 250);
     const spread = (list, i) => 60 + ((i + 0.5) * (rows * MAP_ROW)) / list.length;
@@ -1791,7 +1806,7 @@
 
     const svg = s("svg", { class: "map-svg", viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: "img", "aria-label": "Mapa de la red" });
     const colTitle = (x, text, anchor) => s("text", { class: "col-title", x, y: 22, "text-anchor": anchor }, text);
-    svg.append(colTitle(xL - 20, "Tu red", "start"), colTitle(xC, needsGateway || routerNode ? "Router" : "", "middle"), colTitle(xR - 20, "Internet", "start"));
+    svg.append(colTitle(xL + 20, "Tu red", "end"), colTitle(xC, needsGateway || routerNode ? "Router" : "", "middle"), colTitle(xR - 20, "Internet", "start"));
     const edgeLayer = s("g");
     const nodeLayer = s("g");
     svg.append(edgeLayer, nodeLayer);
@@ -1803,9 +1818,10 @@
       let d;
       const localPair = byId.get(e.from)?.column === "local" && byId.get(e.to)?.column === "local";
       if (localPair && p1.x === p2.x) {
-        // Arco hacia la izquierda entre dos equipos de casa.
-        const bulge = Math.min(80, 26 + Math.abs(p2.y - p1.y) * 0.2);
-        d = `M${p1.x},${p1.y} C${p1.x - bulge},${p1.y} ${p2.x - bulge},${p2.y} ${p2.x},${p2.y}`;
+        // Arco hacia la derecha entre dos equipos de casa (a la izquierda
+        // están sus nombres).
+        const bulge = Math.min(70, 30 + Math.abs(p2.y - p1.y) * 0.2);
+        d = `M${p1.x},${p1.y} C${p1.x + bulge},${p1.y} ${p2.x + bulge},${p2.y} ${p2.x},${p2.y}`;
       } else {
         const mx = (p1.x + p2.x) / 2;
         d = `M${p1.x},${p1.y} C${mx},${p1.y} ${mx},${p2.y} ${p2.x},${p2.y}`;
@@ -1845,16 +1861,19 @@
     const drawNode = (n, p, labelSide) => {
       const lv = n.level && n.level !== "ok" ? n.level : null;
       const g = s("g", { class: `node${lv ? " " + lv : ""}`, transform: `translate(${p.x},${p.y})`, tabindex: n.ip ? "0" : null, role: n.ip ? "button" : null });
-      g.append(s("circle", { class: "body", r: 20 }), s("use", { href: `#m-${n.icon}`, x: -11, y: -11, width: 22, height: 22 }));
+      g.append(s("circle", { class: "body", r: 20 }), s("use", { class: "node-ico", href: `#m-${n.icon}`, x: -11, y: -11, width: 22, height: 22 }));
       if (lv) {
         // Gravedad con icono, no solo color.
-        g.append(s("circle", { class: `badge-dot ${lv}`, cx: 15, cy: -15, r: 8 }), s("text", { class: "badge-txt", x: 15, y: -11.5, "text-anchor": "middle" }, LEVEL[lv].icon));
+        g.append(s("circle", { class: `badge-dot ${lv}`, cx: 15, cy: -15, r: 8.5 }), s("use", { class: "badge-ico", href: `#lv-${lv}`, x: 8.5, y: -21.5, width: 13, height: 13 }));
       }
       const short = n.label.length > 26 ? n.label.slice(0, 25) + "…" : n.label;
       const showIp = n.ip && n.ip !== n.label;
       if (labelSide === "below") {
         g.append(s("text", { class: "lbl", x: 0, y: 36, "text-anchor": "middle" }, short));
         if (showIp) g.append(s("text", { class: "lbl-sub", x: 0, y: 51, "text-anchor": "middle" }, n.ip));
+      } else if (labelSide === "left") {
+        g.append(s("text", { class: "lbl", x: -28, y: showIp ? -1 : 4, "text-anchor": "end" }, short));
+        if (showIp) g.append(s("text", { class: "lbl-sub", x: -28, y: 14, "text-anchor": "end" }, n.ip));
       } else {
         g.append(s("text", { class: "lbl", x: 28, y: showIp ? -1 : 4 }, short));
         if (showIp) g.append(s("text", { class: "lbl-sub", x: 28, y: 14 }, n.ip));
@@ -1887,7 +1906,7 @@
       nodeLayer.append(g);
       nodeEls.set(n.id, g);
     };
-    for (const n of locals) drawNode(n, pos.get(n.id), "right");
+    for (const n of locals) drawNode(n, pos.get(n.id), "left");
     for (const n of externals) drawNode(n, pos.get(n.id), "right");
     if (routerNode) drawNode(routerNode, gw, "below");
     else if (needsGateway) {

@@ -1,10 +1,12 @@
 # soc-shark
 
+<img src="docs/img/logo.svg" width="80" align="right" alt="Logo de soc-shark: una aleta de tiburón cortando una ola">
+
 **Analizador de tráfico de red orientado a SOC/Blue Team, diseñado para superar a Wireshark en el flujo de trabajo del analista de seguridad.**
 
 Wireshark responde a la pregunta *«¿qué hay en este paquete?»*. **soc-shark responde a *«¿qué está pasando en mi red y qué me debería preocupar?»*.** Ese es el cambio de paradigma que guía todo el proyecto: sesiones en lugar de paquetes, significado en lugar de hex, alertas en lugar de scrolling manual.
 
-[![CI](https://github.com/soc-shark/soc-shark/actions/workflows/ci.yml/badge.svg)](https://github.com/soc-shark/soc-shark/actions/workflows/ci.yml)
+[![CI](https://github.com/Ruby570bocadito/soc-shark/actions/workflows/ci.yml/badge.svg)](https://github.com/Ruby570bocadito/soc-shark/actions/workflows/ci.yml)
 ![Estado](https://img.shields.io/badge/fase-2%20de%204%20completa-blue)
 ![Licencia](https://img.shields.io/badge/licencia-MIT-green)
 

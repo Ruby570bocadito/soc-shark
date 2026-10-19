@@ -70,8 +70,26 @@ y [SemVer](https://semver.org/lang/es/).
   agrupadas, nombres de servicios por puerto/transporte y de resolutores
   DNS conocidos).
 
+### Cambiado
+
+- **Logo e interfaz nuevos**: logo de una aleta de tiburón cortando una ola
+  (barra, bienvenida, icono de la pestaña e informe). Bienvenida con las dos
+  formas de empezar y lo que hace el programa; pestañas de vista con
+  icono; buscador con lupa; resumen con icono por gravedad (en gris si no
+  hay ninguno); historias con «Qué hacer» destacado; barra adaptable que
+  nunca desplaza la ventana en pantallas estrechas.
+- Mapa: los nombres de los equipos de casa van a la izquierda de su icono,
+  donde las líneas no los tachan.
+
 ### Corregido
 
+- README: la insignia de CI salía rota porque apuntaba a otro repositorio
+  (`soc-shark/soc-shark`); también el `repository` de `Cargo.toml`.
+- Iconos de gravedad (✕ ! ✓) descentrados en la leyenda del mapa y, según
+  la fuente, en el resto de la ventana: ahora son SVG centrados, también en
+  el informe.
+- Detalle de un paquete: valores como «443 (HTTPS)» se partían letra a
+  letra.
 - El DSL reportaba `posición 18446744073709551615` cuando la expresión
   terminaba antes de tiempo; ahora indica el final de la entrada.
 - `socshark capture -f` valida el filtro **antes** de leer la captura (un
