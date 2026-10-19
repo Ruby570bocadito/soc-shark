@@ -207,10 +207,19 @@
     }
 
     # --- Captura en vivo ---------------------------------------------
-    Step 'Extra: captura en vivo'
-    Warn "La captura en vivo ('socshark daemon') aun no esta disponible en Windows: solo Linux/macOS."
-    Write-Host  '    El analisis de archivos funciona completo. Captura con Wireshark/tshark y guarda' -ForegroundColor Gray
-    Write-Host  '    en formato pcap clasico (no pcapng): tshark -i 1 -F pcap -w captura.pcap' -ForegroundColor Gray
+    # Ver la red en tiempo real necesita Npcap (el mismo driver que usa
+    # Wireshark). soc-shark lo carga al vuelo: no hace falta recompilar.
+    Step 'Extra: captura en vivo (tiempo real)'
+    $npcap = Join-Path $env:SystemRoot 'System32\Npcap\wpcap.dll'
+    if (Test-Path $npcap) {
+        Ok 'Npcap detectado: puedes ver tu red en vivo (socshark gui -> boton "En vivo").'
+        Write-Host  '    Si dice que no hay permiso, abre la consola como administrador.' -ForegroundColor Gray
+    } else {
+        Warn 'Npcap no esta instalado: sin el no se puede ver la red en tiempo real.'
+        Write-Host  '    Instalalo desde https://npcap.com y deja marcado "WinPcap API-compatible Mode".' -ForegroundColor Gray
+        Write-Host  '    (Si ya tienes Wireshark, normalmente Npcap ya esta instalado.)' -ForegroundColor Gray
+        Write-Host  '    Mientras tanto, abrir capturas .pcap funciona completo.' -ForegroundColor Gray
+    }
 
     # --- Resumen final ------------------------------------------------
     Write-Host ''
@@ -218,7 +227,9 @@
     Write-Host ' soc-shark instalado. Ejemplos:' -ForegroundColor Cyan
     Write-Host '   socshark capture -r captura.pcap --json -' -ForegroundColor White
     Write-Host '   socshark capture -r captura.pcap -f "flow.risk >= 30"' -ForegroundColor White
-    Write-Host '   socshark gui -r captura.pcap          <- interfaz grafica (ventana)' -ForegroundColor White
+    Write-Host '   socshark gui                          <- ventana: ver la red en vivo o abrir capturas' -ForegroundColor White
+    Write-Host '   socshark gui -r captura.pcap          <- ventana con una captura ya abierta' -ForegroundColor White
+    Write-Host '   socshark daemon --list                <- interfaces de red (en vivo, con Npcap)' -ForegroundColor White
     Write-Host '   socshark tui -r captura.pcap          <- interfaz en la consola' -ForegroundColor White
     Write-Host '   socshark follow -r captura.pcap --flow 1.2.3.4:443  <- seguir stream TCP' -ForegroundColor White
     Write-Host '   socshark export -r captura.pcap -F ecs -o ecs.jsonl <- export a SIEM' -ForegroundColor White

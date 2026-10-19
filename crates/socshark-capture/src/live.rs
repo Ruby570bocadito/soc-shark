@@ -30,14 +30,28 @@
 //! En Windows no hay `poll`: el timeout de lectura de Npcap sí devuelve el
 //! control sin tráfico, así que el *tick* lo da `pcap_next_ex`.
 
+use std::net::IpAddr;
+
 use crate::{CaptureError, CaptureSource};
 use socshark_core::{LinkType, RawPacket};
 
 /// Listado de interfaces capturables (`pcap_findalldevs`).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct LiveIface {
     pub name: String,
     pub description: Option<String>,
+    /// Direcciones IP asignadas: lo que permite a una persona reconocer
+    /// "su" Wi-Fi o su cable (`192.168.1.23`).
+    pub addresses: Vec<IpAddr>,
+    /// Red interna del propio equipo.
+    pub loopback: bool,
+    /// Encendida y funcionando (`PCAP_IF_UP` y `PCAP_IF_RUNNING`).
+    pub up: bool,
+    /// Inalámbrica (libpcap ≥ 1.9 / Npcap).
+    pub wireless: bool,
+    /// `Some(true)` conectada, `Some(false)` desconectada; `None` si el
+    /// sistema no lo sabe o no aplica.
+    pub connected: Option<bool>,
 }
 
 /// Parámetros de apertura de una interfaz en vivo. Independiente de
@@ -378,6 +392,69 @@ mod backend {
         description: *mut c_char,
         addresses: *mut c_void,
         flags: u32,
+    }
+
+    /// `struct pcap_addr`.
+    #[repr(C)]
+    struct PcapAddr {
+        next: *mut PcapAddr,
+        addr: *mut c_void,
+        netmask: *mut c_void,
+        broadaddr: *mut c_void,
+        dstaddr: *mut c_void,
+    }
+
+    const PCAP_IF_LOOPBACK: u32 = 0x1;
+    const PCAP_IF_UP: u32 = 0x2;
+    const PCAP_IF_RUNNING: u32 = 0x4;
+    const PCAP_IF_WIRELESS: u32 = 0x8;
+    const PCAP_IF_CONNECTION_STATUS: u32 = 0x30;
+    const PCAP_IF_CONNECTION_STATUS_CONNECTED: u32 = 0x10;
+    const PCAP_IF_CONNECTION_STATUS_DISCONNECTED: u32 = 0x20;
+
+    /// `AF_INET6` cambia de número según el sistema.
+    const AF_INET: u16 = 2;
+    #[cfg(target_os = "linux")]
+    const AF_INET6: Option<u16> = Some(10);
+    #[cfg(target_os = "macos")]
+    const AF_INET6: Option<u16> = Some(30);
+    #[cfg(target_os = "freebsd")]
+    const AF_INET6: Option<u16> = Some(28);
+    #[cfg(windows)]
+    const AF_INET6: Option<u16> = Some(23);
+    #[cfg(not(any(
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "freebsd",
+        windows
+    )))]
+    const AF_INET6: Option<u16> = None;
+
+    /// IP de un `struct sockaddr` (solo IPv4/IPv6; el resto, `None`).
+    ///
+    /// # Safety
+    /// `sa` es nulo o apunta a un sockaddr válido de la familia que declara.
+    unsafe fn sockaddr_ip(sa: *const u8) -> Option<IpAddr> {
+        if sa.is_null() {
+            return None;
+        }
+        // BSD/macOS: `sa_len: u8, sa_family: u8`; el resto: `sa_family: u16`.
+        let family = if cfg!(any(target_os = "macos", target_os = "freebsd")) {
+            u16::from(*sa.add(1))
+        } else {
+            u16::from_ne_bytes([*sa, *sa.add(1)])
+        };
+        // sockaddr_in: familia(2) puerto(2) dirección(4) → desplazamiento 4.
+        // sockaddr_in6: familia(2) puerto(2) flowinfo(4) dirección(16) → 8.
+        if family == AF_INET {
+            let b: [u8; 4] = std::ptr::read_unaligned(sa.add(4) as *const [u8; 4]);
+            Some(IpAddr::from(b))
+        } else if Some(family) == AF_INET6 {
+            let b: [u8; 16] = std::ptr::read_unaligned(sa.add(8) as *const [u8; 16]);
+            Some(IpAddr::from(b))
+        } else {
+            None
+        }
     }
 
     /// `PCAP_NETMASK_UNKNOWN`: vale para filtros que no usan direcciones.
@@ -818,7 +895,33 @@ mod backend {
                         .into_owned(),
                 )
             };
-            out.push(LiveIface { name, description });
+            let mut addresses = Vec::new();
+            let mut a = d.addresses as *const PcapAddr;
+            while !a.is_null() {
+                // SAFETY: lista enlazada de pcap_addr, válida hasta
+                // freealldevs; `addr` apunta a un sockaddr de su familia.
+                let pa = unsafe { &*a };
+                if let Some(ip) = unsafe { sockaddr_ip(pa.addr as *const u8) } {
+                    addresses.push(ip);
+                }
+                a = pa.next;
+            }
+            // IPv4 primero: es la que la gente reconoce.
+            addresses.sort_by_key(|ip| ip.is_ipv6());
+            let f = d.flags;
+            out.push(LiveIface {
+                name,
+                description,
+                addresses,
+                loopback: f & PCAP_IF_LOOPBACK != 0,
+                up: f & PCAP_IF_UP != 0 && f & PCAP_IF_RUNNING != 0,
+                wireless: f & PCAP_IF_WIRELESS != 0,
+                connected: match f & PCAP_IF_CONNECTION_STATUS {
+                    PCAP_IF_CONNECTION_STATUS_CONNECTED => Some(true),
+                    PCAP_IF_CONNECTION_STATUS_DISCONNECTED => Some(false),
+                    _ => None,
+                },
+            });
             cur = d.next;
         }
         unsafe { (syms.freealldevs)(devs) };
@@ -931,6 +1034,17 @@ mod tests {
                 );
                 for i in &ifaces {
                     assert!(!i.name.is_empty());
+                }
+                // La de loopback se reconoce por sus banderas y su 127.0.0.1:
+                // comprueba también el layout de pcap_addr/sockaddr.
+                #[cfg(unix)]
+                if let Some(lo) = ifaces.iter().find(|i| i.name == "lo" || i.name == "lo0") {
+                    assert!(lo.loopback, "{lo:?}");
+                    assert!(
+                        lo.addresses.contains(&IpAddr::from([127, 0, 0, 1])),
+                        "{lo:?}"
+                    );
+                    assert!(!lo.wireless);
                 }
             }
             Err(e) => eprintln!("list_ifaces() → {e}"),

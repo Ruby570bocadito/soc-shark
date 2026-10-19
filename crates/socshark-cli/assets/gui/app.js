@@ -905,7 +905,7 @@
     try {
       text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
     } catch {
-      text = Array.from(bytes, (b) => (b >= 0x20 && b < 0x7f) || b === 10 || b === 9 ? String.fromCharCode(b) : "·").join("");
+      text = Array.from(bytes, (b) => (b >= 0x20 && b < 0x7f) || b === 9 || b === 10 || b === 13 ? String.fromCharCode(b) : "·").join("");
     }
     return text.replace(/\r\n/g, "\n").replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "·");
   }
@@ -1797,11 +1797,26 @@
 
   // ------------------------------------------------------------ captura en vivo
 
-  const isLoopback = (i) => /^(lo\d*|lo0)$/.test(i.name) || /loopback/i.test(i.description || "");
+  // Pseudo-interfaces y adaptadores virtuales: existen, pero casi nunca son
+  // "la red" que una persona quiere ver.
+  const PSEUDO_RE = /pseudo-device|bluetooth|netfilter|d-bus|usbmon|usb bus|wan miniport|event tracing|etwdump|ciscodump|randpkt|sshdump|udpdump|wifidump/i;
+  const VIRTUAL_RE = /virtual|vmware|virtualbox|hyper-v|vethernet|docker|tailscale|wireguard|zerotier|tap-windows|teredo|isatap|tunnel/i;
+  const isLoopback = (i) => i.loopback || /^lo\d*$/.test(i.name) || /loopback/i.test(i.description || "");
+  function ifaceGroup(i) {
+    if (isLoopback(i)) return "loopback";
+    const text = `${i.name} ${i.description || ""}`;
+    if (i.name === "any" || PSEUDO_RE.test(text) || VIRTUAL_RE.test(text)) return "other";
+    if (/^(ifb|veth|docker|br-|virbr|tun|tap|wg|utun|awdl|llw|anpi|gif|stf|bridge)/.test(i.name)) return "other";
+    return "main";
+  }
+  const ifaceActive = (i) => (i.up || !("up" in i)) && i.connected !== false;
+  function ifaceTitle(i) {
+    if (i.name === "any") return "Todas las interfaces a la vez";
+    return i.description || i.name;
+  }
   function ifaceLabel(name) {
     const i = state.ifaces.find((x) => x.name === name);
-    const d = (i && i.description) || pref("iface-desc-" + name);
-    return d || name;
+    return (i && ifaceTitle(i)) || pref("iface-desc-" + name) || name;
   }
 
   async function openLiveDialog() {
@@ -1830,21 +1845,44 @@
       err.textContent = "No se encontró ninguna interfaz. En Windows instala Npcap (npcap.com); en Linux/macOS ejecuta soc-shark con permisos de captura (sudo).";
       return;
     }
-    // Primero las de verdad (Wi-Fi, cable); la de loopback, al final.
-    const sorted = [...ifaces].sort((a, b) => isLoopback(a) - isLoopback(b) || !!b.description - !!a.description);
+    // Tu red primero (las conectadas y con dirección, arriba); después este
+    // mismo equipo; el resto, plegado como "avanzado".
+    const rank = (i) => (ifaceActive(i) ? 0 : 2) + (i.addresses && i.addresses.length ? 0 : 1);
+    const groups = { main: [], loopback: [], other: [] };
+    for (const i of ifaces) groups[ifaceGroup(i)].push(i);
+    groups.main.sort((a, b) => rank(a) - rank(b) || !!b.wireless - !!a.wireless);
     const last = pref("iface");
-    const pick = sorted.find((i) => i.name === last) || sorted[0];
-    for (const i of sorted) {
+    const pick = ifaces.find((i) => i.name === last) || groups.main.find(ifaceActive) || groups.main[0] || groups.loopback[0] || ifaces[0];
+
+    const row = (i) => {
       const radio = h("input", { type: "radio", name: "iface", value: i.name });
       radio.checked = i === pick;
-      const title = i.description || i.name;
+      const off = !ifaceActive(i);
+      const facts = [];
+      if (i.wireless) facts.push("inalámbrica");
+      if (off) facts.push("sin conexión");
+      else if (i.connected === true) facts.push("conectada");
+      facts.push(...(i.addresses || []).slice(0, 2));
+      if (isLoopback(i)) facts.push("programas que hablan entre sí dentro del equipo");
+      return h(
+        "label",
+        { class: `iface${off ? " off" : ""}`, title: i.name },
+        radio,
+        h("b", null, ifaceTitle(i)),
+        h("span", { class: "iface-facts" }, facts.join(" · ") || (i.description ? i.name : "")),
+      );
+    };
+    const section = (title, items) => [h("div", { class: "iface-group" }, title), items.map(row)];
+    if (groups.main.length) list.append(...section("Tu red", groups.main).flat());
+    else list.append(h("p", { class: "muted" }, "No se ve ninguna tarjeta de red (Wi-Fi o cable). Revisa las de «Otras»."));
+    if (groups.loopback.length) list.append(...section("Este mismo equipo", groups.loopback).flat());
+    if (groups.other.length) {
       list.append(
         h(
-          "label",
-          { class: "iface" },
-          radio,
-          h("b", null, isLoopback(i) ? `${title} · este mismo equipo` : title),
-          h("span", { class: "mono" }, i.description ? i.name : isLoopback(i) ? "programas que hablan entre sí dentro del equipo" : ""),
+          "details",
+          { class: "iface-more", open: groups.other.includes(pick) ? true : null },
+          h("summary", null, `Otras interfaces (${groups.other.length}) · avanzado`),
+          groups.other.map(row),
         ),
       );
     }
@@ -1869,8 +1907,8 @@
     }
     pref("iface", iface);
     pref("bpf", bpf);
-    const desc = state.ifaces.find((x) => x.name === iface)?.description;
-    if (desc) pref("iface-desc-" + iface, desc);
+    const chosen = state.ifaces.find((x) => x.name === iface);
+    if (chosen) pref("iface-desc-" + iface, ifaceTitle(chosen));
     $("#live-dlg").close();
     state.pk.follow = true;
     $("#follow-toggle").checked = true;

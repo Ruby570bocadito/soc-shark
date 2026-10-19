@@ -46,6 +46,10 @@ operación en tiempo real.
       tráfico; ahora el handle va en modo no bloqueante con `poll` propio
       (tick garantizado, testeado cuando hay privilegios de captura) y
       Ctrl-C/SIGTERM cierran exportando los flujos vivos.
+      **Windows**: el mismo backend carga el `wpcap.dll` de Npcap
+      (LoadLibrary, layout de Windows, Ctrl+C con `SetConsoleCtrlHandler`
+      y parada inmediata con `pcap_breakloop`); verificado con el
+      `wpcap.dll` de Wine, pendiente de prueba en Windows real.
       AF_XDP sigue siendo el objetivo de alto rendimiento (Fase 3+).
 - [x] Pipeline en streaming: agregador incremental con `drain_expired`
       testado; el daemon en vivo lo consume por cadencia (`--flush-secs`).
@@ -73,7 +77,7 @@ operación en tiempo real.
       (DNS con `QDCOUNT=0`). cargo-fuzz/libFuzzer con cobertura guiada
       queda como tarea de contribución (ver CONTRIBUTING.md).
 
-Estado 0.6.0: 152 tests verdes (175 tras los arreglos y la GUI, ver CHANGELOG). El único criterio de fase pendiente de
+Estado 0.6.0: 152 tests verdes (186 tras los arreglos, la GUI y el modo en vivo, ver CHANGELOG). El único criterio de fase pendiente de
 verificación sobre hardware real es el rendimiento en vivo (≥ 200 Mbps
 sostenidos y TUI fluida con 10k flujos): el resto del criterio (Follow
 Stream legible, salida determinista con paralelismo) ya está cubierto por
@@ -143,7 +147,13 @@ ecosistemas (son las únicas piezas que justificarían dependencias nuevas).
       conversaciones en lenguaje claro (modo Simple) o técnico (Experto),
       vista de paquetes con capas explicadas y bytes resaltados, filtro DSL,
       glosario, abrir/arrastrar capturas. Ver [gui.md](gui.md)
-- [ ] GUI empaquetada (Tauri) con tabla virtualizada, SequenceView de
+- [x] GUI en tiempo real y funciones tipo Wireshark: captura en vivo desde
+      la ventana (interfaces con IP y estado, foto cada segundo, parada
+      inmediata), lista global de paquetes virtualizada, «Contenido»
+      (seguir flujo), estadísticas (protocolos, servicios, equipos,
+      actividad en el tiempo), «filtrar por…» con clic derecho, columnas
+      ordenables, paneles ajustables y guardar `.pcap`
+- [ ] GUI empaquetada (Tauri) con tabla de conversaciones virtualizada, SequenceView de
       handshakes y StreamInspector con decodificador CyberChef-style
       (pipelines Base64→XOR→Zlib→JSON)
 - [ ] Runtime de plugins WASM (wasmtime) con la API WIT de

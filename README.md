@@ -17,6 +17,8 @@ Wireshark responde a la pregunta *«¿qué hay en este paquete?»*. **soc-shark 
 | Función | Descripción | Estado |
 |---|---|---|
 | **GUI estilo Wireshark, en lenguaje claro** | `socshark gui`: cada conversación contada en una frase con semáforo 🟢🟠🔴, alertas agrupadas en historias con «qué hacer», y vista de paquetes con capas explicadas y bytes resaltados ([docs/gui.md](docs/gui.md)) | **Implementado** |
+| **Red en tiempo real en la GUI** | Botón «En vivo»: eliges Wi-Fi/cable (con su IP y estado), la ventana se actualiza cada segundo y «Detener» es inmediato | **Implementado (Linux/macOS/Windows con Npcap)** |
+| **Funciones tipo Wireshark** | Lista completa de paquetes (virtual, cientos de miles), «Contenido» (seguir la conversación en texto o hex), estadísticas (protocolos, equipos, servicios, actividad en el tiempo), clic derecho «filtrar por…», columnas ordenables, paneles ajustables, guardar `.pcap` | **Implementado** |
 | **Atribución de proceso con eBPF** | Cada flujo muestra PID, binario y usuario que lo originó | Diseño (`docs/ebpf-design.md`) — Fase 3 |
 | **TLS 1.3 transparente** | Descifrado vía uprobes a `SSL_read/SSL_write`, sin `SSLKEYLOGFILE` | Diseño — Fase 3+ |
 | **Plugins WASM en sandbox** | Dissectors seguros escritos por la comunidad, sin riesgo de RCE | Diseño (`docs/wasm-plugins.md`) — Fase 4 |
@@ -27,7 +29,7 @@ Wireshark responde a la pregunta *«¿qué hay en este paquete?»*. **soc-shark 
 | **Export SIEM** | JSONL → **ECS 8.x** y **Wazuh** con MITRE ATT&CK (TheHive pendiente) | **Implementado (ECS + Wazuh)** |
 | **IPv6 completo** | Dissector con extensiones, claves de flujo v4/v6 y literales v6 en el DSL | **Implementado** |
 | **Follow Stream** | Reensamblado TCP por dirección: orden, retransmisiones, huecos, hexdump | **Implementado** |
-| **Captura en vivo (libpcap)** | Daemon con pushdown BPF al kernel, sin dependencia en tiempo de compilación (dlopen) | **Implementado (Linux/macOS)** |
+| **Captura en vivo (libpcap / Npcap)** | GUI y daemon con pushdown BPF al kernel, sin dependencia en tiempo de compilación (dlopen / LoadLibrary) | **Implementado (Linux/macOS/Windows)** |
 | **Pool de dissectors concurrente** | Disección por lotes en N hilos, salida idéntica al modo secuencial | **Implementado** |
 | **Fuzzing determinista en CI** | Corpus mutado sobre parsers + agregador + SOC + DSL, reproducible por semilla | **Implementado** |
 | **TUI interactiva (Ratatui)** | Lista Flow-First + panel de alertas + filtro DSL en vivo | **Implementado** |
@@ -38,7 +40,7 @@ Wireshark responde a la pregunta *«¿qué hay en este paquete?»*. **soc-shark 
 
 ## Estado actual: Fases 1-2 completas ✅ · Fase 3 piezas puras ✅ · Fase 4 piezas puras ✅
 
-El pipeline funciona de extremo a extremo sobre archivos **y en vivo**: **lectura/libpcap → disección (Ethernet/IPv4/IPv6/TCP/UDP/DNS/TLS, secuencial o en pool de N hilos) → agregación de flujos bidireccionales (JA4 + SNI + estadística de intervalos) → file carving opcional (T1036) → enriquecimiento SOC (incluidas listas Feodo/Tor) → filtro DSL → tabla/TUI/JSONL/follow/daemon/export ECS-Wazuh**. 175 tests automatizados cubren parsers (barrido anti-panic), JA4 (vectores oficiales FoxIO + NIST), SHA-256 (FIPS 180-4), pool concurrente, agregador, reensamblado, DSL, capa SOC (escaneo vertical/horizontal T1046, beaconing T1071, masquerading T1036, threat intel), backend de captura (incluido el tick sin tráfico en vivo), export SIEM e integración; el fuzzing determinista recorre millones de tramas mutadas en cada build.
+El pipeline funciona de extremo a extremo sobre archivos **y en vivo**: **lectura/libpcap → disección (Ethernet/IPv4/IPv6/TCP/UDP/DNS/TLS, secuencial o en pool de N hilos) → agregación de flujos bidireccionales (JA4 + SNI + estadística de intervalos) → file carving opcional (T1036) → enriquecimiento SOC (incluidas listas Feodo/Tor) → filtro DSL → tabla/TUI/JSONL/follow/daemon/export ECS-Wazuh**. 186 tests automatizados cubren parsers (barrido anti-panic), JA4 (vectores oficiales FoxIO + NIST), SHA-256 (FIPS 180-4), pool concurrente, agregador, reensamblado, DSL, capa SOC (escaneo vertical/horizontal T1046, beaconing T1071, masquerading T1036, threat intel), backend de captura (incluido el tick sin tráfico en vivo), export SIEM e integración; el fuzzing determinista recorre millones de tramas mutadas en cada build.
 
 ### Inicio rápido
 
@@ -49,9 +51,11 @@ que necesita Rust en Windows) y Rust vía winget/rustup si faltan → clona el r
 (privado: pedirá un PAT) → compila en release → instala `socshark.exe` en
 `%USERPROFILE%\.socshark\bin` y lo añade al PATH de usuario → verifica el pipeline
 completo con el escenario demo. Es idempotente: si ya está instalado, actualiza.
-También funciona como script clásico: `.\install.ps1`. La captura en vivo
-(`socshark daemon`) aún no está disponible en Windows; el análisis de archivos pcap
-funciona completo.
+También funciona como script clásico: `.\install.ps1`. Para ver la red **en
+tiempo real** en Windows instala [Npcap](https://npcap.com) (el driver de Wireshark;
+si ya tienes Wireshark, normalmente ya está) con «WinPcap API-compatible Mode»
+marcado, y abre `socshark gui` → **En vivo**. Si pide permisos, abre la consola
+como administrador. Sin Npcap, abrir capturas `.pcap` funciona completo.
 
 Requisitos (Linux/macOS o manual en Windows): Rust 1.75+ (`rustup install stable`).
 
@@ -67,6 +71,9 @@ cargo build --release
 
 # 4. O verla en la interfaz gráfica (se abre una ventana)
 ./target/release/socshark gui -r demo.pcap
+
+# 5. O ver tu red en tiempo real: botón «En vivo» (necesita permisos de captura)
+sudo ./target/release/socshark gui
 ```
 
 Salida real de la demo (45 paquetes → 20 flujos relevantes, ruido excluido):
@@ -121,7 +128,7 @@ que incluye la demo desde la Fase 2 (respuesta AAAA incluida).
 ```bash
 # Interfaz gráfica: ventana con explicaciones en lenguaje claro
 socshark gui -r captura.pcap
-socshark gui                    # vacía: abre o arrastra la captura a la ventana
+socshark gui                    # vacía: «En vivo» para ver la red, o abre/arrastra una captura
 
 # Tabla resumen (por defecto)
 socshark capture -r captura.pcap
@@ -203,7 +210,7 @@ soc-shark/
 
 ## Calidad
 
-- **175 tests** unitarios y de integración (`cargo test --workspace`),
+- **186 tests** unitarios y de integración (`cargo test --workspace`),
   incluido el barrido anti-panic, el reensamblado con segmentos fuera de
   orden, el test de igualdad JSONL entre el pool de 4 hilos y el camino
   secuencial, el carving T1036 sobre el escenario demo y el E2E de threat
@@ -217,8 +224,9 @@ soc-shark/
   malformados (incluidos los crafted por un atacante) producen `None`, nunca un crash.
 - **Dependencias mínimas**: `serde`, `serde_json`, `thiserror`, `clap`,
   `anyhow` y —tras la feature `tui`, desactivable— `ratatui` + `crossterm`.
-  La captura en vivo usa FFI propio sobre libpcap cargada con `dlopen`:
-  ni cabeceras ni enlazado en tiempo de compilación (ADR-009).
+  La captura en vivo usa FFI propio sobre libpcap (o `wpcap.dll` de Npcap
+  en Windows) cargada al vuelo: ni cabeceras ni enlazado en tiempo de
+  compilación (ADR-009).
 
 ## Ética y uso responsable
 

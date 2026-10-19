@@ -321,7 +321,15 @@ impl Server {
                     200,
                     &json!(ifaces
                         .iter()
-                        .map(|i| json!({ "name": i.name, "description": i.description }))
+                        .map(|i| json!({
+                            "name": i.name,
+                            "description": i.description,
+                            "addresses": i.addresses,
+                            "loopback": i.loopback,
+                            "up": i.up,
+                            "wireless": i.wireless,
+                            "connected": i.connected,
+                        }))
                         .collect::<Vec<_>>()),
                 ),
                 Err(e) => Response::error(503, &e.to_string()),
@@ -362,12 +370,18 @@ impl Server {
         };
         let bpf = req.query_param("bpf").filter(|b| !b.trim().is_empty());
         self.stop_live();
-        let cfg = LiveCaptureConfig {
-            // Tick frecuente: la ventana responde rápido a "Detener".
-            timeout_ms: 250,
-            ..LiveCaptureConfig::new(iface.clone()).with_bpf(Some(self.live_bpf(bpf.as_deref())))
+        let open = |filter: Option<String>| {
+            LiveCapture::open(LiveCaptureConfig {
+                // Tick frecuente: la ventana responde rápido a "Detener".
+                timeout_ms: 250,
+                ..LiveCaptureConfig::new(iface.clone()).with_bpf(filter)
+            })
         };
-        let source = match LiveCapture::open(cfg) {
+        // Interfaces que no son IP (NFLOG, Bluetooth, USB…) no admiten el
+        // filtro que oculta la propia ventana; tampoco llevan su tráfico, así
+        // que se reintenta solo con el del usuario.
+        let source = match open(Some(self.live_bpf(bpf.as_deref()))).or_else(|_| open(bpf.clone()))
+        {
             Ok(s) => s,
             Err(e) => return Response::error(400, &e.to_string()),
         };
@@ -1162,6 +1176,47 @@ mod tests {
         // Detener sin captura en marcha no falla.
         assert_eq!(call(&s, "POST", "/api/live/stop", Some(&t)).status, 200);
         assert_eq!(call(&s, "GET", "/api/live/start", Some(&t)).status, 405);
+        // Con un filtro del usuario inválido, el error es el suyo (legible).
+        let r = call(
+            &s,
+            "POST",
+            "/api/live/start?iface=lo&bpf=port+%3D%3D",
+            Some(&t),
+        );
+        if r.status == 400 && String::from_utf8_lossy(&r.body).contains("BPF") {
+            assert!(String::from_utf8_lossy(&r.body).contains("port =="));
+        }
+    }
+
+    /// La lista de interfaces trae lo que una persona necesita para elegir:
+    /// direcciones y estado (si hay libpcap en este entorno).
+    #[test]
+    fn interfaces_con_direcciones_y_estado() {
+        let s = Arc::new(Server::new(8787, PipelineConfig::default()));
+        let t = s.token.clone();
+        let (st, ifaces) = get(&s, "/api/live/ifaces", Some(&t), "127.0.0.1:8787");
+        if st != 200 {
+            eprintln!("sin libpcap aquí: {ifaces}");
+            return;
+        }
+        for i in ifaces.as_array().unwrap() {
+            assert!(
+                i["addresses"].is_array() && i["loopback"].is_boolean() && i["up"].is_boolean()
+            );
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(lo) = ifaces
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["name"] == "lo")
+        {
+            assert_eq!(lo["loopback"], true);
+            assert!(lo["addresses"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("127.0.0.1")));
+        }
     }
 
     #[test]

@@ -220,8 +220,13 @@ probando los sonames habituales (`libpcap.so.0.8`, `libpcap.so.1`,
 dependencias nuevas y ningún requisito de compilación; el binario por
 defecto funciona en cualquier máquina y la captura en vivo se resuelve al
 ejecutar (si falta la biblioteca, error limpio con instrucciones de
-instalación). El backend es unix LP64; otras plataformas reciben un stub
-con `LiveUnavailable`. Los punteros de función se resuelven con `dlsym` y
+instalación). El backend cubre unix LP64 y Windows de 64 bits (Npcap:
+`wpcap.dll` con `LoadLibraryExW`, primero por ruta absoluta del sistema;
+`timeval` de 32 bits y `pcap_stat` ampliado; sin `poll` ni modo inmediato,
+el tick lo da el timeout de Npcap); otras plataformas reciben un stub con
+`LiveUnavailable`. `LiveBreaker` permite despertar una lectura bloqueada
+desde otro hilo con `pcap_breakloop`, bajo un cerrojo que `Drop` toma antes
+de `pcap_close`. Los punteros de función se resuelven con `dlsym` y
 se tipan contra firmas auditadas; `LiveCapture` es `Send` (un solo hilo de
 lectura) y libera `pcap_freecode`/`pcap_close`/`dlclose` en orden garantizado.
 
@@ -349,3 +354,12 @@ icono propio en la barra de tareas ni instalador. El frontend está aislado
 detrás de una API JSON pequeña, así que empaquetarlo en Tauri más adelante
 no exige reescribirlo; esa decisión se tomará en su propio ADR cuando el
 producto lo justifique.
+
+*Ampliación (modo en vivo).* La captura en vivo de la GUI reutiliza el
+backend del daemon en un hilo propio que publica una **foto** de la red
+cada segundo (conversaciones terminadas + activas, enriquecidas con un
+contexto SOC nuevo para que escaneo y DNS pasivo vean el conjunto) con un
+número de generación; la ventana consulta `/api/session` cada segundo y
+solo recarga cuando la generación cambia. Se eligió el sondeo frente a
+WebSocket/SSE para no complicar el servidor HTTP mínimo: a 1 Hz y en
+`127.0.0.1` su coste es despreciable.

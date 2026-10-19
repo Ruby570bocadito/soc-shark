@@ -20,6 +20,33 @@ y [SemVer](https://semver.org/lang/es/).
   `Host`, CSP estricta): sin dependencias nuevas, funciona en Windows,
   macOS y Linux. En Windows se abre como ventana de aplicación con Edge o
   Chrome.
+- **GUI en tiempo real**: botón «En vivo» (Ctrl+E) que muestra la red
+  mientras pasa. Las interfaces se presentan como las reconoce una persona
+  (Wi-Fi o cable con su IP y si está conectada; loopback aparte; las
+  especiales, plegadas), filtro de captura BPF opcional, foto nueva cada
+  segundo sin perder la selección ni el desplazamiento, paquetes perdidos
+  por el sistema en la barra de estado y «Detener» inmediato aunque no haya
+  tráfico (`pcap_breakloop` protegido contra uso tras cierre).
+- **Captura en vivo en Windows** con [Npcap](https://npcap.com): mismo
+  backend cargando `wpcap.dll` (layout de Windows: `timeval` de 32 bits,
+  `pcap_stat` ampliado), Ctrl+C del daemon con `SetConsoleCtrlHandler`.
+  `install.ps1` detecta Npcap y explica cómo instalarlo. Verificado con el
+  `wpcap.dll` de Wine; falta probarlo en un Windows real.
+- **Funciones tipo Wireshark en la GUI**: vistas Conversaciones / Paquetes /
+  Estadísticas; lista completa de paquetes virtualizada y coloreada por
+  gravedad; pestaña «Contenido» (seguir la conversación, texto o hex,
+  copiar); estadísticas de protocolos, servicios, equipos que más hablan y
+  actividad en el tiempo (con vista de tabla); clic derecho «ver solo /
+  ocultar» equipo, puerto, protocolo o conversación (combinable con el
+  filtro actual); columnas ordenables; paneles redimensionables; barra de
+  estado; historial de filtros; guardar como `.pcap` (Ctrl+S).
+- API de la GUI: `/api/stats`, `/api/timeline`, `/api/packets` (paginada),
+  `/api/flows/{i}/stream`, `/api/save.pcap`, `/api/live/*`; el filtro, el
+  tráfico de fondo y «solo lo importante» se aplican igual a paquetes,
+  línea de tiempo y estadísticas.
+- DSL: campo `ip.addr` (alias `host`), cualquiera de los dos extremos, como
+  en Wireshark.
+- `socshark daemon --list` muestra la IP y el estado de cada interfaz.
 - `socshark-soc::explain`: traductor a lenguaje humano reutilizable
   (semáforo, frases, explicación y «qué hacer» por alerta, historias
   agrupadas, nombres de servicios por puerto/transporte y de resolutores

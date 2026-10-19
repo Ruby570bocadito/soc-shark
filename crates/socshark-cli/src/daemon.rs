@@ -137,9 +137,24 @@ pub fn list_interfaces() -> Result<()> {
     let ifaces = socshark_capture::list_ifaces().map_err(|e| anyhow::anyhow!("{e}"))?;
     println!("Interfaces capturables (según libpcap):");
     for i in &ifaces {
-        match &i.description {
-            Some(d) => println!("  {:<14} {d}", i.name),
-            None => println!("  {}", i.name),
+        let mut facts: Vec<String> = Vec::new();
+        if let Some(d) = &i.description {
+            facts.push(d.clone());
+        }
+        if i.loopback {
+            facts.push("este mismo equipo".into());
+        }
+        if i.wireless {
+            facts.push("inalámbrica".into());
+        }
+        if i.connected == Some(false) {
+            facts.push("sin conexión".into());
+        }
+        facts.extend(i.addresses.iter().take(2).map(|a| a.to_string()));
+        if facts.is_empty() {
+            println!("  {}", i.name);
+        } else {
+            println!("  {:<14} {}", i.name, facts.join(" · "));
         }
     }
     Ok(())

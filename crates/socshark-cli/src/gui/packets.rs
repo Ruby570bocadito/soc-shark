@@ -402,7 +402,10 @@ fn endpoints(dp: &DissectedPacket) -> (String, String) {
 
 /// Protocolo más alto reconocido (columna "Protocolo" de Wireshark).
 fn protocol_name(dp: &DissectedPacket) -> String {
-    if dp.l7 != L7Protocol::Unknown {
+    // Un TCP sin datos (SYN, ACK, FIN…) es TCP, aunque vaya al puerto 443:
+    // así lo muestra también Wireshark.
+    let control_only = dp.transport == Transport::Tcp && dp.payload.is_empty();
+    if dp.l7 != L7Protocol::Unknown && !control_only {
         return dp.l7.as_str().to_string();
     }
     dp.transport.as_str().to_string()
