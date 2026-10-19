@@ -140,8 +140,9 @@
       <summary>¿No tienes ninguna captura?</summary>
       <ul>
         <li>Genera una de ejemplo en la consola: <code>socshark dev sample-pcap -o demo.pcap</code></li>
-        <li>Con Wireshark: captura y guarda con <em>Archivo → Guardar como → pcap</em> (no pcapng).</li>
-        <li>Con tshark: <code>tshark -i 1 -a duration:60 -F pcap -w captura.pcap</code></li>
+        <li>Con Wireshark: <em>Archivo → Guardar como</em> (pcapng o pcap, valen los dos).</li>
+        <li>Con tshark: <code>tshark -i 1 -a duration:60 -w captura.pcapng</code></li>
+        <li>Para probar el «quién es quién»: <code>socshark dev sample-pcap --escenario casa -o casa.pcap</code></li>
       </ul>
     </details>
   </div>

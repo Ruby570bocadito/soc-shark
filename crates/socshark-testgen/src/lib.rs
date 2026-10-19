@@ -391,6 +391,114 @@ pub fn write_pcap(
     f.write_all(&buf)
 }
 
+/// Opciones del generador pcapng.
+#[derive(Debug, Clone, Copy)]
+pub struct PcapNgOptions {
+    /// `false` = big-endian (como lo escribe una máquina big-endian).
+    pub little_endian: bool,
+    /// Marcas de tiempo en nanosegundos (`if_tsresol` = 9), como Wireshark.
+    pub nanos: bool,
+    /// Añade bloques que el lector debe saltar (resolución de nombres,
+    /// estadísticas de interfaz) y paquetes como Simple Packet Block.
+    pub extra_blocks: bool,
+}
+
+impl Default for PcapNgOptions {
+    fn default() -> Self {
+        Self {
+            little_endian: true,
+            nanos: true,
+            extra_blocks: false,
+        }
+    }
+}
+
+/// Captura en formato pcapng (el que guarda Wireshark por defecto): una
+/// sección, una interfaz y un Enhanced Packet Block por paquete.
+pub fn pcapng_bytes(link_type: u16, packets: &[(u64, Vec<u8>)], opt: PcapNgOptions) -> Vec<u8> {
+    let u16b = |v: u16| {
+        if opt.little_endian {
+            v.to_le_bytes()
+        } else {
+            v.to_be_bytes()
+        }
+    };
+    let u32b = |v: u32| {
+        if opt.little_endian {
+            v.to_le_bytes()
+        } else {
+            v.to_be_bytes()
+        }
+    };
+    let pad = |v: &mut Vec<u8>| {
+        while v.len() & 3 != 0 {
+            v.push(0);
+        }
+    };
+    let block = |out: &mut Vec<u8>, kind: u32, body: &[u8]| {
+        let len = (12 + body.len()) as u32;
+        out.extend_from_slice(&u32b(kind));
+        out.extend_from_slice(&u32b(len));
+        out.extend_from_slice(body);
+        out.extend_from_slice(&u32b(len));
+    };
+    let mut out = Vec::new();
+    // Section Header Block: orden de bytes, versión 1.0, longitud desconocida.
+    let mut shb = Vec::new();
+    shb.extend_from_slice(&u32b(0x1A2B_3C4D));
+    shb.extend_from_slice(&u16b(1));
+    shb.extend_from_slice(&u16b(0));
+    shb.extend_from_slice(&[0xff; 8]);
+    block(&mut out, 0x0A0D_0D0A, &shb);
+    // Interface Description Block con if_tsresol.
+    let mut idb = Vec::new();
+    idb.extend_from_slice(&u16b(link_type));
+    idb.extend_from_slice(&u16b(0));
+    idb.extend_from_slice(&u32b(262_144));
+    idb.extend_from_slice(&u16b(9)); // if_tsresol
+    idb.extend_from_slice(&u16b(1));
+    idb.extend_from_slice(&[if opt.nanos { 9 } else { 6 }, 0, 0, 0]);
+    idb.extend_from_slice(&[0, 0, 0, 0]); // opt_endofopt
+    block(&mut out, 1, &idb);
+    if opt.extra_blocks {
+        // Name Resolution Block (vacío) que hay que saltar.
+        block(&mut out, 4, &[0, 0, 0, 0]);
+    }
+    for (i, (ts_micros, data)) in packets.iter().enumerate() {
+        if opt.extra_blocks && i % 5 == 4 {
+            // Simple Packet Block: sin marca de tiempo propia.
+            let mut spb = Vec::new();
+            spb.extend_from_slice(&u32b(data.len() as u32));
+            spb.extend_from_slice(data);
+            pad(&mut spb);
+            block(&mut out, 3, &spb);
+            continue;
+        }
+        let ts = if opt.nanos {
+            ts_micros * 1_000
+        } else {
+            *ts_micros
+        };
+        let mut epb = Vec::new();
+        epb.extend_from_slice(&u32b(0));
+        epb.extend_from_slice(&u32b((ts >> 32) as u32));
+        epb.extend_from_slice(&u32b(ts as u32));
+        epb.extend_from_slice(&u32b(data.len() as u32));
+        epb.extend_from_slice(&u32b(data.len() as u32));
+        epb.extend_from_slice(data);
+        pad(&mut epb);
+        block(&mut out, 6, &epb);
+    }
+    if opt.extra_blocks {
+        // Interface Statistics Block: id de interfaz + marca de tiempo.
+        let mut isb = Vec::new();
+        isb.extend_from_slice(&u32b(0));
+        isb.extend_from_slice(&[0; 8]);
+        block(&mut out, 5, &isb);
+    }
+    out
+}
+
 // ---------------------------------------------------------- escenario demo
 
 /// MACs e IPs ficticias del escenario (publics para que los tests las usen).

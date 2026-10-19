@@ -1445,11 +1445,19 @@ mod tests {
         let r = post(b"esto no es un pcap".to_vec(), "x.pcapng");
         assert_eq!(r.status, 400);
         let msg = String::from_utf8_lossy(&r.body).to_string();
-        assert!(msg.contains("no es un pcap clásico"), "{msg}");
+        assert!(msg.contains("no es una captura pcap ni pcapng"), "{msg}");
         assert!(
             !msg.contains("socshark-gui-"),
             "sin rutas temporales: {msg}"
         );
+
+        // Lo que guarda Wireshark por defecto (pcapng) se abre igual.
+        let ng = socshark_testgen::pcapng_bytes(1, &sample_pcap_packets(), Default::default());
+        let r = post(ng, "de-wireshark.pcapng");
+        assert_eq!(r.status, 200, "{}", String::from_utf8_lossy(&r.body));
+        let session = get(&s, "/api/session", Some(&t), "127.0.0.1:8787").1;
+        assert_eq!(session["packets"], 45);
+        assert_eq!(session["name"], "de-wireshark.pcapng");
 
         let path =
             std::env::temp_dir().join(format!("socshark-gui-up-{}.pcap", std::process::id()));
