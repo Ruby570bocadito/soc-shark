@@ -93,6 +93,10 @@ mod backend {
                 "la captura en vivo solo está soportada en unix de 64 bits".into(),
             ))
         }
+
+        pub fn kernel_stats(&self) -> Option<(u32, u32)> {
+            None
+        }
     }
 
     impl CaptureSource for LiveCapture {
@@ -112,9 +116,6 @@ mod backend {
         ))
     }
 }
-
-#[cfg(not(all(unix, target_pointer_width = "64")))]
-pub use backend::{list_ifaces, LiveCapture};
 
 // ---------------------------------------------------------------------------
 // Backend real: unix LP64
@@ -595,10 +596,7 @@ mod backend {
     }
 }
 
-#[cfg(all(unix, target_pointer_width = "64"))]
-pub use backend::{list_ifaces, LiveCapture};
-
-#[cfg(not(all(unix, target_pointer_width = "64")))]
+// Cada plataforma compila exactamente un `backend` (real o stub).
 pub use backend::{list_ifaces, LiveCapture};
 
 #[cfg(test)]

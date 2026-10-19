@@ -19,6 +19,14 @@ y [SemVer](https://semver.org/lang/es/).
 - `clippy -D warnings` vuelve a pasar en toolchains anteriores a
   `clippy::chunks_exact_to_as_chunks` (p. ej. 1.97): los `allow` incluyen
   `unknown_lints`.
+- **Windows: el proyecto no compilaba.** `live.rs` reexportaba dos veces el
+  backend stub (E0252) y al stub le faltaba `kernel_stats`. Verificado con
+  `clippy` para `x86_64-pc-windows-msvc` y los 152 tests como `.exe`
+  (`x86_64-pc-windows-gnu` bajo Wine).
+- `install.ps1`: comprueba e instala (winget) las Build Tools de C++ de
+  Visual Studio, sin las que `cargo build` falla con `link.exe not found`;
+  deja de anunciar el daemon como disponible en Windows (allí solo hay
+  stub) y corrige los ejemplos `dev fuzz --iterations` y `follow --flow`.
 
 ## [0.6.0] — 2026-10-16
 

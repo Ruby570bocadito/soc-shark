@@ -24,7 +24,7 @@ Wireshark responde a la pregunta *«¿qué hay en este paquete?»*. **soc-shark 
 | **Export SIEM** | JSONL → **ECS 8.x** y **Wazuh** con MITRE ATT&CK (TheHive pendiente) | **Implementado (ECS + Wazuh)** |
 | **IPv6 completo** | Dissector con extensiones, claves de flujo v4/v6 y literales v6 en el DSL | **Implementado** |
 | **Follow Stream** | Reensamblado TCP por dirección: orden, retransmisiones, huecos, hexdump | **Implementado** |
-| **Captura en vivo (libpcap)** | Daemon con pushdown BPF al kernel, sin dependencia en tiempo de compilación (dlopen) | **Implementado** |
+| **Captura en vivo (libpcap)** | Daemon con pushdown BPF al kernel, sin dependencia en tiempo de compilación (dlopen) | **Implementado (Linux/macOS)** |
 | **Pool de dissectors concurrente** | Disección por lotes en N hilos, salida idéntica al modo secuencial | **Implementado** |
 | **Fuzzing determinista en CI** | Corpus mutado sobre parsers + agregador + SOC + DSL, reproducible por semilla | **Implementado** |
 | **TUI interactiva (Ratatui)** | Lista Flow-First + panel de alertas + filtro DSL en vivo | **Implementado** |
@@ -41,13 +41,14 @@ El pipeline funciona de extremo a extremo sobre archivos **y en vivo**: **lectur
 
 **Windows (copiar y pegar):** abre PowerShell, abre [`install.ps1`](install.ps1),
 copia **todo** su contenido y pégalo en la consola. El instalador: comprueba la
-plataforma → instala Git y Rust vía winget/rustup si faltan → clona el repositorio
+plataforma → instala Git, las Build Tools de C++ de Visual Studio (el enlazador
+que necesita Rust en Windows) y Rust vía winget/rustup si faltan → clona el repositorio
 (privado: pedirá un PAT) → compila en release → instala `socshark.exe` en
 `%USERPROFILE%\.socshark\bin` y lo añade al PATH de usuario → verifica el pipeline
 completo con el escenario demo. Es idempotente: si ya está instalado, actualiza.
-También funciona como script clásico: `.\install.ps1`. Para captura en vivo en
-Windows hace falta [Npcap](https://npcap.com/) con *WinPcap API-compatible Mode*
-(el análisis de archivos funciona sin él).
+También funciona como script clásico: `.\install.ps1`. La captura en vivo
+(`socshark daemon`) aún no está disponible en Windows; el análisis de archivos pcap
+funciona completo.
 
 Requisitos (Linux/macOS o manual en Windows): Rust 1.75+ (`rustup install stable`).
 
