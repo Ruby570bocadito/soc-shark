@@ -48,6 +48,16 @@ pub fn run_capture(
     show_noise: bool,
     cfg: &PipelineConfig,
 ) -> Result<CaptureOutput> {
+    // El filtro se valida antes de leer: un error de sintaxis no debe
+    // esperar a procesar una captura de varios GB.
+    let filter = filter_expr
+        .map(|src| {
+            parse_filter(src)
+                .map(|expr| (src, expr))
+                .map_err(|e| anyhow::anyhow!("filtro inválido: {e}"))
+        })
+        .transpose()?;
+
     let mut reader = PcapFileReader::open(pcap_path)
         .with_context(|| format!("no se pudo abrir el pcap {}", pcap_path.display()))?;
     let link = reader.link_type();
@@ -118,8 +128,7 @@ pub fn run_capture(
         ctx.passive_dns.len()
     );
 
-    if let Some(expr_src) = filter_expr {
-        let expr = parse_filter(expr_src).map_err(|e| anyhow::anyhow!("filtro inválido: {e}"))?;
+    if let Some((expr_src, expr)) = filter {
         let before = flows.len();
         flows.retain(|f| socshark_filter::eval(&expr, f));
         eprintln!("[*] Filtro `{expr_src}`: {before} → {} flujos", flows.len());

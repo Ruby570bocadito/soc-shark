@@ -124,6 +124,11 @@ mod tests {
     #[test]
     fn errores_de_sintaxis_con_posicion() {
         assert!(parse("ip.src ==").is_err());
+        // Al faltar tokens, la posición es el final de la entrada (antes
+        // salía usize::MAX en el mensaje).
+        let e = parse("tcp.port == ").unwrap_err();
+        assert_eq!(e.pos, "tcp.port == ".len());
+        assert_eq!(parse("(a == 1").unwrap_err().pos, "(a == 1".len());
         assert!(parse("(a == 1").is_err());
         assert!(parse("a == 1 cola-sobrante").is_err());
     }
