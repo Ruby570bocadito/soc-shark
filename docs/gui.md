@@ -21,6 +21,11 @@ La ventana se abre sola: en Windows, como aplicación propia con Edge o
 Chrome (modo `--app`, sin barra del navegador); en macOS y Linux, en el
 navegador por defecto. Se cierra con **Ctrl+C** en la consola.
 
+Sin captura abierta, la ventana da la bienvenida con las dos formas de
+empezar: **ver la red en vivo** o **abrir una captura**.
+
+![Bienvenida: ver la red en vivo o abrir una captura](img/gui-bienvenida.png)
+
 Las capturas se pueden abrir con **Abrir**, con **Ctrl+O** o
 **arrastrándolas a la ventana**. Formatos: **pcapng** (el que guarda
 Wireshark por defecto) y pcap clásico.
@@ -106,7 +111,7 @@ A la izquierda, siempre (se oculta con **Ctrl+B**):
 
 | Zona | Qué muestra |
 |---|---|
-| **Resumen** | Cuántas conversaciones son peligro 🔴, raras 🟠 y normales 🟢, y cuánto tráfico hay |
+| **Resumen** | Cuántas conversaciones son peligro (✕ en rojo), raras (! en naranja) y normales (✓ en verde), y cuánto tráfico hay. El color siempre va con su icono |
 | **Lo que ha pasado** | Las alertas contadas como *historias*: un escaneo de 12 puertos es **una** historia, no 12 líneas. Cada una dice qué pasó y **qué hacer**, con su técnica MITRE ATT&CK enlazada |
 
 Al elegir una conversación, abajo:

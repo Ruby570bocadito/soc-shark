@@ -91,13 +91,23 @@ fn fmt_duration(micros: u64) -> String {
     }
 }
 
+// Iconos en SVG (los mismos que la ventana): centrados en cualquier fuente.
 fn level_badge(level: Level) -> &'static str {
     match level {
-        Level::Peligro => r#"<span class="badge peligro">✕ Peligro</span>"#,
-        Level::Raro => r#"<span class="badge raro">! Raro</span>"#,
-        Level::Ok => r#"<span class="badge ok">✓ Normal</span>"#,
+        Level::Peligro => {
+            r#"<span class="badge peligro"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7.6 7.6 8.8 8.8m0-8.8-8.8 8.8"/></svg>Peligro</span>"#
+        }
+        Level::Raro => {
+            r#"<span class="badge raro"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 6.2v7.6M12 18h0"/></svg>Raro</span>"#
+        }
+        Level::Ok => {
+            r#"<span class="badge ok"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6.5 12.5 3.6 3.6 7.4-8.2"/></svg>Normal</span>"#
+        }
     }
 }
+
+/// Logo de soc-shark (el de la ventana), en línea: el informe va solo.
+const LOGO: &str = r##"<svg class="logo" viewBox="0 0 64 64" aria-hidden="true"><defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#22c3d8"/><stop offset=".55" stop-color="#0e7490"/><stop offset="1" stop-color="#0a3550"/></linearGradient><linearGradient id="lw" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0a5f78"/><stop offset="1" stop-color="#052436"/></linearGradient></defs><rect width="64" height="64" rx="15" fill="url(#lg)"/><path d="M12 43C24 39 33 27 41 11.5c.8-1.5 2.6-1.2 2.6.5C42 25 44 36 52 43v5H12z" fill="#fff"/><path d="M0 46H4.5c6 0 7.75-3.6 13.75-3.6s7.75 3.6 13.75 3.6 7.75-3.6 13.75-3.6 7.75 3.6 13.75 3.6H64v3a15 15 0 0 1-15 15H15A15 15 0 0 1 0 49z" fill="url(#lw)"/><path d="M4.5 46c6 0 7.75-3.6 13.75-3.6s7.75 3.6 13.75 3.6 7.75-3.6 13.75-3.6 7.75 3.6 13.75 3.6" fill="none" stroke="#fff" stroke-width="3.8" stroke-linecap="round"/></svg>"##;
 
 fn is_lan(ip: IpAddr) -> bool {
     match ip {
@@ -163,7 +173,10 @@ table { width: 100%; border-collapse: collapse; background: var(--panel); border
 th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--border); vertical-align: top; overflow-wrap: break-word; }
 th { font-size: 12.5px; color: var(--muted); background: var(--bg); } td.num, th.num { text-align: right; white-space: nowrap; }
 .mono { font-family: Consolas, "Cascadia Mono", ui-monospace, Menlo, monospace; font-size: 13px; }
-.badge { display: inline-block; border-radius: 999px; padding: 0 8px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.badge { display: inline-flex; align-items: center; gap: 3px; border-radius: 999px; padding: 0 8px 0 4px; font-size: 12px; font-weight: 600; white-space: nowrap; line-height: 20px; vertical-align: 1px; }
+.badge svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+.brand { display: flex; align-items: center; gap: 9px; font-weight: 700; font-size: 16px; letter-spacing: -.3px; margin-bottom: 18px; color: var(--text); }
+.brand b { color: var(--accent); font-weight: 800; } .logo { width: 30px; height: 30px; }
 .badge.ok { background: var(--ok-bg); color: var(--ok); } .badge.raro { background: var(--raro-bg); color: var(--raro); } .badge.peligro { background: var(--peligro-bg); color: var(--peligro); }
 a { color: var(--accent); } footer { margin-top: 36px; color: var(--muted); font-size: 13px; border-top: 1px solid var(--border); padding-top: 12px; }
 ul.list { padding-left: 20px; } ul.list li { margin: 4px 0; overflow-wrap: anywhere; }
@@ -224,7 +237,8 @@ pub fn render(r: &ReportInput) -> String {
     );
     let _ = write!(
         h,
-        "<h1>Informe de tu red</h1>\n<p class=\"sub\">Captura <b>{}</b>",
+        "<div class=\"brand\">{LOGO}<span>soc-<b>shark</b></span></div>\n\
+         <h1>Informe de tu red</h1>\n<p class=\"sub\">Captura <b>{}</b>",
         esc(r.name)
     );
     if let (Some(a), Some(b)) = (first, last) {
