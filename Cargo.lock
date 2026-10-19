@@ -569,6 +569,7 @@ dependencies = [
  "clap",
  "crossterm",
  "ratatui",
+ "serde",
  "serde_json",
  "socshark-capture",
  "socshark-core",
@@ -620,6 +621,7 @@ dependencies = [
 name = "socshark-soc"
 version = "0.6.0"
 dependencies = [
+ "serde",
  "serde_json",
  "socshark-core",
  "socshark-flow",

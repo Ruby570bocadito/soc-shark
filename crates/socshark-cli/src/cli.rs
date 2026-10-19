@@ -17,6 +17,7 @@ use std::path::PathBuf;
   socshark capture -r demo.pcap -f \"ip.version == 6\" --workers 4
   socshark follow -r demo.pcap --flow \"93.184.216.34:443\"
   socshark tui -r demo.pcap
+  socshark gui -r demo.pcap                              <- interfaz gráfica
   socshark capture -r demo.pcap --carve-files            <- file carving (T1036)
   socshark capture -r demo.pcap --intel-feodo feodo.txt
   socshark export -r demo.pcap --format ecs -o ecs.jsonl
@@ -136,6 +137,25 @@ pub enum Cmd {
         /// Filtro DSL inicial aplicado al arrancar.
         #[arg(short = 'f', long = "filter")]
         filter: Option<String>,
+    },
+    /// Interfaz gráfica: abre una ventana para explorar la captura con
+    /// explicaciones en lenguaje claro (también abre archivos desde ella).
+    Gui {
+        /// Captura a abrir al arrancar (opcional: se puede abrir desde la ventana).
+        #[arg(short = 'r', long = "read")]
+        read: Option<PathBuf>,
+        /// Puerto local (por defecto 8787 o, si está ocupado, uno libre).
+        #[arg(long)]
+        port: Option<u16>,
+        /// No abrir la ventana: solo mostrar la dirección.
+        #[arg(long = "no-open")]
+        no_open: bool,
+        /// Lista de IPs/CIDR de C2 tipo Feodo (threat intel offline).
+        #[arg(long = "intel-feodo")]
+        intel_feodo: Option<PathBuf>,
+        /// Lista de nodos de salida de Tor (threat intel offline).
+        #[arg(long = "intel-tor")]
+        intel_tor: Option<PathBuf>,
     },
     /// Exporta los flujos enriquecidos a un SIEM (Fase 4).
     Export {

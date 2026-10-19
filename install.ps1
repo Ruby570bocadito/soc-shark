@@ -218,7 +218,8 @@
     Write-Host ' soc-shark instalado. Ejemplos:' -ForegroundColor Cyan
     Write-Host '   socshark capture -r captura.pcap --json -' -ForegroundColor White
     Write-Host '   socshark capture -r captura.pcap -f "flow.risk >= 30"' -ForegroundColor White
-    Write-Host '   socshark tui -r captura.pcap          <- interfaz TUI' -ForegroundColor White
+    Write-Host '   socshark gui -r captura.pcap          <- interfaz grafica (ventana)' -ForegroundColor White
+    Write-Host '   socshark tui -r captura.pcap          <- interfaz en la consola' -ForegroundColor White
     Write-Host '   socshark follow -r captura.pcap --flow 1.2.3.4:443  <- seguir stream TCP' -ForegroundColor White
     Write-Host '   socshark export -r captura.pcap -F ecs -o ecs.jsonl <- export a SIEM' -ForegroundColor White
     Write-Host '   socshark dev fuzz --iterations 50000  <- fuzzing determinista' -ForegroundColor White

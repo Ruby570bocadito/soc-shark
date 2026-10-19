@@ -116,6 +116,26 @@ acotadas:
 | Negación de servicio por explosión de flujos (river of SYNs) | `max_flows` + expulsión LRU + contadores acotados | F1 |
 | Deserialización hostil (JSONL de terceros) | `serde` sin `deserialize_any` polimórfico; en F4 el import SIEM valida con esquema estricto | F4 |
 
+### GUI local: superficie adicional
+
+`socshark gui` abre un servidor HTTP en `127.0.0.1` (ADR-013). Lo que podría
+atacarlo es una web maliciosa abierta en el mismo navegador o un dato
+hostil de la propia captura:
+
+- **CSRF / lectura desde otra web**: toda la API exige un token aleatorio
+  de sesión que solo conoce la página servida; al ser una cabecera propia,
+  el navegador exige un preflight CORS que el servidor nunca aprueba.
+- **DNS rebinding**: se rechaza cualquier petición cuyo `Host` no sea
+  exactamente `127.0.0.1:puerto`, `localhost:puerto` o `[::1]:puerto`,
+  incluida la página (que contiene el token).
+- **Inyección desde la captura** (dominios, rutas, nombres de archivo): el
+  frontend nunca usa `innerHTML` con datos y la CSP (`default-src 'none'`,
+  solo scripts y estilos propios) impide ejecutar o cargar nada externo.
+  Hay prueba de extremo a extremo con un nombre DNS
+  `<img src=x onerror=alert(1)>`.
+- **Agotamiento**: cabeceras 16 KiB, cuerpo 512 MiB, lecturas con timeout
+  de 30 s y tramas en memoria acotadas a 256 MiB.
+
 ## El descifrado TLS y la ética
 
 El módulo de uprobes a `SSL_read/SSL_write` (Fase 3) es la característica más

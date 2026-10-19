@@ -316,3 +316,36 @@ no-UTC) a cambio de cero dependencias; los timestamps de soc-shark son
 siempre UTC. Si TheHive exigiera cliente HTTP (ADR-003 lo prohíbe hoy), se
 revaluará en un ADR específico: por ahora el camino es SIEM → TheHive con
 sus integraciones nativas.
+
+## ADR-013 — GUI como página local servida por el binario (sin dependencias nuevas)
+
+**Fecha:** 2026-10-19 · **Estado:** aceptada
+
+**Contexto.** El objetivo del proyecto es que *cualquier persona* entienda
+su red, no solo quien domina Wireshark: hace falta una interfaz gráfica, y
+el roadmap preveía Tauri + WebGL. Tauri arrastra cientos de crates y, en
+Windows, requisitos de compilación adicionales; la regla de dependencias
+congeladas (ADR-003) sigue vigente y la mayoría de usuarios están en
+Windows, donde una GUI que no compila es peor que ninguna.
+
+**Decisión.** `socshark gui` sirve una página web local desde el propio
+binario y la abre en una ventana de aplicación (Edge/Chrome con `--app`, o
+el navegador por defecto):
+
+- Servidor HTTP/1.1 mínimo propio (`socshark-cli::gui::http`, std), solo en
+  `127.0.0.1`, con comprobación de `Host`, token de sesión en cada llamada a
+  la API, CSP estricta y límites de tamaño y tiempo.
+- Frontend sin frameworks ni CDN (`assets/gui/`: HTML, CSS y JS
+  incrustados con `include_str!`); todo dato de la captura se pinta como
+  texto, nunca con `innerHTML`.
+- El lenguaje claro (semáforo, frases, «qué hacer», historias agrupadas)
+  vive en el motor (`socshark-soc::explain`), no en la interfaz.
+- Solo se añade `serde` (ya en el conjunto congelado) a `socshark-soc` y
+  `socshark-cli`.
+
+**Consecuencias.** GUI en Windows, macOS y Linux hoy, sin dependencias
+nuevas y probada en un navegador real. La ventana es una página: no hay
+icono propio en la barra de tareas ni instalador. El frontend está aislado
+detrás de una API JSON pequeña, así que empaquetarlo en Tauri más adelante
+no exige reescribirlo; esa decisión se tomará en su propio ADR cuando el
+producto lo justifique.

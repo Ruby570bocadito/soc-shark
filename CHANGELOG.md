@@ -5,7 +5,32 @@ y [SemVer](https://semver.org/lang/es/).
 
 ## [Sin publicar]
 
+### Añadido
+
+- **GUI** (`socshark gui [-r captura.pcap]`, ADR-013, [docs/gui.md](docs/gui.md)):
+  ventana estilo Wireshark pensada para que cualquier persona entienda su
+  red. Historias (alertas agrupadas: un escaneo es una historia) con «qué
+  hacer» y enlace a MITRE ATT&CK; conversaciones en lenguaje claro con
+  semáforo 🟢🟠🔴 (modo Simple) o en columnas técnicas (modo Experto);
+  vista de paquetes con una frase por paquete, capas explicadas campo a
+  campo y bytes en hexadecimal resaltados por capa; filtro DSL con error
+  señalado en su posición; glosario al pasar el ratón; abrir o arrastrar
+  capturas; tema claro/oscuro. Página local servida por el propio binario
+  (HTTP propio solo en `127.0.0.1`, token de sesión, comprobación de
+  `Host`, CSP estricta): sin dependencias nuevas, funciona en Windows,
+  macOS y Linux. En Windows se abre como ventana de aplicación con Edge o
+  Chrome.
+- `socshark-soc::explain`: traductor a lenguaje humano reutilizable
+  (semáforo, frases, explicación y «qué hacer» por alerta, historias
+  agrupadas, nombres de servicios por puerto/transporte y de resolutores
+  DNS conocidos).
+
 ### Corregido
+
+- El DSL reportaba `posición 18446744073709551615` cuando la expresión
+  terminaba antes de tiempo; ahora indica el final de la entrada.
+- `socshark capture -f` valida el filtro **antes** de leer la captura (un
+  error de sintaxis ya no espera a procesar un archivo de varios GB).
 
 - **Mini-IDS: la regla de escaneo no detectaba escaneos de puertos reales.**
   Contaba SYNs por (origen, destino, *mismo* puerto) y descartaba cualquier

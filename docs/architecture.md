@@ -102,10 +102,11 @@ imposible si solo mirara un paquete.
   después para alto rendimiento; el trait `CaptureSource` abstrae ambas.
 - **eBPF: aya** en Fase 3 (Rust puro, sin BCC ni clang en el host del
   usuario). Diseño en [ebpf-design.md](ebpf-design.md).
-- **Interfaz: CLI hoy; TUI (Ratatui) en Fase 2; GUI (Tauri + WebGL) en
-  Fase 4.** El modelo de datos está serializado en JSONL precisamente para
-  desacoplar la interfaz del núcleo: la TUI y la GUI consumirán los mismos
-  `EnrichedFlow` que hoy imprime la tabla.
+- **Interfaz: CLI, TUI (Ratatui) y GUI.** La GUI (ADR-013) es una página
+  local servida por el propio binario; el lenguaje claro que muestra lo
+  produce el motor (`socshark-soc::explain`). El modelo de datos está
+  serializado precisamente para desacoplar la interfaz del núcleo: la TUI y
+  la GUI consumen los mismos `EnrichedFlow` que imprime la tabla.
 
 ## Evolución prevista del pipeline
 

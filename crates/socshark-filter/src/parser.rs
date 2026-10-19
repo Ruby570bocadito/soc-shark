@@ -25,7 +25,11 @@ pub fn parse(input: &str) -> Result<Expr, FilterError> {
         pos: e.pos,
         message: e.message,
     })?;
-    let mut p = Parser { toks, pos: 0 };
+    let mut p = Parser {
+        toks,
+        pos: 0,
+        end: input.len(),
+    };
     let expr = p.parse_or()?;
     if let Some((pos, tok)) = p.peek() {
         return Err(FilterError {
@@ -45,6 +49,8 @@ enum Prim {
 struct Parser {
     toks: Vec<(usize, Tok)>,
     pos: usize,
+    /// Longitud de la entrada: posición que se reporta al faltar tokens.
+    end: usize,
 }
 
 impl Parser {
@@ -71,8 +77,8 @@ impl Parser {
 
     fn err_eof(&self) -> FilterError {
         FilterError {
-            pos: usize::MAX,
-            message: "fin de la expresión inesperado".into(),
+            pos: self.end,
+            message: "la expresión termina antes de tiempo".into(),
         }
     }
 
@@ -102,7 +108,7 @@ impl Parser {
             let e = self.parse_or()?;
             if !self.eat(&Tok::RParen) {
                 return Err(FilterError {
-                    pos: self.peek().map(|(p, _)| p).unwrap_or(usize::MAX),
+                    pos: self.peek().map(|(p, _)| p).unwrap_or(self.end),
                     message: "se esperaba ')'".into(),
                 });
             }
