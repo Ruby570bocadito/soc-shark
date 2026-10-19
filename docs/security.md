@@ -92,12 +92,22 @@ sirven de seeds de alta calidad (ya integradas en el fuzzer determinista).
 El backend en vivo (ADR-009) introduce dos superficies propias, ambas
 acotadas:
 
-- **FFI libpcap vía dlopen.** Solo se cargan sonames estándar de libpcap y
-  únicamente se resuelven símbolos de la API estable, con firmas auditadas
-  contra `pcap/pcap.h`. Si la biblioteca falta o está rota, la apertura
-  falla con error controlado; no hay rutas de pánico asociadas al FFI. El
-  handle se usa desde un único hilo y `Drop` libera en orden garantizado
-  (`pcap_freecode` → `pcap_close` → `dlclose`).
+- **FFI libpcap vía dlopen.** Solo se cargan sonames estándar de libpcap
+  (en Windows, el `wpcap.dll` de Npcap: primero la ruta absoluta
+  `%SystemRoot%\System32\Npcap\wpcap.dll`, para no cargar una DLL
+  plantada en el directorio de trabajo) y únicamente se resuelven símbolos
+  de la API estable, con firmas auditadas contra `pcap/pcap.h` (y el
+  layout de Windows: `timeval` de 32 bits, `pcap_stat` ampliado). Si la
+  biblioteca falta o está rota, la apertura falla con error controlado; no
+  hay rutas de pánico asociadas al FFI. El handle se usa desde un único
+  hilo y `Drop` libera en orden garantizado (`pcap_freecode` → `pcap_close`
+  → `dlclose`). La única llamada desde otro hilo es `pcap_breakloop`
+  (diseñada para ello), protegida por un cerrojo que `Drop` toma antes de
+  cerrar: nunca actúa sobre un handle liberado.
+- **Lista de interfaces.** Direcciones y estado se leen de `pcap_addr`/
+  `sockaddr` solo para las familias IPv4/IPv6 (desplazamientos fijos por
+  plataforma, incluido el `sa_len` de BSD/macOS); cualquier otra familia se
+  ignora.
 - **Privilegios de captura.** Solo el backend de captura necesita
   CAP_NET_RAW (o root, o `setcap cap_net_raw+ep`); el resto del pipeline
   corre sin privilegios y en Fase 3 se separará en proceso propio
@@ -132,7 +142,14 @@ hostil de la propia captura:
   frontend nunca usa `innerHTML` con datos y la CSP (`default-src 'none'`,
   solo scripts y estilos propios) impide ejecutar o cargar nada externo.
   Hay prueba de extremo a extremo con un nombre DNS
-  `<img src=x onerror=alert(1)>`.
+  `<img src=x onerror=alert(1)>` que recorre todas las vistas (lista de
+  paquetes, contenido, estadísticas, menús). La CSP tampoco admite
+  `style="…"`: posiciones y anchos se fijan por CSSOM.
+- **Captura en vivo desde la ventana**: `POST /api/live/start` exige el
+  token como el resto de la API (una web ajena no puede iniciarla). Solo
+  escucha; no inyecta tráfico. El tráfico de la propia ventana se excluye
+  con BPF. Memoria acotada: 500.000 paquetes / 256 MiB y 20.000
+  conversaciones terminadas; lo más antiguo se descarta.
 - **Agotamiento**: cabeceras 16 KiB, cuerpo 512 MiB, lecturas con timeout
   de 30 s y tramas en memoria acotadas a 256 MiB.
 

@@ -10,84 +10,132 @@
 <script src="/app.js" defer></script>
 </head>
 <body>
-<header class="topbar">
+<svg class="sprite" aria-hidden="true">
+  <symbol id="i-open" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v1H7.5a2 2 0 0 0-1.9 1.4L3 19z"/><path d="M5.6 11.4A2 2 0 0 1 7.5 10H22l-2.6 8.6A2 2 0 0 1 17.5 20H3z"/></symbol>
+  <symbol id="i-live" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.5"/><path d="M5.6 5.6a9 9 0 0 0 0 12.8M18.4 5.6a9 9 0 0 1 0 12.8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></symbol>
+  <symbol id="i-save" viewBox="0 0 24 24"><path d="M12 3v11m0 0-4.5-4.5M12 14l4.5-4.5M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-side" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M9 4v16" stroke="currentColor" stroke-width="2"/></symbol>
+  <symbol id="i-theme" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 3.5a8.5 8.5 0 0 1 0 17z"/></symbol>
+</svg>
+
+<header class="toolbar">
   <div class="brand" aria-label="soc-shark">
     <svg class="logo" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8"/><path d="M6 21c4-1 7-6 9-13 2 6 5 10 11 13-7-1-13 0-20 0z"/></svg>
     <span>soc-shark</span>
   </div>
-  <button id="open-btn" class="btn primary" type="button">Abrir captura…</button>
+  <div class="tb-group" role="group" aria-label="Captura">
+    <button id="open-btn" class="tb-btn" type="button" title="Abrir una captura guardada (Ctrl+O)"><svg><use href="#i-open"/></svg><span>Abrir</span></button>
+    <button id="live-btn" class="tb-btn" type="button" title="Ver la red en tiempo real (Ctrl+E)"><svg class="rec"><use href="#i-live"/></svg><span>En vivo</span></button>
+    <button id="stop-btn" class="tb-btn stop" type="button" title="Detener la captura en vivo (Ctrl+E)" hidden><svg><use href="#i-stop"/></svg><span>Detener</span></button>
+    <button id="save-btn" class="tb-btn" type="button" title="Guardar lo capturado como .pcap, para Wireshark o para más tarde (Ctrl+S)" disabled><svg><use href="#i-save"/></svg><span>Guardar</span></button>
+  </div>
   <input id="file-input" type="file" accept=".pcap,.cap,.dmp,.pcapng" hidden>
-  <div id="capture-info" class="capture-info" aria-live="polite"></div>
+  <nav class="views" role="tablist" aria-label="Vista">
+    <button type="button" role="tab" data-view="flows" aria-selected="true" title="Quién habla con quién (1)">Conversaciones</button>
+    <button type="button" role="tab" data-view="packets" aria-selected="false" title="Todos los paquetes, uno a uno (2)">Paquetes</button>
+    <button type="button" role="tab" data-view="stats" aria-selected="false" title="Protocolos, equipos y actividad (3)">Estadísticas</button>
+  </nav>
   <div class="spacer"></div>
   <div class="segmented" role="group" aria-label="Nivel de detalle">
     <button type="button" data-mode="simple" aria-pressed="true" title="Frases en lenguaje claro">Simple</button>
     <button type="button" data-mode="experto" aria-pressed="false" title="Columnas técnicas como en Wireshark">Experto</button>
   </div>
-  <button id="theme-btn" class="btn icon" type="button" title="Cambiar entre tema claro y oscuro" aria-label="Cambiar tema"><svg class="icon-theme" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 3.5a8.5 8.5 0 0 1 0 17z"/></svg></button>
-  <button id="help-btn" class="btn icon" type="button" title="Ayuda y glosario (F1)" aria-label="Ayuda">?</button>
+  <button id="side-btn" class="tb-icon" type="button" title="Mostrar u ocultar el resumen (Ctrl+B)" aria-label="Panel de resumen" aria-pressed="true"><svg><use href="#i-side"/></svg></button>
+  <button id="theme-btn" class="tb-icon" type="button" title="Cambiar entre tema claro y oscuro" aria-label="Cambiar tema"><svg><use href="#i-theme"/></svg></button>
+  <button id="help-btn" class="tb-icon" type="button" title="Ayuda y glosario (F1)" aria-label="Ayuda">?</button>
 </header>
 
 <section class="filterbar" aria-label="Filtros">
   <div class="chips" role="group" aria-label="Qué mostrar">
-    <button type="button" class="chip" data-view="todo" aria-pressed="true">Todo</button>
-    <button type="button" class="chip" data-view="importante" aria-pressed="false">Solo lo importante</button>
-    <label class="chip check"><input id="noise-toggle" type="checkbox"> Mostrar tráfico de fondo</label>
+    <button type="button" class="chip" data-show="todo" aria-pressed="true">Todo</button>
+    <button type="button" class="chip" data-show="importante" aria-pressed="false">Solo lo importante</button>
+    <label class="chip check" title="DNS, anuncios de la red local, hora… lo que los equipos hacen solos"><input id="noise-toggle" type="checkbox"> Tráfico de fondo</label>
   </div>
   <form id="filter-form" class="filter-form" autocomplete="off">
-    <input id="filter-input" type="search" spellcheck="false" placeholder="Filtro avanzado (pulsa /), p. ej.  tcp.port == 443  ·  flow.risk >= 30  ·  dns.qname contains &quot;google&quot;" aria-label="Filtro avanzado" aria-describedby="filter-error">
-    <button class="btn" type="submit">Filtrar</button>
-    <button id="filter-clear" class="btn ghost" type="button" title="Quitar el filtro">✕</button>
+    <input id="filter-input" type="search" spellcheck="false" list="filter-history" placeholder="Filtro (pulsa /), p. ej.  ip.addr == 192.168.1.30  ·  tcp.port == 443  ·  flow.risk >= 30" aria-label="Filtro" aria-describedby="filter-error">
+    <datalist id="filter-history"></datalist>
+    <button class="btn" type="submit">Aplicar</button>
+    <button id="filter-clear" class="btn ghost" type="button" title="Quitar el filtro" aria-label="Quitar el filtro">✕</button>
   </form>
-  <div id="filter-error" class="filter-error" role="alert"></div>
   <div id="story-chip" class="story-chip" hidden></div>
+  <div id="filter-error" class="filter-error" role="alert"></div>
 </section>
 
-<main class="layout">
-  <aside class="sidebar" aria-label="Resumen">
+<main id="workspace" class="workspace">
+  <aside id="sidebar" class="sidebar" aria-label="Resumen">
     <div id="overview" class="overview"></div>
     <h2 class="side-title">Lo que ha pasado</h2>
     <ol id="stories" class="stories"></ol>
   </aside>
+  <div class="splitter v" data-split="side" role="separator" aria-orientation="vertical" tabindex="0" aria-label="Ancho del resumen (flechas para ajustar)"></div>
 
-  <section class="flows-pane" aria-label="Conversaciones">
-    <div class="pane-head">
-      <h2>Conversaciones <span id="flows-count" class="count"></span></h2>
-      <label class="sort">Ordenar
-        <select id="sort-select">
-          <option value="time">por hora</option>
-          <option value="level">por gravedad</option>
-          <option value="bytes">por tamaño</option>
-        </select>
-      </label>
-    </div>
-    <div class="table-wrap" id="table-wrap">
-      <table id="flows-table" class="flows">
-        <thead id="flows-head"></thead>
-        <tbody id="flows-body"></tbody>
-      </table>
-      <div id="flows-empty" class="empty-msg" hidden></div>
-    </div>
-  </section>
+  <div class="content">
+    <section id="view-flows" class="view split-view" data-split-var="--flows-top" aria-label="Conversaciones">
+      <div class="pane">
+        <div class="pane-head">
+          <h2>Conversaciones <span id="flows-count" class="count"></span></h2>
+          <span class="pane-hint">Clic derecho en una fila para filtrar</span>
+        </div>
+        <div id="table-wrap" class="table-wrap">
+          <table id="flows-table" class="grid flows">
+            <thead id="flows-head"></thead>
+            <tbody id="flows-body"></tbody>
+          </table>
+          <div id="flows-empty" class="empty-msg" hidden></div>
+        </div>
+      </div>
+      <div class="splitter h" data-split="flows" role="separator" aria-orientation="horizontal" tabindex="0" aria-label="Alto de la lista (flechas para ajustar)"></div>
+      <div class="pane">
+        <div class="tabs" role="tablist" aria-label="Detalle de la conversación">
+          <button type="button" role="tab" data-tab="explain" aria-selected="true">Explicación</button>
+          <button type="button" role="tab" data-tab="packets" aria-selected="false" id="tab-packets">Paquetes</button>
+          <button type="button" role="tab" data-tab="stream" aria-selected="false" title="Lo que se dijeron, tal cual (Seguir flujo en Wireshark)">Contenido</button>
+          <button type="button" role="tab" data-tab="tech" aria-selected="false">Técnico</button>
+        </div>
+        <div id="detail" class="detail"></div>
+      </div>
+    </section>
 
-  <section class="detail-pane" aria-label="Detalle">
-    <div class="tabs" role="tablist">
-      <button type="button" role="tab" id="tab-explain" aria-selected="true" data-tab="explain">Explicación</button>
-      <button type="button" role="tab" id="tab-packets" aria-selected="false" data-tab="packets">Paquetes</button>
-      <button type="button" role="tab" id="tab-tech" aria-selected="false" data-tab="tech">Técnico</button>
-    </div>
-    <div id="detail" class="detail">
-      <p class="placeholder">Elige una conversación de la lista para ver qué pasó.</p>
-    </div>
-  </section>
+    <section id="view-packets" class="view split-view" data-split-var="--packets-top" aria-label="Paquetes" hidden>
+      <div class="pane">
+        <div class="pane-head">
+          <h2>Paquetes <span id="pk-count" class="count"></span></h2>
+          <label id="follow-wrap" class="pane-hint check" hidden><input id="follow-toggle" type="checkbox" checked> Seguir los nuevos</label>
+          <span class="pane-hint">Doble clic: ir a su conversación</span>
+        </div>
+        <div class="vlist-head grid-row" aria-hidden="true">
+          <span>N.º</span><span>Tiempo</span><span>Origen</span><span>Destino</span><span>Protocolo</span><span class="num">Tamaño</span><span>Qué hace</span>
+        </div>
+        <div id="vlist" class="vlist" tabindex="0" role="listbox" aria-label="Lista de paquetes">
+          <div id="vlist-sizer" class="vlist-sizer"></div>
+        </div>
+        <div id="pk-empty" class="empty-msg" hidden></div>
+      </div>
+      <div class="splitter h" data-split="packets" role="separator" aria-orientation="horizontal" tabindex="0" aria-label="Alto de la lista (flechas para ajustar)"></div>
+      <div class="pane">
+        <div id="pk-detail" class="detail pk-detail"><p class="placeholder">Elige un paquete para ver sus capas y sus bytes.</p></div>
+      </div>
+    </section>
+
+    <section id="view-stats" class="view" aria-label="Estadísticas" hidden>
+      <div id="stats" class="stats"></div>
+    </section>
+  </div>
 </main>
+
+<footer id="statusbar" class="statusbar" aria-live="polite"></footer>
 
 <div id="welcome" class="welcome" hidden>
   <div class="welcome-card">
     <svg class="logo big" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8"/><path d="M6 21c4-1 7-6 9-13 2 6 5 10 11 13-7-1-13 0-20 0z"/></svg>
     <h1>Entiende lo que pasa en tu red</h1>
-    <p>Abre una captura de tráfico y soc-shark te la explica en lenguaje claro: quién habla con quién, qué es normal y qué deberías revisar.</p>
-    <button id="welcome-open" class="btn primary big" type="button">Abrir captura…</button>
-    <p class="hint">También puedes arrastrar el archivo a esta ventana.</p>
+    <p>Mira tu red en tiempo real o abre una captura guardada: soc-shark te la explica en lenguaje claro. Quién habla con quién, qué es normal y qué deberías revisar.</p>
+    <div class="welcome-actions">
+      <button id="welcome-live" class="btn primary big" type="button">Ver mi red en vivo</button>
+      <button id="welcome-open" class="btn big" type="button">Abrir captura…</button>
+    </div>
+    <p class="hint">También puedes arrastrar un archivo .pcap a esta ventana.</p>
     <details class="howto">
       <summary>¿No tienes ninguna captura?</summary>
       <ul>
@@ -102,22 +150,51 @@
 <div id="busy" class="busy" hidden><div class="busy-card"><div class="spinner" aria-hidden="true"></div><p id="busy-text">Analizando…</p></div></div>
 <div id="drop" class="drop" hidden><div>Suelta aquí tu captura</div></div>
 <div id="tooltip" class="tooltip" role="tooltip" hidden></div>
+<div id="ctx" class="ctx" role="menu" hidden></div>
 
-<dialog id="help" class="help">
-  <form method="dialog" class="help-head"><h2>Ayuda</h2><button class="btn icon" aria-label="Cerrar">✕</button></form>
-  <div class="help-body">
+<dialog id="live-dlg" class="dlg">
+  <form id="live-form" method="dialog">
+    <div class="dlg-head"><h2>Ver la red en vivo</h2><button class="tb-icon" type="button" data-close aria-label="Cerrar">✕</button></div>
+    <div class="dlg-body">
+      <p class="lead-sm">Elige por dónde escuchar. soc-shark solo <b>mira</b>: no envía nada ni cambia tu red.</p>
+      <div id="iface-list" class="iface-list" role="radiogroup" aria-label="Interfaz de red"></div>
+      <label class="field">
+        <span>Filtro de captura <small>(opcional, formato BPF)</small></span>
+        <input id="bpf-input" type="text" spellcheck="false" placeholder="p. ej.  port 53  ·  host 192.168.1.10  ·  not port 22">
+        <small class="muted">Decide qué se <b>guarda</b>. El filtro de arriba solo decide qué se <b>muestra</b>.</small>
+      </label>
+      <p id="live-replace" class="note" hidden>La captura abierta se cerrará. Si la necesitas, guárdala antes.</p>
+      <div id="live-error" class="dlg-error" role="alert" hidden></div>
+    </div>
+    <div class="dlg-foot">
+      <button class="btn" type="button" data-close>Cancelar</button>
+      <button id="live-go" class="btn primary" type="submit">Empezar</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="help" class="dlg help">
+  <form method="dialog" class="dlg-head"><h2>Ayuda</h2><button class="tb-icon" aria-label="Cerrar">✕</button></form>
+  <div class="dlg-body help-body">
     <h3>Cómo se usa</h3>
     <ul>
+      <li><b>En vivo</b> muestra tu red en tiempo real; <b>Abrir</b> carga una captura guardada (.pcap). <b>Guardar</b> la guarda para Wireshark o para más tarde.</li>
       <li><b>Lo que ha pasado</b> (izquierda) resume lo importante. Pulsa <em>Ver conversaciones</em> para ver las que forman cada historia.</li>
-      <li><b>Conversaciones</b>: cada línea es una conversación completa entre dos equipos. 🟢 normal · 🟠 raro · 🔴 peligro.</li>
-      <li><b>Explicación</b>: qué pasó y qué hacer. <b>Paquetes</b>: cada paquete con sus capas y bytes, como en Wireshark, pero explicado.</li>
-      <li>Las palabras <span class="term demo">subrayadas</span> tienen explicación: pasa el ratón por encima.</li>
+      <li><b>Conversaciones</b>: cada fila es una conversación completa entre dos equipos. <span class="dot ok">✓</span> normal · <span class="dot raro">!</span> raro · <span class="dot peligro">✕</span> peligro.</li>
+      <li>Abajo, <b>Explicación</b> cuenta qué pasó y qué hacer; <b>Paquetes</b>, cada paquete con sus capas y bytes; <b>Contenido</b>, lo que se dijeron tal cual.</li>
+      <li><b>Paquetes</b> (arriba) es la lista completa, paquete a paquete, como en Wireshark. <b>Estadísticas</b>: protocolos, equipos que más hablan y actividad en el tiempo.</li>
+      <li><b>Clic derecho</b> en cualquier fila: filtrar por ese equipo, puerto o conversación, u ocultarlo.</li>
+      <li>Las palabras <span class="term demo">subrayadas</span> tienen explicación: pasa el ratón por encima. Los separadores entre paneles se pueden arrastrar.</li>
     </ul>
     <h3>Atajos</h3>
     <ul class="keys">
-      <li><kbd>/</kbd> escribir un filtro</li>
-      <li><kbd>↑</kbd> <kbd>↓</kbd> moverse por las conversaciones</li>
+      <li><kbd>Ctrl</kbd>+<kbd>E</kbd> empezar/detener en vivo</li>
       <li><kbd>Ctrl</kbd>+<kbd>O</kbd> abrir captura</li>
+      <li><kbd>Ctrl</kbd>+<kbd>S</kbd> guardar .pcap</li>
+      <li><kbd>/</kbd> escribir un filtro</li>
+      <li><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> cambiar de vista</li>
+      <li><kbd>↑</kbd> <kbd>↓</kbd> moverse por la lista</li>
+      <li><kbd>Ctrl</kbd>+<kbd>B</kbd> mostrar/ocultar el resumen</li>
       <li><kbd>F1</kbd> esta ayuda</li>
     </ul>
     <h3>Filtros de ejemplo <small>(pulsa para usarlo)</small></h3>
