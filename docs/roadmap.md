@@ -77,7 +77,7 @@ operación en tiempo real.
       (DNS con `QDCOUNT=0`). cargo-fuzz/libFuzzer con cobertura guiada
       queda como tarea de contribución (ver CONTRIBUTING.md).
 
-Estado 0.6.0: 152 tests verdes (209 tras los arreglos, la GUI, el modo en vivo, el quién es quién y pcapng, ver CHANGELOG). El único criterio de fase pendiente de
+Estado 0.7.0: 210 tests verdes (152 en 0.6.0; el resto, de los arreglos, la GUI, el modo en vivo, el quién es quién y pcapng, ver CHANGELOG). El único criterio de fase pendiente de
 verificación sobre hardware real es el rendimiento en vivo (≥ 200 Mbps
 sostenidos y TUI fluida con 10k flujos): el resto del criterio (Follow
 Stream legible, salida determinista con paralelismo) ya está cubierto por

@@ -8,25 +8,25 @@ use std::path::PathBuf;
 #[command(
     name = "socshark",
     version,
-    about = "soc-shark · analizador de tráfico de red pensado para el SOC",
+    about = "SOC SHARK · tu red, explicada en lenguaje claro (análisis de tráfico para el SOC)",
     after_help = "Ejemplos:
-  socshark dev sample-pcap -o demo.pcap
-  socshark capture -r demo.pcap
-  socshark capture -r demo.pcap --json flujos.jsonl
-  socshark capture -r demo.pcap -f \"flow.risk >= 30\"
-  socshark capture -r demo.pcap -f \"ip.version == 6\" --workers 4
-  socshark follow -r demo.pcap --flow \"93.184.216.34:443\"
-  socshark tui -r demo.pcap
-  socshark gui -r demo.pcap                              <- interfaz gráfica
-  socshark capture -r demo.pcap --carve-files            <- file carving (T1036)
-  socshark capture -r demo.pcap --intel-feodo feodo.txt
-  socshark export -r demo.pcap --format ecs -o ecs.jsonl
-  socshark export -r demo.pcap --format wazuh -o wazuh.jsonl
+  socshark gui                                           <- ventana: red en vivo o abrir una captura
+  socshark gui -r captura.pcapng                         <- ventana con una captura abierta
+  socshark tui -r captura.pcap                           <- interfaz en la terminal
+  socshark report -r captura.pcap -o informe.html        <- informe en lenguaje claro
+  socshark capture -r captura.pcap
+  socshark capture -r captura.pcap --json flujos.jsonl
+  socshark capture -r captura.pcap -f \"flow.risk >= 30\"
+  socshark capture -r captura.pcap --carve-files         <- archivos HTTP disfrazados (T1036)
+  socshark capture -r captura.pcap --intel-feodo feodo.txt
+  socshark follow -r captura.pcap --flow \"93.184.216.34:443\"
+  socshark export -r captura.pcap --format ecs -o ecs.jsonl
   socshark daemon --list
   socshark daemon -i eth0 --bpf \"tcp port 443\" --json flujos.jsonl
+  socshark dev sample-pcap -o demo.pcap                  <- captura de demostración
   socshark dev fuzz --seed 42 --iterations 20000
 
-Documentación completa: docs/index.md"
+Documentación: docs/index.md · README.md"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -36,9 +36,9 @@ pub struct Cli {
 /// Subcomandos de la CLI.
 #[derive(Debug, Subcommand)]
 pub enum Cmd {
-    /// Procesa una captura pcap y muestra flujos enriquecidos.
+    /// Procesa una captura (pcap o pcapng) y muestra flujos enriquecidos.
     Capture {
-        /// Archivo pcap de entrada (formato clásico, micro o nanosegundos).
+        /// Captura de entrada: pcapng o pcap clásico (micro o nanosegundos).
         #[arg(short = 'r', long = "read")]
         read: PathBuf,
         /// Escribe los flujos como JSONL en la ruta indicada (`-` = stdout).
@@ -95,7 +95,7 @@ pub enum Cmd {
         #[arg(long = "intel-tor")]
         intel_tor: Option<PathBuf>,
     },
-    /// Captura en vivo desde una interfaz (libpcap vía dlopen).
+    /// Captura en vivo desde una interfaz (libpcap en Linux/macOS, Npcap en Windows).
     Daemon {
         /// Interfaz de red a monitorizar.
         #[arg(short, long, default_value = "eth0")]
@@ -134,9 +134,9 @@ pub enum Cmd {
         #[arg(long = "intel-tor")]
         intel_tor: Option<PathBuf>,
     },
-    /// Sigue el stream TCP de un flujo reensamblándolo (Fase 2).
+    /// Sigue el stream TCP de un flujo reensamblándolo.
     Follow {
-        /// Archivo pcap de entrada.
+        /// Captura de entrada (pcap o pcapng).
         #[arg(short = 'r', long = "read")]
         read: PathBuf,
         /// Selector del flujo: id completo o subcadena (p. ej. "93.184.216.34:443").
@@ -149,9 +149,9 @@ pub enum Cmd {
         #[arg(long, default_value_t = 8 * 1024)]
         max_bytes: usize,
     },
-    /// TUI (Fase 2): explorador Flow-First de los flujos de una captura.
+    /// Interfaz en la terminal: explorador Flow-First de los flujos de una captura.
     Tui {
-        /// Archivo pcap de entrada.
+        /// Captura de entrada (pcap o pcapng).
         #[arg(short = 'r', long = "read")]
         read: PathBuf,
         /// Filtro DSL inicial aplicado al arrancar.
@@ -177,9 +177,9 @@ pub enum Cmd {
         #[arg(long = "intel-tor")]
         intel_tor: Option<PathBuf>,
     },
-    /// Exporta los flujos enriquecidos a un SIEM (Fase 4).
+    /// Exporta los flujos enriquecidos a un SIEM (Elastic ECS o Wazuh).
     Export {
-        /// Archivo pcap de entrada.
+        /// Captura de entrada (pcap o pcapng).
         #[arg(short = 'r', long = "read")]
         read: PathBuf,
         /// Formato de salida: `ecs` (Elastic Common Schema) o `wazuh`.

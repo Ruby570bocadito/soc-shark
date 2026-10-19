@@ -37,3 +37,24 @@ jobs:
 
       - name: Fuzzing determinista en proceso (parsers + agregador + SOC + DSL)
         run: ./target/release/socshark dev fuzz --iterations 50000 --seed 42 --report-every 0
+
+  installers:
+    name: instaladores (install.sh + install.ps1)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install.sh (shellcheck)
+        run: shellcheck install.sh
+
+      - name: install.ps1 (sintaxis de PowerShell)
+        shell: pwsh
+        run: |
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile("$PWD/install.ps1", [ref]$null, [ref]$errors)
+          if ($errors) { $errors; exit 1 }
+
+      # Sin BOM ni caracteres fuera de ASCII: así funciona con `irm | iex` y
+      # en Windows PowerShell 5.1.
+      - name: install.ps1 (ASCII puro)
+        run: "! LC_ALL=C grep -nP '[^\\x00-\\x7F]' install.ps1"

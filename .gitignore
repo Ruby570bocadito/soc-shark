@@ -1,4 +1,10 @@
 /target
-/demo.pcap
 *.rs.bk
 .DS_Store
+
+# Lo que generan los comandos del README si se ejecutan en la raíz
+/*.pcap
+/*.pcapng
+/*.jsonl
+/informe*.html
+/report*.html

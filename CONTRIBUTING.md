@@ -15,18 +15,20 @@ regla, ver [docs/decisions.md](docs/decisions.md) (ADRs) y
 2. **Flow-First** (ADR-002). Toda característica —UI, filtros, alertas,
    exportación— consume `EnrichedFlow`; los paquetes crudos nunca son
    producto de salida por defecto.
-3. **Dependencias externas mínimas** (ADR-003). Las cinco actuales
-   (`serde`, `serde_json`, `thiserror`, `clap`, `anyhow`) están congeladas;
-   cualquier dependencia nueva exige un ADR que justifique superficie de
-   auditoría, tamaño de build y alternativa propia.
+3. **Dependencias externas mínimas** (ADR-003). Las actuales (`serde`,
+   `serde_json`, `thiserror`, `clap`, `anyhow` y, tras la feature `tui`,
+   `ratatui` + `crossterm`) están congeladas; cualquier dependencia nueva
+   exige un ADR que justifique superficie de auditoría, tamaño de build y
+   alternativa propia.
 4. **DAG estricto de crates.** `socshark-core` no depende de nadie;
    `socshark-testgen` solo de `std`; la CLI lo junta todo. No introduzcas
    ciclos ni dependencias transversales "por comodidad".
 5. **Español en docs, comentarios y mensajes de la CLI; identificadores y
    términos técnicos en inglés** (ADR-007).
 6. **Privilegio mínimo** (ADR-004). Ningún código nuevo puede requerir
-   privilegios de captura salvo el futuro daemon (Fase 2/3), y solo en la
-   frontera de captura.
+   privilegios de captura salvo la captura en vivo (`socshark daemon` y el
+   botón *En vivo* de la GUI), y solo en la frontera de captura
+   (`socshark-capture`).
 
 ## Flujo de trabajo
 
@@ -41,8 +43,10 @@ cargo test --workspace                            # verde obligatorio
 ```
 
 La CI (`.github/workflows/ci.yml`) ejecuta exactamente `fmt --check`,
-`clippy -D warnings`, `test` y `build --release`. Un PR no se revisa si la
-CI falla.
+`clippy -D warnings`, `test`, `build --release` y el fuzzing determinista, y
+revisa los instaladores: `shellcheck install.sh` y que `install.ps1` se
+analice sin errores y siga en **ASCII puro, sin BOM** (con BOM, `irm | iex`
+deja de funcionar). Un PR no se revisa si la CI falla.
 
 ## Añadir un disector nuevo
 
