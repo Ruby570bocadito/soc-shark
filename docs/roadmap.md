@@ -77,7 +77,7 @@ operación en tiempo real.
       (DNS con `QDCOUNT=0`). cargo-fuzz/libFuzzer con cobertura guiada
       queda como tarea de contribución (ver CONTRIBUTING.md).
 
-Estado 0.6.0: 152 tests verdes (186 tras los arreglos, la GUI y el modo en vivo, ver CHANGELOG). El único criterio de fase pendiente de
+Estado 0.6.0: 152 tests verdes (209 tras los arreglos, la GUI, el modo en vivo, el quién es quién y pcapng, ver CHANGELOG). El único criterio de fase pendiente de
 verificación sobre hardware real es el rendimiento en vivo (≥ 200 Mbps
 sostenidos y TUI fluida con 10k flujos): el resto del criterio (Follow
 Stream legible, salida determinista con paralelismo) ya está cubierto por
@@ -153,6 +153,13 @@ ecosistemas (son las únicas piezas que justificarían dependencias nuevas).
       (seguir flujo), estadísticas (protocolos, servicios, equipos,
       actividad en el tiempo), «filtrar por…» con clic derecho, columnas
       ordenables, paneles ajustables y guardar `.pcap`
+- [x] Quién es quién: nombres por DHCP/mDNS/LLMNR/NetBIOS, fabricante por
+      MAC (registro IEEE), router y este ordenador, apodos persistentes y,
+      en vivo, el programa de cada conexión (Linux/Windows) — ADR-014
+- [x] Mapa de la red (tu red · router · Internet), avisos en vivo con
+      notificación del sistema e informe HTML en lenguaje claro
+      (`socshark report`)
+- [x] Lectura de pcapng (secciones, interfaces, resoluciones de tiempo)
 - [ ] GUI empaquetada (Tauri) con tabla de conversaciones virtualizada, SequenceView de
       handshakes y StreamInspector con decodificador CyberChef-style
       (pipelines Base64→XOR→Zlib→JSON)

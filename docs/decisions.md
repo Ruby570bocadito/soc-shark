@@ -363,3 +363,42 @@ número de generación; la ventana consulta `/api/session` cada segundo y
 solo recarga cuando la generación cambia. Se eligió el sondeo frente a
 WebSocket/SSE para no complicar el servidor HTTP mínimo: a 1 Hz y en
 `127.0.0.1` su coste es despreciable.
+
+## ADR-014 — Quién es quién: nombres anunciados, fabricante y programa
+
+**Contexto.** Para que cualquiera entienda su red, «192.168.1.30» no sirve:
+hay que decir «el iPhone de Ana», «la impresora HP» o «el router», y en el
+propio ordenador, qué programa habló. Wireshark resuelve nombres por DNS,
+pero no reconoce equipos ni procesos.
+
+**Decisión.**
+- **Lo que anuncian los equipos**, aprendido paquete a paquete
+  (`socshark-soc::hosts::HostBook`): nombre de host por DHCP (opción 12),
+  sistema por la opción 60, nombres y servicios mDNS (impresora,
+  Chromecast, AirPlay…), LLMNR y registros NetBIOS; prioridad DHCP > mDNS
+  > LLMNR > NetBIOS. Parsers nuevos y acotados en
+  `socshark-dissectors::discovery`. Solo para direcciones de la red local.
+- **Router**: la MAC por la que entra y sale el tráfico de Internet (y la
+  opción 3 de DHCP). **Este ordenador**: las direcciones de sus interfaces
+  (en vivo).
+- **Fabricante**: subconjunto del registro público MA-L del IEEE con ~70
+  marcas reconocibles en casa y oficina (11.762 prefijos), generado por
+  `scripts/gen_oui.py` a `oui_data.rs` e incrustado (sin red al
+  ejecutar). La marca se dice como marca («Apple», no la razón social) y
+  con «a qué suele corresponder» solo cuando es fiable («router de
+  operadora»). Las MAC administradas localmente se marcan como aleatorias.
+- **Programa**: foto de la tabla de sockets del sistema cada 400 ms
+  mientras haya conversaciones de esta máquina sin dueño
+  (`socshark-capture::owners`: `/proc` en Linux; iphlpapi en Windows), sin
+  dependencias nuevas. El programa se atribuye al lado que es esta
+  máquina.
+- **Apodos** de la persona usuaria, persistentes y por MAC.
+- Todo es **informativo**: ninguna regla de alerta lo usa.
+
+**Consecuencias.** Las frases, la GUI, el mapa y el informe hablan con
+nombres. Coste: un análisis por paquete más (barato) y una tabla de ~94 KB
+en el binario. Limitaciones conocidas: un equipo puede mentir sobre su
+nombre; una conexión que se abre y cierra entre dos fotos de la tabla de
+sockets queda sin programa (eBPF lo resolverá, Fase 3); macOS aún no
+atribuye programas; Wine no informa del dueño de los sockets, así que en
+Windows se ha probado la lectura de la tabla pero no la atribución real.

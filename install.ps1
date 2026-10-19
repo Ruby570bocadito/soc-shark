@@ -228,7 +228,8 @@
     Write-Host '   socshark capture -r captura.pcap --json -' -ForegroundColor White
     Write-Host '   socshark capture -r captura.pcap -f "flow.risk >= 30"' -ForegroundColor White
     Write-Host '   socshark gui                          <- ventana: ver la red en vivo o abrir capturas' -ForegroundColor White
-    Write-Host '   socshark gui -r captura.pcap          <- ventana con una captura ya abierta' -ForegroundColor White
+    Write-Host '   socshark gui -r captura.pcapng        <- ventana con una captura ya abierta (pcap o pcapng)' -ForegroundColor White
+    Write-Host '   socshark report -r captura.pcapng     <- informe en lenguaje claro (informe.html)' -ForegroundColor White
     Write-Host '   socshark daemon --list                <- interfaces de red (en vivo, con Npcap)' -ForegroundColor White
     Write-Host '   socshark tui -r captura.pcap          <- interfaz en la consola' -ForegroundColor White
     Write-Host '   socshark follow -r captura.pcap --flow 1.2.3.4:443  <- seguir stream TCP' -ForegroundColor White

@@ -97,6 +97,11 @@
     view: "flows",
     ifaces: [],
     hosts: new Map(), // ip → lo que se sabe del equipo (quién es quién)
+    watch: false, // avisos en vivo
+    seenStories: new Set(),
+    freshStories: new Map(), // clave → cuándo apareció (marca «Nuevo»)
+    unseen: 0,
+    lastNotify: 0,
     polling: null,
     refreshing: false,
     lastStats: 0,
@@ -474,7 +479,13 @@
         h(
           "li",
           { class: `story ${st.level}` },
-          h("h3", null, dot(st.level), h("span", null, st.title)),
+          h(
+            "h3",
+            null,
+            dot(st.level),
+            h("span", null, st.title),
+            Date.now() - (state.freshStories.get(storyKey(st)) || 0) < 120000 ? h("span", { class: "new-badge" }, "Nuevo") : null,
+          ),
           h("p", null, rich(st.story)),
           h("p", { class: "todo" }, rich(st.action)),
           h(
@@ -485,6 +496,64 @@
           ),
         ),
       );
+    }
+  }
+
+  // ------------------------------------------------------------ avisos en vivo
+
+  const storyKey = (st) => `${st.alert_id}|${st.title}`;
+
+  function baseTitle() {
+    return state.session && state.session.loaded ? `${state.session.name} · soc-shark` : "soc-shark";
+  }
+
+  function updateTitle() {
+    document.title = (state.unseen ? `(${state.unseen}) ` : "") + baseTitle();
+  }
+
+  function setWatch(on) {
+    state.watch = on;
+    pref("watch", on ? "1" : "0");
+    $("#watch-btn").setAttribute("aria-pressed", String(on));
+    if (on && "Notification" in window && Notification.permission === "default") {
+      Notification.requestPermission().catch(() => {});
+    }
+  }
+
+  /** Historias nuevas desde la última foto: marca «Nuevo» y, con los avisos
+   *  activados, notificación del sistema + aviso en la ventana. */
+  function checkNewStories(stories) {
+    const fresh = stories.filter((st) => !state.seenStories.has(storyKey(st)));
+    for (const st of fresh) {
+      state.seenStories.add(storyKey(st));
+      state.freshStories.set(storyKey(st), Date.now());
+    }
+    const important = fresh.filter((st) => st.level !== "ok");
+    if (!important.length || !state.watch || !liveRunning()) return;
+    const danger = important.some((st) => st.level === "peligro");
+    const head = important.find((st) => st.level === "peligro") || important[0];
+    const more = important.length > 1 ? ` (y ${important.length - 1} más)` : "";
+    toast(`${danger ? "✕ Peligro" : "! Algo raro"}: ${head.title}${more}`, danger ? "error" : "info");
+    if (!document.hasFocus()) {
+      state.unseen += important.length;
+      updateTitle();
+    }
+    // Notificación del sistema, como mucho una cada 10 s.
+    if ("Notification" in window && Notification.permission === "granted" && Date.now() - state.lastNotify > 10000) {
+      state.lastNotify = Date.now();
+      try {
+        const n = new Notification(danger ? "soc-shark: algo peligroso en tu red" : "soc-shark: algo raro en tu red", {
+          body: `${head.title}${more}. Qué hacer: ${head.action}`.slice(0, 300),
+          tag: "socshark-aviso",
+        });
+        n.onclick = () => {
+          window.focus();
+          showStory(head);
+          n.close();
+        };
+      } catch {
+        /* sin notificaciones del sistema: queda el aviso de la ventana */
+      }
     }
   }
 
@@ -2022,8 +2091,11 @@
     setFilterError(null);
     const [stories, data] = await Promise.all([api("/api/stories"), loadFlows(""), loadHosts()]);
     state.stories = stories;
+    state.seenStories = new Set(stories.map(storyKey));
+    state.freshStories = new Map();
+    state.unseen = 0;
     if (data.truncated) toast(`Hay ${nf.format(data.total)} conversaciones: se muestran las primeras 10.000. Usa un filtro para acotar.`, "info");
-    document.title = `${state.session.name} · soc-shark`;
+    updateTitle();
     renderOverview();
     renderStories();
     renderStoryChip();
@@ -2056,6 +2128,7 @@
       const [stories] = await Promise.all([api("/api/stories"), loadFlows(state.filter), loadHosts()]);
       state.session = ses;
       state.stories = stories;
+      checkNewStories(stories);
       if (state.storyFilter) {
         const again = stories.find((st) => st.title === state.storyFilter.title);
         state.storyFilter.idx = new Set(again ? again.flows : []);
@@ -2190,6 +2263,7 @@
     $("#live-go").disabled = true;
     $("#live-replace").hidden = !(state.session && state.session.loaded && !liveRunning());
     $("#bpf-input").value = pref("bpf") || "";
+    $("#live-watch").checked = state.watch;
     list.append(h("p", { class: "muted" }, "Buscando interfaces…"));
     if (!dlg.open) dlg.showModal();
     let ifaces;
@@ -2270,6 +2344,7 @@
     }
     pref("iface", iface);
     pref("bpf", bpf);
+    setWatch($("#live-watch").checked);
     const chosen = state.ifaces.find((x) => x.name === iface);
     if (chosen) pref("iface-desc-" + iface, ifaceTitle(chosen));
     $("#live-dlg").close();
@@ -2330,26 +2405,40 @@
 
   // ------------------------------------------------------------ guardar
 
-  async function save() {
-    if (!state.session || !state.session.loaded || !state.session.packets) return;
+  /** Descarga un archivo de la API (con el token) a la carpeta de descargas. */
+  async function download(path, fallback) {
     let res;
     try {
-      res = await fetch("/api/save.pcap", { headers: { "X-Socshark-Token": TOKEN } });
+      res = await fetch(path, { headers: { "X-Socshark-Token": TOKEN } });
       if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || `Error ${res.status}`);
     } catch (e) {
-      toast(`No se pudo guardar: ${e.message}`);
-      return;
+      toast(`No se pudo descargar: ${e.message}`);
+      return null;
     }
     const blob = await res.blob();
     const m = /filename="([^"]+)"/.exec(res.headers.get("Content-Disposition") || "");
-    const name = m ? m[1] : "captura.pcap";
+    const name = m ? m[1] : fallback;
     const url = URL.createObjectURL(blob);
     const a = h("a", { href: url, download: name, hidden: true });
     document.body.append(a);
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 30000);
-    toast(`Guardado «${name}» (${fmtBytes(blob.size)}) en tu carpeta de descargas. Se abre también con Wireshark.`, "info");
+    return { name, size: blob.size };
+  }
+
+  async function save() {
+    if (!state.session || !state.session.loaded || !state.session.packets) return;
+    const got = await download("/api/save.pcap", "captura.pcap");
+    if (got) toast(`Guardado «${got.name}» (${fmtBytes(got.size)}) en tu carpeta de descargas. Se abre también con Wireshark.`, "info");
+  }
+
+  async function report() {
+    if (!state.session || !state.session.loaded) return;
+    // Minutos respecto a UTC, para poner las horas como en tu reloj.
+    const tz = -new Date().getTimezoneOffset();
+    const got = await download(`/api/report.html?tz=${tz}`, "informe.html");
+    if (got) toast(`Informe «${got.name}» guardado en tu carpeta de descargas: ábrelo con doble clic, imprímelo o envíalo.`, "info");
   }
 
   // ------------------------------------------------------------ barra de herramientas y de estado
@@ -2360,6 +2449,7 @@
     $("#stop-btn").hidden = !running;
     const ses = state.session;
     $("#save-btn").disabled = !(ses && ses.loaded && ses.packets > 0);
+    $("#report-btn").disabled = !(ses && ses.loaded);
     $("#follow-wrap").hidden = !running;
   }
 
@@ -2573,6 +2663,14 @@
     $("#welcome-live").addEventListener("click", openLiveDialog);
     $("#stop-btn").addEventListener("click", stopLive);
     $("#save-btn").addEventListener("click", save);
+    $("#report-btn").addEventListener("click", report);
+    $("#watch-btn").addEventListener("click", () => setWatch(!state.watch));
+    window.addEventListener("focus", () => {
+      if (state.unseen) {
+        state.unseen = 0;
+        updateTitle();
+      }
+    });
     $("#file-input").addEventListener("change", (e) => openFile(e.target.files[0]));
     $("#live-form").addEventListener("submit", (e) => {
       e.preventDefault();
@@ -2688,6 +2786,9 @@
       } else if (ctrl && e.key.toLowerCase() === "s") {
         e.preventDefault();
         save();
+      } else if (ctrl && e.key.toLowerCase() === "i") {
+        e.preventDefault();
+        report();
       } else if (ctrl && e.key.toLowerCase() === "b") {
         e.preventDefault();
         toggleSidebar();
@@ -2750,6 +2851,8 @@
     state.mode = pref("mode") === "experto" ? "experto" : "simple";
     for (const b of $$(".segmented[aria-label='Nivel de detalle'] button")) b.setAttribute("aria-pressed", String(b.dataset.mode === state.mode));
     state.showNoise = pref("noise") === "1";
+    state.watch = pref("watch") === "1";
+    $("#watch-btn").setAttribute("aria-pressed", String(state.watch));
     $("#noise-toggle").checked = state.showNoise;
     state.combine = pref("combine") === "1";
     state.measure = pref("measure") === "bytes" ? "bytes" : "packets";

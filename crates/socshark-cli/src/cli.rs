@@ -75,6 +75,26 @@ pub enum Cmd {
         #[arg(long = "intel-tor")]
         intel_tor: Option<PathBuf>,
     },
+    /// Informe de la red en lenguaje claro (un HTML para guardar, imprimir
+    /// o compartir): qué pasó, qué hacer, equipos y sitios de Internet.
+    Report {
+        /// Captura de entrada (pcap o pcapng).
+        #[arg(short = 'r', long = "read")]
+        read: PathBuf,
+        /// Archivo HTML de salida.
+        #[arg(short, long, default_value = "informe.html")]
+        out: PathBuf,
+        /// Minutos de diferencia con UTC para las horas (España: 60 en
+        /// invierno, 120 en verano).
+        #[arg(long = "utc-offset", default_value_t = 0, allow_hyphen_values = true)]
+        utc_offset: i32,
+        /// Lista de IPs/CIDR de C2 tipo Feodo (threat intel offline).
+        #[arg(long = "intel-feodo")]
+        intel_feodo: Option<PathBuf>,
+        /// Lista de nodos de salida de Tor (threat intel offline).
+        #[arg(long = "intel-tor")]
+        intel_tor: Option<PathBuf>,
+    },
     /// Captura en vivo desde una interfaz (libpcap vía dlopen).
     Daemon {
         /// Interfaz de red a monitorizar.

@@ -11,4 +11,5 @@ pub mod fuzz;
 pub mod gui;
 pub mod output;
 pub mod pipeline;
+pub mod report;
 pub mod tui;

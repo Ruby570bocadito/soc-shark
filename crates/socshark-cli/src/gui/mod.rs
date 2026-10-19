@@ -354,6 +354,30 @@ impl Server {
             ("GET", ["packets"]) => self.with_loaded(|l| packets_page(l, req)),
             ("GET", ["stats"]) => self.with_loaded(|l| stats_json(l, req)),
             ("GET", ["map"]) => self.with_loaded(|l| map_json(l, req)),
+            ("GET", ["report.html"]) => self.with_loaded(|l| {
+                // La ventana dice su zona horaria (minutos respecto a UTC).
+                let tz = req
+                    .query_param("tz")
+                    .and_then(|v| v.parse::<i32>().ok())
+                    .filter(|m| m.abs() <= 14 * 60)
+                    .unwrap_or(0);
+                let html = crate::report::render(&crate::report::ReportInput {
+                    name: &l.name,
+                    flows: &l.flows,
+                    explanations: &l.explanations,
+                    stories: &l.stories,
+                    hosts: &l.hosts,
+                    packets: l.stats.total_packets,
+                    tz_offset_minutes: tz,
+                    generated_micros: live::now_micros(),
+                });
+                let base = save_name(l).trim_end_matches(".pcap").to_string();
+                Response::download(
+                    &format!("informe-{base}.html"),
+                    "text/html; charset=utf-8",
+                    html.into_bytes(),
+                )
+            }),
             ("GET", ["hosts"]) => self.with_loaded(|l| {
                 Response::json(
                     200,
@@ -423,7 +447,7 @@ impl Server {
             (
                 _,
                 ["session" | "stories" | "flows" | "packets" | "stats" | "map" | "hosts"
-                | "timeline" | "save.pcap" | "live" | "open", ..],
+                | "timeline" | "save.pcap" | "report.html" | "live" | "open", ..],
             ) => Response::error(405, "método no permitido"),
             _ => Response::error(404, "no existe"),
         }

@@ -47,6 +47,24 @@ y [SemVer](https://semver.org/lang/es/).
 - DSL: campo `ip.addr` (alias `host`), cualquiera de los dos extremos, como
   en Wireshark.
 - `socshark daemon --list` muestra la IP y el estado de cada interfaz.
+- **Quién es quién** (ADR-014): cada equipo por su nombre («El equipo
+  «iPhone-de-Ana» (192.168.1.30)…», «la impresora «HP OfficeJet Pro 8020»»,
+  «el router»), aprendido de DHCP, mDNS, LLMNR y NetBIOS; fabricante por la
+  MAC con el registro público del IEEE; MAC aleatorias señaladas; apodos
+  propios persistentes («Ponerle nombre»); en vivo, **qué programa** de
+  este ordenador abrió cada conexión (Linux y Windows). DHCP, NetBIOS y
+  SSDP se cuentan como lo que son. `socshark dev sample-pcap --escenario
+  casa` genera una red doméstica para probarlo.
+- **Abrir pcapng** (el formato por defecto de Wireshark) en la CLI y la
+  GUI, verificado contra pcapng escrito por scapy.
+- **Mapa de la red** (vista 4): tus equipos, el router e Internet con quién
+  habla con quién; lo peligroso en rojo; clic para filtrar.
+- **Avisos en vivo**: aviso en la ventana y notificación del sistema cuando
+  aparece algo peligroso o raro; marca «Nuevo» en las historias.
+- **Informe** en lenguaje claro (botón *Informe*, `Ctrl+I`, y `socshark
+  report -r captura -o informe.html`): HTML de un archivo, sin scripts.
+- API de la GUI: `/api/hosts`, `/api/hosts/nick`, `/api/map`,
+  `/api/report.html`.
 - `socshark-soc::explain`: traductor a lenguaje humano reutilizable
   (semáforo, frases, explicación y «qué hacer» por alerta, historias
   agrupadas, nombres de servicios por puerto/transporte y de resolutores

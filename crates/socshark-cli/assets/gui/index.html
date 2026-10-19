@@ -15,6 +15,8 @@
   <symbol id="i-live" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.5"/><path d="M5.6 5.6a9 9 0 0 0 0 12.8M18.4 5.6a9 9 0 0 1 0 12.8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
   <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></symbol>
   <symbol id="i-save" viewBox="0 0 24 24"><path d="M12 3v11m0 0-4.5-4.5M12 14l4.5-4.5M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-report" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H6.5A1.5 1.5 0 0 0 5 4.5v15A1.5 1.5 0 0 0 6.5 21h11a1.5 1.5 0 0 0 1.5-1.5V8z"/><path d="M14 3v5h5M8.5 13h7M8.5 16.5h5"/></g></symbol>
+  <symbol id="i-bell" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 2h-15z"/><path d="M10 20.5a2 2 0 0 0 4 0"/></g></symbol>
   <symbol id="i-side" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M9 4v16" stroke="currentColor" stroke-width="2"/></symbol>
   <symbol id="m-router" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="12" width="18" height="7" rx="2"/><path d="M7 12 5.5 5M17 12l1.5-7"/></g><circle cx="7.5" cy="15.5" r="1.2" fill="currentColor"/><circle cx="11" cy="15.5" r="1.2" fill="currentColor"/></symbol>
   <symbol id="m-computer" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></g></symbol>
@@ -38,6 +40,8 @@
     <button id="live-btn" class="tb-btn" type="button" title="Ver la red en tiempo real (Ctrl+E)"><svg class="rec"><use href="#i-live"/></svg><span>En vivo</span></button>
     <button id="stop-btn" class="tb-btn stop" type="button" title="Detener la captura en vivo (Ctrl+E)" hidden><svg><use href="#i-stop"/></svg><span>Detener</span></button>
     <button id="save-btn" class="tb-btn" type="button" title="Guardar lo capturado como .pcap, para Wireshark o para más tarde (Ctrl+S)" disabled><svg><use href="#i-save"/></svg><span>Guardar</span></button>
+    <button id="report-btn" class="tb-btn" type="button" title="Informe en lenguaje claro para guardar, imprimir o enviar (Ctrl+I)" disabled><svg><use href="#i-report"/></svg><span>Informe</span></button>
+    <button id="watch-btn" class="tb-btn" type="button" aria-pressed="false" title="Avisarme (también con una notificación del sistema) si aparece algo peligroso o raro mientras capturo en vivo"><svg><use href="#i-bell"/></svg><span>Avisos</span></button>
   </div>
   <input id="file-input" type="file" accept=".pcap,.cap,.dmp,.pcapng" hidden>
   <nav class="views" role="tablist" aria-label="Vista">
@@ -178,6 +182,7 @@
         <input id="bpf-input" type="text" spellcheck="false" placeholder="p. ej.  port 53  ·  host 192.168.1.10  ·  not port 22">
         <small class="muted">Decide qué se <b>guarda</b>. El filtro de arriba solo decide qué se <b>muestra</b>.</small>
       </label>
+      <label class="check-row"><input id="live-watch" type="checkbox"> Avisarme si aparece algo peligroso o raro <small class="muted">(también con una notificación del sistema)</small></label>
       <p id="live-replace" class="note" hidden>La captura abierta se cerrará. Si la necesitas, guárdala antes.</p>
       <div id="live-error" class="dlg-error" role="alert" hidden></div>
     </div>
@@ -220,6 +225,7 @@
       <li>Abajo, <b>Explicación</b> cuenta qué pasó y qué hacer; <b>Paquetes</b>, cada paquete con sus capas y bytes; <b>Contenido</b>, lo que se dijeron tal cual.</li>
       <li><b>Paquetes</b> (arriba) es la lista completa, paquete a paquete, como en Wireshark. <b>Estadísticas</b>: protocolos, equipos que más hablan y actividad en el tiempo. <b>Mapa</b>: un dibujo de tu red, el router e Internet, con quién habla con quién.</li>
       <li><b>Clic derecho</b> en cualquier fila: filtrar por ese equipo, puerto o conversación, u ocultarlo.</li>
+      <li><b>Avisos</b> (la campana): mientras capturas en vivo, te avisa —también con una notificación del sistema— en cuanto aparece algo peligroso o raro. <b>Informe</b>: un resumen en lenguaje claro para guardar, imprimir o mandar a quien te ayuda con la informática.</li>
       <li><b>Quién es quién</b>: los equipos que se presentan solos en la red (móviles, ordenadores, impresoras, teles) aparecen con su nombre y su marca; el router, como «el router». Puedes <b>ponerles nombre</b> («Portátil de Ana») desde su explicación o con clic derecho. En vivo, además, se ve <b>qué programa</b> de tu ordenador hizo cada conexión.</li>
       <li>Las palabras <span class="term demo">subrayadas</span> tienen explicación: pasa el ratón por encima. Los separadores entre paneles se pueden arrastrar.</li>
     </ul>
@@ -228,6 +234,7 @@
       <li><kbd>Ctrl</kbd>+<kbd>E</kbd> empezar/detener en vivo</li>
       <li><kbd>Ctrl</kbd>+<kbd>O</kbd> abrir captura</li>
       <li><kbd>Ctrl</kbd>+<kbd>S</kbd> guardar .pcap</li>
+      <li><kbd>Ctrl</kbd>+<kbd>I</kbd> informe</li>
       <li><kbd>/</kbd> escribir un filtro</li>
       <li><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> <kbd>4</kbd> cambiar de vista</li>
       <li><kbd>↑</kbd> <kbd>↓</kbd> moverse por la lista</li>

@@ -161,6 +161,29 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             },
         }),
 
+        Cmd::Report {
+            read,
+            out,
+            utc_offset,
+            intel_feodo,
+            intel_tor,
+        } => {
+            let cfg = PipelineConfig {
+                file_carving: true,
+                intel_feodo,
+                intel_tor,
+                ..PipelineConfig::default()
+            };
+            let html = socshark_cli::report::from_file(&read, &cfg, utc_offset)?;
+            std::fs::write(&out, html)
+                .map_err(|e| anyhow::anyhow!("no se pudo escribir {}: {e}", out.display()))?;
+            eprintln!(
+                "[+] Informe escrito en {} (ábrelo con el navegador)",
+                out.display()
+            );
+            Ok(())
+        }
+
         Cmd::Export {
             read,
             format,
