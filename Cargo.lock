@@ -624,7 +624,9 @@ dependencies = [
  "serde",
  "serde_json",
  "socshark-core",
+ "socshark-dissectors",
  "socshark-flow",
+ "socshark-testgen",
 ]
 
 [[package]]

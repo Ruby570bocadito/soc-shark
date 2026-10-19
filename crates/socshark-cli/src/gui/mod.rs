@@ -22,6 +22,7 @@
 
 mod http;
 mod live;
+mod names;
 pub mod packets;
 
 use std::collections::{HashMap, HashSet};
@@ -39,12 +40,16 @@ use socshark_capture::{CaptureSource, LiveBreaker, LiveCapture, LiveCaptureConfi
 use socshark_core::config::PipelineConfig;
 use socshark_core::{EnrichedFlow, L7Protocol, Transport};
 use socshark_flow::PipelineStats;
-use socshark_soc::explain::{explain, service_by_port, stories, Explanation, Level, Story};
+use socshark_soc::explain::{
+    explain_with, service_by_port, stories_with, Explanation, Level, Story,
+};
+use socshark_soc::hosts::HostDirectory;
 use socshark_soc::ThreatIntelDb;
 
 use crate::pipeline::run_capture;
 use http::{read_request, write_response, ReadError, Request, Response};
 use live::LiveInfo;
+use names::{clean_nickname, Nicknames};
 use packets::PacketIndex;
 
 const INDEX_HTML: &str = include_str!("../../assets/gui/index.html");
@@ -83,6 +88,8 @@ pub(crate) struct Loaded {
     stats: PipelineStats,
     packets: Arc<RwLock<PacketIndex>>,
     live: Option<LiveInfo>,
+    /// Quién es quién: nombres, fabricante, router, apodos.
+    hosts: HostDirectory,
     /// Número de foto: cambia cada vez que se sustituye la sesión.
     generation: u64,
 }
@@ -94,17 +101,31 @@ impl Loaded {
         stats: PipelineStats,
         packets: Arc<RwLock<PacketIndex>>,
         live: Option<LiveInfo>,
+        hosts: HostDirectory,
     ) -> Self {
         Self {
-            explanations: flows.iter().map(explain).collect(),
-            stories: stories(&flows),
+            explanations: flows.iter().map(|f| explain_with(f, &hosts)).collect(),
+            stories: stories_with(&flows, &hosts),
             name,
             flows,
             stats,
             packets,
             live,
+            hosts,
             generation: 0,
         }
+    }
+
+    /// La misma captura con otros nombres (al poner o quitar un apodo).
+    fn renamed(&self, hosts: HostDirectory) -> Self {
+        Self::new(
+            self.name.clone(),
+            self.flows.clone(),
+            self.stats,
+            Arc::clone(&self.packets),
+            self.live.clone(),
+            hosts,
+        )
     }
 }
 
@@ -127,20 +148,8 @@ pub(crate) struct Server {
     generation: AtomicU64,
     live: Mutex<Option<LiveHandle>>,
     upload_seq: AtomicU64,
-}
-
-/// Analiza una captura de archivo con el pipeline completo (ruido incluido:
-/// la interfaz decide si lo muestra) y prepara su índice de paquetes.
-fn load(path: &Path, name: String, cfg: &PipelineConfig) -> Result<Loaded> {
-    let out = run_capture(path, None, true, cfg)?;
-    let packets = PacketIndex::build(path)?;
-    Ok(Loaded::new(
-        name,
-        out.flows,
-        out.stats,
-        Arc::new(RwLock::new(packets)),
-        None,
-    ))
+    /// Apodos de los equipos (en disco salvo en tests).
+    nicknames: Mutex<Nicknames>,
 }
 
 /// 128 bits impredecibles para quien no ve la página: dos `RandomState`
@@ -205,7 +214,70 @@ impl Server {
             generation: AtomicU64::new(0),
             live: Mutex::new(None),
             upload_seq: AtomicU64::new(0),
+            nicknames: Mutex::new(Nicknames::in_memory()),
         }
+    }
+
+    /// Analiza una captura de archivo con el pipeline completo (ruido
+    /// incluido: la interfaz decide si lo muestra) y prepara su índice de
+    /// paquetes, que de paso aprende quién es quién.
+    fn load(&self, path: &Path, name: String) -> Result<Loaded> {
+        let out = run_capture(path, None, true, &self.cfg)?;
+        let packets = PacketIndex::build(path)?;
+        let hosts = self.directory(&packets, &[]);
+        Ok(Loaded::new(
+            name,
+            out.flows,
+            out.stats,
+            Arc::new(RwLock::new(packets)),
+            None,
+            hosts,
+        ))
+    }
+
+    /// Quién es quién según el índice, con este ordenador y los apodos.
+    pub(crate) fn directory(&self, index: &PacketIndex, this_computer: &[IpAddr]) -> HostDirectory {
+        let mut hosts = index.hosts.directory();
+        hosts.mark_this_computer(this_computer);
+        if let Ok(n) = self.nicknames.lock() {
+            hosts.apply_nicknames(n.map());
+        }
+        hosts
+    }
+
+    /// `POST /api/hosts/nick?key=mac:…|ip:…&name=…` (nombre vacío = quitar).
+    fn set_nickname(&self, req: &Request) -> Response {
+        let Some(key) = req
+            .query_param("key")
+            .and_then(|k| HostDirectory::valid_key(&k))
+        else {
+            return Response::error(400, "equipo no válido");
+        };
+        let nickname = clean_nickname(&req.query_param("name").unwrap_or_default());
+        let saved = match self.nicknames.lock() {
+            Ok(mut n) => n.set(key, nickname),
+            Err(_) => return lock_err(),
+        };
+        if let Err(e) = saved {
+            return Response::error(500, &format!("no se pudo guardar el apodo: {e}"));
+        }
+        // Las frases llevan los nombres: se rehacen (en vivo, la próxima
+        // foto ya los trae igualmente).
+        let renamed = self.with_session_ref(|l| {
+            let mut hosts = l.hosts.clone();
+            if let Ok(n) = self.nicknames.lock() {
+                hosts.apply_nicknames(n.map());
+            }
+            l.renamed(hosts)
+        });
+        if let Some(l) = renamed {
+            self.replace_session(l);
+        }
+        self.with_session(|s| Response::json(200, &session_json(s)))
+    }
+
+    fn with_session_ref<T>(&self, f: impl FnOnce(&Loaded) -> T) -> Option<T> {
+        self.session.read().ok().and_then(|s| s.as_ref().map(f))
     }
 
     /// Sustituye la captura que enseña la ventana (archivo o foto en vivo).
@@ -281,6 +353,13 @@ impl Server {
             }),
             ("GET", ["packets"]) => self.with_loaded(|l| packets_page(l, req)),
             ("GET", ["stats"]) => self.with_loaded(|l| stats_json(l, req)),
+            ("GET", ["hosts"]) => self.with_loaded(|l| {
+                Response::json(
+                    200,
+                    &json!(l.hosts.hosts().iter().map(host_json).collect::<Vec<_>>()),
+                )
+            }),
+            ("POST", ["hosts", "nick"]) => self.set_nickname(req),
             ("GET", ["packets", n]) => self.with_loaded(|l| {
                 let Ok(idx) = l.packets.read() else {
                     return lock_err();
@@ -342,8 +421,8 @@ impl Server {
             ("POST", ["open"]) => self.open_upload(req),
             (
                 _,
-                ["session" | "stories" | "flows" | "packets" | "stats" | "timeline" | "save.pcap"
-                | "live" | "open", ..],
+                ["session" | "stories" | "flows" | "packets" | "stats" | "hosts" | "timeline"
+                | "save.pcap" | "live" | "open", ..],
             ) => Response::error(405, "método no permitido"),
             _ => Response::error(404, "no existe"),
         }
@@ -386,6 +465,13 @@ impl Server {
             Err(e) => return Response::error(400, &e.to_string()),
         };
         let index = Arc::new(RwLock::new(PacketIndex::new(source.link_type(), true)));
+        // Las direcciones de esta máquina: «este ordenador» y, para su
+        // tráfico, qué programa abrió cada conexión.
+        let mut local_addrs: Vec<IpAddr> = socshark_capture::list_ifaces()
+            .map(|l| l.into_iter().flat_map(|i| i.addresses).collect())
+            .unwrap_or_default();
+        local_addrs.sort();
+        local_addrs.dedup();
         let info = LiveInfo {
             iface: iface.clone(),
             bpf,
@@ -394,13 +480,19 @@ impl Server {
             kernel_recv: 0,
             kernel_drop: 0,
             error: None,
+            local_addrs,
         };
+        let hosts = self.directory(
+            &PacketIndex::new(source.link_type(), true),
+            &info.local_addrs,
+        );
         self.replace_session(Loaded::new(
             format!("En vivo · {iface}"),
             Vec::new(),
             PipelineStats::default(),
             Arc::clone(&index),
             Some(info.clone()),
+            hosts,
         ));
         let stop = Arc::new(AtomicBool::new(false));
         let breaker = source.breaker();
@@ -440,7 +532,7 @@ impl Server {
             std::env::temp_dir().join(format!("socshark-gui-{}-{seq}.pcap", std::process::id()));
         let result = std::fs::write(&tmp, &req.body)
             .context("no se pudo guardar el archivo temporal")
-            .and_then(|_| load(&tmp, name, &self.cfg));
+            .and_then(|_| self.load(&tmp, name));
         std::fs::remove_file(&tmp).ok();
         match result {
             Ok(loaded) => {
@@ -530,13 +622,31 @@ fn flows_json(l: &Loaded, filter: Option<String>) -> Response {
         .take(MAX_FLOWS)
         .map(|&i| {
             let f = &l.flows[i];
-            json!({ "idx": i, "proto": proto_name(f), "flow": f, "explain": &l.explanations[i] })
+            let short = |ip| l.hosts.get(ip).and_then(|h| h.short());
+            json!({
+                "idx": i,
+                "proto": proto_name(f),
+                "src_name": short(f.src_ip),
+                "dst_name": short(f.dst_ip),
+                "flow": f,
+                "explain": &l.explanations[i],
+            })
         })
         .collect();
     Response::json(
         200,
         &json!({ "flows": rows, "total": matching.len(), "truncated": matching.len() > MAX_FLOWS }),
     )
+}
+
+/// Un equipo del directorio para la ventana: lo que se sabe de él, su
+/// nombre corto y la clave con la que se le pone apodo.
+fn host_json(h: &socshark_soc::hosts::HostInfo) -> Value {
+    let mut v = serde_json::to_value(h).unwrap_or(Value::Null);
+    v["key"] = json!(h.key());
+    v["short"] = json!(h.short());
+    v["scope"] = json!(ip_scope(&h.ip));
+    v
 }
 
 /// Nombre corto del protocolo de una conversación: el de aplicación si se
@@ -633,6 +743,10 @@ fn stats_json(l: &Loaded, req: &Request) -> Response {
             ),
         ];
         for (ip, peer, p_out, p_in, b_out, b_in, domain) in sides {
+            // 0.0.0.0: un equipo que aún pide dirección; aparece luego con la suya.
+            if ip.is_unspecified() {
+                continue;
+            }
             let ep = endpoints.entry(ip).or_insert_with(|| Endpoint {
                 flows: 0,
                 peers: HashSet::new(),
@@ -696,6 +810,7 @@ fn stats_json(l: &Loaded, req: &Request) -> Response {
                 "ip": ip, "scope": ip_scope(ip), "domain": ep.domain, "flows": ep.flows,
                 "peers": ep.peers.len(), "packets_out": ep.packets_out, "packets_in": ep.packets_in,
                 "bytes_out": ep.bytes_out, "bytes_in": ep.bytes_in, "level": ep.level,
+                "host": l.hosts.get(*ip).map(host_json),
             })).collect::<Vec<_>>(),
             "services_total": services.len(),
             "services": services.iter().take(MAX_STATS_ROWS).map(|((port, tr), s)| {
@@ -866,6 +981,7 @@ pub fn run(opts: GuiOptions) -> Result<()> {
     let listener = bind(opts.port)?;
     let port = listener.local_addr()?.port();
     let mut server = Server::new(port, opts.cfg.clone());
+    server.nicknames = Mutex::new(Nicknames::load());
     if opts.cfg.intel_feodo.is_some() || opts.cfg.intel_tor.is_some() {
         server.intel = Some(
             ThreatIntelDb::from_paths(
@@ -878,7 +994,7 @@ pub fn run(opts: GuiOptions) -> Result<()> {
     let server = Arc::new(server);
     if let Some(path) = &opts.read {
         let name = display_name(&path.to_string_lossy());
-        server.replace_session(load(path, name, &opts.cfg)?);
+        server.replace_session(server.load(path, name)?);
     }
     let url = format!("http://127.0.0.1:{port}/");
     eprintln!("[+] Interfaz lista en {url}  ·  Ctrl+C para cerrar");
@@ -897,20 +1013,104 @@ mod tests {
     use socshark_testgen::{sample_pcap_packets, write_pcap};
     use std::io::{Read, Write};
 
-    fn demo_server() -> (Arc<Server>, PathBuf) {
+    fn server_with(packets: &[(u64, Vec<u8>)], name: &str) -> (Arc<Server>, PathBuf) {
         let path = std::env::temp_dir().join(format!(
-            "socshark-gui-test-{}-{:?}.pcap",
+            "socshark-gui-test-{}-{:?}-{name}",
             std::process::id(),
             std::thread::current().id()
         ));
-        write_pcap(&path, 1, &sample_pcap_packets()).unwrap();
+        write_pcap(&path, 1, packets).unwrap();
         let cfg = PipelineConfig {
             file_carving: true,
             ..PipelineConfig::default()
         };
-        let server = Arc::new(Server::new(8787, cfg.clone()));
-        server.replace_session(load(&path, "demo.pcap".into(), &cfg).unwrap());
+        let server = Arc::new(Server::new(8787, cfg));
+        server.replace_session(server.load(&path, name.into()).unwrap());
         (server, path)
+    }
+
+    fn demo_server() -> (Arc<Server>, PathBuf) {
+        server_with(&sample_pcap_packets(), "demo.pcap")
+    }
+
+    /// Quién es quién de extremo a extremo: directorio, nombres en las
+    /// frases y en las tablas, y apodos que rehacen las frases.
+    #[test]
+    fn quien_es_quien_y_apodos() {
+        let (s, path) = server_with(&socshark_testgen::home_pcap_packets(), "casa.pcap");
+        let t = s.token.clone();
+        let h = "127.0.0.1:8787";
+
+        let (st, hosts) = get(&s, "/api/hosts", Some(&t), h);
+        assert_eq!(st, 200);
+        let find = |ip: &str| {
+            hosts
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|x| x["ip"] == ip)
+                .cloned()
+                .unwrap_or_else(|| panic!("{ip} en {hosts:#}"))
+        };
+        let phone = find("192.168.1.30");
+        assert_eq!(phone["name"], "iPhone-de-Ana");
+        assert_eq!(phone["random_mac"], true);
+        assert!(phone["key"].as_str().unwrap().starts_with("mac:"));
+        assert_eq!(find("192.168.1.1")["role"], "router");
+        assert_eq!(find("192.168.1.40")["vendor"], "HP");
+
+        let (_, flows) = get(&s, "/api/flows", Some(&t), h);
+        let rows = flows["flows"].as_array().unwrap();
+        assert!(rows.iter().any(|r| r["src_name"] == "iPhone-de-Ana"));
+        let headlines = || -> Vec<String> {
+            let (_, flows) = get(&s, "/api/flows", Some(&t), h);
+            flows["flows"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| r["explain"]["headline"].as_str().unwrap().to_string())
+                .collect()
+        };
+        assert!(headlines().iter().any(|x| x.contains("«iPhone-de-Ana»")));
+
+        let (_, stats) = get(&s, "/api/stats", Some(&t), h);
+        let ep = stats["endpoints"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["ip"] == "192.168.1.30")
+            .unwrap();
+        assert_eq!(ep["host"]["short"], "iPhone-de-Ana");
+
+        // Apodo: las frases pasan a usarlo y la sesión cambia de foto.
+        let (_, before) = get(&s, "/api/session", Some(&t), h);
+        let key = phone["key"].as_str().unwrap();
+        let r = call(
+            &s,
+            "POST",
+            &format!("/api/hosts/nick?key={key}&name=M%C3%B3vil%20de%20Ana"),
+            Some(&t),
+        );
+        assert_eq!(r.status, 200, "{}", String::from_utf8_lossy(&r.body));
+        let (_, after) = get(&s, "/api/session", Some(&t), h);
+        assert!(after["generation"].as_u64() > before["generation"].as_u64());
+        assert!(headlines()
+            .iter()
+            .any(|x| x.contains("«Móvil de Ana» (192.168.1.30)")));
+        assert!(!headlines().iter().any(|x| x.contains("iPhone-de-Ana")));
+        // Quitarlo devuelve el nombre anunciado; claves raras, rechazadas.
+        let r = call(
+            &s,
+            "POST",
+            &format!("/api/hosts/nick?key={key}&name="),
+            Some(&t),
+        );
+        assert_eq!(r.status, 200);
+        assert!(headlines().iter().any(|x| x.contains("«iPhone-de-Ana»")));
+        let r = call(&s, "POST", "/api/hosts/nick?key=../../etc&name=x", Some(&t));
+        assert_eq!(r.status, 400);
+        assert_eq!(call(&s, "GET", "/api/hosts/nick", Some(&t)).status, 405);
+        std::fs::remove_file(path).ok();
     }
 
     fn call(server: &Arc<Server>, method: &str, path: &str, token: Option<&str>) -> Response {

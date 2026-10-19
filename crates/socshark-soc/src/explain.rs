@@ -18,6 +18,7 @@ use std::net::IpAddr;
 use serde::Serialize;
 use socshark_core::{EnrichedFlow, L7Protocol, Severity, Transport};
 
+use crate::hosts::HostDirectory;
 use crate::is_failed_connect;
 use crate::summarize::fmt_bytes;
 
@@ -126,6 +127,9 @@ pub fn service_by_port(port: u16, transport: Transport) -> Option<(&'static str,
         5353 => ("mDNS", "anuncios de la red local (mDNS)"),
         5432 => ("PostgreSQL", "la base de datos PostgreSQL"),
         5900 => ("VNC", "escritorio remoto (VNC)"),
+        515 => ("LPD", "el protocolo de impresión LPD"),
+        631 => ("IPP", "el protocolo de impresión IPP"),
+        9100 => ("impresión", "el canal de impresión directa (JetDirect)"),
         6379 => ("Redis", "la base de datos Redis"),
         27017 => ("MongoDB", "la base de datos MongoDB"),
         _ => return None,
@@ -200,9 +204,13 @@ pub fn host_name(ip: IpAddr) -> String {
             false,
         ),
     };
-    if loopback {
+    // x.x.x.255 en una red privada: la difusión de una red /24 (la de casa).
+    let subnet_broadcast = matches!(ip, IpAddr::V4(v4) if v4.is_private() && v4.octets()[3] == 255);
+    if ip.is_unspecified() {
+        "un equipo que aún no tiene dirección".to_string()
+    } else if loopback {
         format!("este mismo equipo ({ip})")
-    } else if broadcast {
+    } else if broadcast || subnet_broadcast {
         "toda la red local (difusión)".to_string()
     } else if multicast {
         format!("la red local (multicast {ip})")
@@ -213,12 +221,89 @@ pub fn host_name(ip: IpAddr) -> String {
     }
 }
 
+/// Nombre amable de un programa: `chrome.exe` → «Chrome».
+pub fn program_label(process: &str) -> String {
+    let base = process.rsplit(['/', '\\']).next().unwrap_or(process);
+    let stem = match base.len().checked_sub(4) {
+        Some(cut) if base.is_char_boundary(cut) && base[cut..].eq_ignore_ascii_case(".exe") => {
+            &base[..cut]
+        }
+        _ => base,
+    };
+    let known = match stem.to_ascii_lowercase().as_str() {
+        "chrome" | "google chrome" => "Chrome",
+        "msedge" => "Microsoft Edge",
+        "firefox" => "Firefox",
+        "safari" => "Safari",
+        "opera" => "Opera",
+        "brave" => "Brave",
+        "spotify" => "Spotify",
+        "discord" => "Discord",
+        "steam" | "steamwebhelper" => "Steam",
+        "teams" | "ms-teams" => "Microsoft Teams",
+        "outlook" | "olk" => "Outlook",
+        "onedrive" => "OneDrive",
+        "dropbox" => "Dropbox",
+        "zoom" => "Zoom",
+        "whatsapp" => "WhatsApp",
+        "telegram" => "Telegram",
+        "code" => "Visual Studio Code",
+        "svchost" => "un servicio de Windows (svchost)",
+        "msmpeng" => "el antivirus de Windows (Defender)",
+        "systemd-resolved" => "el sistema (resolución de nombres)",
+        "node" => "Node.js",
+        "java" | "javaw" => "Java",
+        s if s.starts_with("python") => "Python",
+        _ => return stem.to_string(),
+    };
+    known.to_string()
+}
+
+/// Quién empezó, con el programa si se sabe (solo en vivo y en este
+/// ordenador): «el programa Chrome de este ordenador (192.168.1.23)».
+fn client_name(flow: &EnrichedFlow, names: &HostDirectory) -> String {
+    // Aún sin dirección (DHCP): se le reconoce por la MAC si se puede.
+    let host = match flow.src_mac.as_deref().and_then(|m| names.by_mac(m)) {
+        Some(h) if flow.src_ip.is_unspecified() => h.noun(),
+        _ => names.host_name(flow.src_ip),
+    };
+    match &flow.process_name {
+        Some(p) if is_this_computer(flow.src_ip, names) => {
+            format!("el programa {} {}", program_label(p), de(&host))
+        }
+        _ => host,
+    }
+}
+
+/// ¿Es esta máquina? (solo se sabe en vivo; el programa es de su lado).
+fn is_this_computer(ip: IpAddr, names: &HostDirectory) -> bool {
+    ip.is_loopback()
+        || names
+            .get(ip)
+            .is_some_and(|h| h.role == Some(crate::hosts::Role::ThisComputer))
+}
+
 /// Destino contado por su nombre si se conoce (dominio o SNI), si no por IP.
-fn server_name(flow: &EnrichedFlow) -> String {
+fn server_name(flow: &EnrichedFlow, names: &HostDirectory) -> String {
+    // Conexión que llega a un programa de esta máquina desde fuera.
+    if let Some(p) = &flow.process_name {
+        if is_this_computer(flow.dst_ip, names) && !is_this_computer(flow.src_ip, names) {
+            return format!(
+                "el programa {} {}",
+                program_label(p),
+                de(&names.host_name(flow.dst_ip))
+            );
+        }
+    }
+    // Un equipo de casa con nombre propio («la impresora «HP…»») gana a su
+    // nombre técnico de mDNS (`HP-OfficeJet.local`).
+    if let Some(h) = names.get(flow.dst_ip).filter(|h| h.is_identified()) {
+        return h.noun();
+    }
     let named = flow.tls_sni.as_deref().or(flow.resolved_domain.as_deref());
     match named {
         Some(name) if flow.l7_protocol != L7Protocol::Dns => format!("{name} ({})", flow.dst_ip),
-        _ => host_name(flow.dst_ip),
+        _ => names.host_name(flow.dst_ip),
     }
 }
 
@@ -291,9 +376,27 @@ fn failed_outcome(flow: &EnrichedFlow) -> &'static str {
 }
 
 /// Título y explicación del flujo, sin contar sus alertas.
-fn describe(flow: &EnrichedFlow) -> (String, String) {
-    let client = capitalize(&host_name(flow.src_ip));
-    let server = server_name(flow);
+fn describe(flow: &EnrichedFlow, names: &HostDirectory) -> (String, String) {
+    let client = capitalize(&client_name(flow, names));
+    let server = server_name(flow, names);
+
+    if flow.l7_protocol == L7Protocol::Dhcp {
+        return if flow.src_port == 67 {
+            (
+                format!("{client} dio dirección {}", a(&server)),
+                "El router reparte las direcciones de la red a los equipos que se conectan \
+                 (DHCP). Normal."
+                    .to_string(),
+            )
+        } else {
+            (
+                format!("{client} se conectó a la red y pidió una dirección"),
+                "Al conectarse, cada equipo pide una dirección IP para poder hablar (DHCP) y, \
+                 de paso, dice cómo se llama. Normal."
+                    .to_string(),
+            )
+        };
+    }
 
     if flow.is_background_noise {
         return match flow.l7_protocol {
@@ -307,6 +410,17 @@ fn describe(flow: &EnrichedFlow) -> (String, String) {
                 "Los equipos presentan solos sus servicios (impresoras, móviles, televisores…). Normal."
                     .to_string(),
             ),
+            _ if flow.dst_port == 137 || flow.src_port == 137 => (
+                format!("{client} dijo su nombre a la red (NetBIOS)"),
+                "Los equipos con Windows anuncian su nombre para compartir carpetas e impresoras. \
+                 Normal en una red de casa u oficina."
+                    .to_string(),
+            ),
+            _ if flow.dst_port == 1900 || flow.src_port == 1900 => (
+                format!("{client} buscó o anunció dispositivos (SSDP)"),
+                "Así se encuentran solos los aparatos de casa: teles, routers, altavoces. Normal."
+                    .to_string(),
+            ),
             _ => (
                 format!("{client} generó tráfico automático hacia {server}"),
                 "Tráfico de mantenimiento que los equipos envían solos. Normal.".to_string(),
@@ -315,7 +429,7 @@ fn describe(flow: &EnrichedFlow) -> (String, String) {
     }
 
     match flow.l7_protocol {
-        L7Protocol::Dns => describe_dns(flow, &client),
+        L7Protocol::Dns => describe_dns(flow, &client, names),
         L7Protocol::Tls => (
             format!("{client} abrió una conexión segura con {server}"),
             format!(
@@ -386,8 +500,8 @@ fn describe(flow: &EnrichedFlow) -> (String, String) {
     }
 }
 
-fn describe_dns(flow: &EnrichedFlow, client: &str) -> (String, String) {
-    let server = host_name(flow.dst_ip);
+fn describe_dns(flow: &EnrichedFlow, client: &str, names: &HostDirectory) -> (String, String) {
+    let server = names.host_name(flow.dst_ip);
     let Some(dns) = &flow.dns else {
         return (
             format!("{client} usó el DNS {}", de(&server)),
@@ -430,9 +544,13 @@ fn describe_dns(flow: &EnrichedFlow, client: &str) -> (String, String) {
 }
 
 /// Explica una alerta de un flujo (texto, impacto y qué hacer).
-fn explain_alert(flow: &EnrichedFlow, alert: &socshark_core::Alert) -> AlertExplanation {
-    let src = host_name(flow.src_ip);
-    let dst = host_name(flow.dst_ip);
+fn explain_alert(
+    flow: &EnrichedFlow,
+    alert: &socshark_core::Alert,
+    names: &HostDirectory,
+) -> AlertExplanation {
+    let src = names.host_name(flow.src_ip);
+    let dst = names.host_name(flow.dst_ip);
     let (title, story, action): (String, String, String) = match alert.id.as_str() {
         "DNS-TUNNELING" => {
             let qname = flow
@@ -585,9 +703,18 @@ fn explain_alert(flow: &EnrichedFlow, alert: &socshark_core::Alert) -> AlertExpl
 
 /// Explica un flujo completo para personas.
 pub fn explain(flow: &EnrichedFlow) -> Explanation {
-    let (title, story) = describe(flow);
-    let mut alerts: Vec<AlertExplanation> =
-        flow.alerts.iter().map(|a| explain_alert(flow, a)).collect();
+    explain_with(flow, &HostDirectory::default())
+}
+
+/// Como [`explain`], llamando a cada equipo por su nombre si se conoce
+/// («el equipo «iPhone-de-Ana» (192.168.1.30)», «el router (192.168.1.1)»).
+pub fn explain_with(flow: &EnrichedFlow, names: &HostDirectory) -> Explanation {
+    let (title, story) = describe(flow, names);
+    let mut alerts: Vec<AlertExplanation> = flow
+        .alerts
+        .iter()
+        .map(|a| explain_alert(flow, a, names))
+        .collect();
     // Estable: a igual nivel se conserva el orden del motor de reglas.
     alerts.sort_by_key(|a| std::cmp::Reverse(a.level));
     let level = alerts.first().map_or(Level::Ok, |a| a.level);
@@ -631,6 +758,11 @@ enum GroupKey {
 /// Agrupa las alertas de todos los flujos en historias, de la más grave a la
 /// menos y, a igual gravedad, por orden de aparición.
 pub fn stories(flows: &[EnrichedFlow]) -> Vec<Story> {
+    stories_with(flows, &HostDirectory::default())
+}
+
+/// Como [`stories`], con los equipos por su nombre.
+pub fn stories_with(flows: &[EnrichedFlow], names: &HostDirectory) -> Vec<Story> {
     let mut groups: BTreeMap<GroupKey, Vec<(usize, &socshark_core::Alert)>> = BTreeMap::new();
     for (i, flow) in flows.iter().enumerate() {
         for alert in &flow.alerts {
@@ -659,16 +791,16 @@ pub fn stories(flows: &[EnrichedFlow]) -> Vec<Story> {
                 .map(|&i| flows[i].first_seen_micros)
                 .min()
                 .unwrap_or(0);
-            let single = explain_alert(&flows[i0], a0);
+            let single = explain_alert(&flows[i0], a0, names);
             let (title, story, action) = match key {
-                GroupKey::Scan(src, dst) => scan_story(flows, &idx, src, dst),
-                GroupKey::Sweep(src, port) => sweep_story(flows, &idx, src, port),
+                GroupKey::Scan(src, dst) => scan_story(flows, &idx, src, dst, names),
+                GroupKey::Sweep(src, port) => sweep_story(flows, &idx, src, port, names),
                 GroupKey::Repeat(src, dst, port) => (
                     format!(
                         "{} insiste en conectar con {} {}",
-                        capitalize(&host_name(src)),
+                        capitalize(&names.host_name(src)),
                         port_label(port, Transport::Tcp),
-                        de(&host_name(dst))
+                        de(&names.host_name(dst))
                     ),
                     format!(
                         "{} intentos sin llegar a conectar. Puede ser un servicio caído, un \
@@ -704,6 +836,7 @@ fn scan_story(
     idx: &[usize],
     src: IpAddr,
     dst: IpAddr,
+    names: &HostDirectory,
 ) -> (String, String, String) {
     let mut open = Vec::new();
     let mut closed = Vec::new();
@@ -728,7 +861,7 @@ fn scan_story(
     let mut story = format!(
         "Probó {} puertos {} sin llegar a conectar.",
         ports.len(),
-        de(&host_name(dst))
+        de(&names.host_name(dst))
     );
     if !open.is_empty() {
         story.push_str(&format!(" Respondieron (abiertos): {}.", open.join(", ")));
@@ -743,11 +876,15 @@ fn scan_story(
         " Es lo que hace un programa de escaneo (como nmap) para buscar servicios abiertos.",
     );
     (
-        format!("{} escaneó {}", capitalize(&host_name(src)), host_name(dst)),
+        format!(
+            "{} escaneó {}",
+            capitalize(&names.host_name(src)),
+            names.host_name(dst)
+        ),
         story,
         format!(
             "Si nadie de IT ha lanzado un escaneo autorizado, revisa {}: puede estar comprometido.",
-            host_name(src)
+            names.host_name(src)
         ),
     )
 }
@@ -757,6 +894,7 @@ fn sweep_story(
     idx: &[usize],
     src: IpAddr,
     port: u16,
+    names: &HostDirectory,
 ) -> (String, String, String) {
     let mut hosts: Vec<IpAddr> = idx.iter().map(|&i| flows[i].dst_ip).collect();
     hosts.sort_unstable();
@@ -770,7 +908,7 @@ fn sweep_story(
     (
         format!(
             "{} barrió la red buscando {}",
-            capitalize(&host_name(src)),
+            capitalize(&names.host_name(src)),
             port_label(port, Transport::Tcp)
         ),
         format!(
@@ -781,7 +919,7 @@ fn sweep_story(
         ),
         format!(
             "Si no es un inventario autorizado, revisa {}: puede estar comprometido.",
-            host_name(src)
+            names.host_name(src)
         ),
     )
 }
@@ -791,6 +929,118 @@ mod tests {
     use super::*;
     use crate::tests_support::flujo_basico;
     use socshark_core::{Alert, DnsAnswerSummary, DnsQuerySummary, DnsSummary};
+
+    /// La red de casa entera por el motor: flujos enriquecidos y su directorio.
+    fn red_de_casa() -> (Vec<EnrichedFlow>, HostDirectory) {
+        use socshark_core::config::PipelineConfig;
+        use socshark_core::{LinkType, RawPacket};
+        use socshark_dissectors::DissectorPipeline;
+        use socshark_flow::FlowAggregator;
+
+        let pipe = DissectorPipeline::new();
+        let mut agg = FlowAggregator::new(10_000, 120, false);
+        let mut book = crate::hosts::HostBook::new();
+        for (ts, data) in socshark_testgen::home_pcap_packets() {
+            let pkt = RawPacket {
+                ts_micros: ts,
+                orig_len: data.len() as u32,
+                data,
+            };
+            if let Some(dp) = pipe.dissect(&pkt, LinkType::Ethernet) {
+                agg.on_packet(pkt.ts_micros, pkt.data.len(), &dp);
+                book.observe(&dp);
+            }
+        }
+        let mut flows = agg.finish();
+        crate::enrich_all(
+            &mut crate::SocContext::default(),
+            &mut flows,
+            &PipelineConfig::default(),
+        );
+        (flows, book.directory())
+    }
+
+    #[test]
+    fn frases_con_los_nombres_de_cada_equipo() {
+        let (flows, names) = red_de_casa();
+        let all: Vec<String> = flows
+            .iter()
+            .map(|f| explain_with(f, &names).headline)
+            .collect();
+        let has = |needle: &str| all.iter().any(|h| h.contains(needle));
+        assert!(has("El equipo «iPhone-de-Ana» (192.168.1.30)"), "{all:#?}");
+        assert!(
+            has("La impresora «HP OfficeJet Pro 8020» (192.168.1.40) se anunció"),
+            "{all:#?}"
+        );
+        // A la impresora se la llama por su nombre, no por `HP-OfficeJet.local`.
+        assert!(
+            has(
+                "con la impresora «HP OfficeJet Pro 8020» (192.168.1.40) por el canal de impresión"
+            ),
+            "{all:#?}"
+        );
+        // DHCP y NetBIOS contados como lo que son; el móvil, reconocido por su MAC.
+        assert!(
+            has("El equipo «iPhone-de-Ana» (192.168.1.30) se conectó a la red y pidió una dirección"),
+            "{all:#?}"
+        );
+        assert!(
+            has("El router (192.168.1.1) dio dirección al equipo «iPhone-de-Ana»"),
+            "{all:#?}"
+        );
+        assert!(
+            has("El equipo «DESKTOP-AB12» (192.168.1.50) dijo su nombre a la red (NetBIOS)"),
+            "{all:#?}"
+        );
+        assert!(
+            !all.iter().any(|h| h.contains("tráfico automático")
+                || h.contains("0.0.0.0")
+                || h.contains("192.168.1.255")),
+            "{all:#?}"
+        );
+        // El Telnet al router: la alerta lo nombra como «el router».
+        let telnet = flows.iter().find(|f| f.dst_port == 23).unwrap();
+        let e = explain_with(telnet, &names);
+        assert!(
+            e.title.contains("el router (192.168.1.1)")
+                || e.title.contains("al router (192.168.1.1)"),
+            "{e:#?}"
+        );
+        assert!(e.title.contains("«DESKTOP-AB12»"), "{e:#?}");
+        // Sin directorio, las frases de siempre.
+        assert!(explain(telnet).title.starts_with("El equipo 192.168.1.50"));
+    }
+
+    #[test]
+    fn el_programa_si_se_conoce() {
+        assert_eq!(
+            program_label(r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
+            "Chrome"
+        );
+        assert_eq!(program_label("/usr/lib/firefox/firefox"), "Firefox");
+        assert_eq!(program_label("mi-programa"), "mi-programa");
+        assert_eq!(program_label("python3.13"), "Python");
+        let (mut flows, names) = red_de_casa();
+        let f = flows
+            .iter_mut()
+            .find(|f| f.dst_port == 443 && f.src_port == 50124)
+            .unwrap();
+        f.process_name = Some("OUTLOOK.EXE".into());
+        // Solo se atribuye a quien empezó si es esta máquina (en vivo).
+        assert!(explain_with(f, &names)
+            .title
+            .starts_with("El equipo «DESKTOP-AB12»"));
+        let mut names = names;
+        names.mark_this_computer(&["192.168.1.50".parse().unwrap()]);
+        let e = explain_with(f, &names);
+        assert!(
+            e.title
+                .starts_with("El programa Outlook de este ordenador (192.168.1.50)"),
+            "{}",
+            e.title
+        );
+    }
 
     fn alerta(id: &str, sev: Severity, detail: &str) -> Alert {
         Alert {
@@ -928,7 +1178,11 @@ mod tests {
             "TOR-USAGE",
         ] {
             let f = flujo_basico(6, 40000, 22);
-            let a = explain_alert(&f, &alerta(id, Severity::Medium, "detalle"));
+            let a = explain_alert(
+                &f,
+                &alerta(id, Severity::Medium, "detalle"),
+                &HostDirectory::default(),
+            );
             assert_ne!(a.title, id, "{id} cae en la explicación genérica");
             assert!(!a.action.is_empty());
         }

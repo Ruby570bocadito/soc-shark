@@ -16,6 +16,7 @@
 //! - `link_type` informa a los dissectors sobre la capa 2 a usar.
 
 pub mod live;
+pub mod owners;
 pub mod pcap_file;
 
 use socshark_core::{LinkType, RawPacket};
@@ -45,4 +46,5 @@ pub trait CaptureSource {
 }
 
 pub use live::{list_ifaces, LiveBreaker, LiveCapture, LiveCaptureConfig, LiveIface};
+pub use owners::{SocketOwner, SocketTable};
 pub use pcap_file::PcapFileReader;

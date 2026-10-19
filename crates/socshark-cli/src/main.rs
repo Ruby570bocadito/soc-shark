@@ -1,7 +1,7 @@
 //! Punto de entrada del binario `socshark`.
 
 use clap::Parser;
-use socshark_cli::cli::{Cli, Cmd, DevCmd};
+use socshark_cli::cli::{Cli, Cmd, DevCmd, Scenario};
 use socshark_cli::daemon::{self, DaemonOptions};
 use socshark_cli::follow;
 use socshark_cli::fuzz::{self, FuzzOptions};
@@ -207,11 +207,14 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         }
 
         Cmd::Dev { cmd } => match cmd {
-            DevCmd::SamplePcap { out } => {
-                let packets = socshark_testgen::sample_pcap_packets();
+            DevCmd::SamplePcap { out, escenario } => {
+                let (packets, label) = match escenario {
+                    Scenario::Demo => (socshark_testgen::sample_pcap_packets(), "demo"),
+                    Scenario::Casa => (socshark_testgen::home_pcap_packets(), "casa"),
+                };
                 socshark_testgen::write_pcap(&out, 1, &packets)?;
                 eprintln!(
-                    "[+] Escenario demo ({} paquetes) escrito en {}",
+                    "[+] Escenario {label} ({} paquetes) escrito en {}",
                     packets.len(),
                     out.display()
                 );

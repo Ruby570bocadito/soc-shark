@@ -191,6 +191,15 @@ pub enum Cmd {
     },
 }
 
+/// Escenarios de `socshark dev sample-pcap`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum Scenario {
+    /// Eventos SOC: túnel DNS, escaneo, archivo disfrazado, beacon…
+    Demo,
+    /// Red de casa: móvil, PC con Windows, impresora, Chromecast y router.
+    Casa,
+}
+
 /// Subcomandos de desarrollo.
 #[derive(Debug, Subcommand)]
 pub enum DevCmd {
@@ -199,6 +208,10 @@ pub enum DevCmd {
         /// Ruta de salida del pcap.
         #[arg(short, long, default_value = "demo.pcap")]
         out: PathBuf,
+        /// Qué escenario: `demo` (eventos SOC) o `casa` (una red doméstica
+        /// cuyos equipos se presentan solos: quién es quién).
+        #[arg(long, value_enum, default_value_t = Scenario::Demo)]
+        escenario: Scenario,
     },
     /// Fuzzing determinista en proceso (parsers + agregador + SOC + DSL).
     Fuzz {

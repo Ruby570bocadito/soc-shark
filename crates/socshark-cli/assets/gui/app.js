@@ -96,6 +96,7 @@
     packetSel: null,
     view: "flows",
     ifaces: [],
+    hosts: new Map(), // ip → lo que se sabe del equipo (quién es quién)
     polling: null,
     refreshing: false,
     lastStats: 0,
@@ -173,6 +174,94 @@
       ? hasPorts(f) ? endpoint(f.src_ip, f.src_port) : f.src_ip
       : hasPorts(f) ? endpoint(f.dst_ip, f.dst_port) : f.dst_ip;
   const plural = (n, one, many) => (n === 1 ? `1 ${one}` : `${nf.format(n)} ${many}`);
+
+  // ------------------------------------------------------------ quién es quién
+
+  const hostOf = (ip) => state.hosts.get(ip);
+  /** Dirección de la red local (las únicas a las que se pone nombre). */
+  const isLanIp = (ip) =>
+    /^(10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.)/.test(ip) || /^(f[cd]|fe[89ab])[0-9a-f]*:/i.test(ip);
+
+  /** Lo que se sabe de un equipo, en frases cortas. */
+  function hostFacts(hst) {
+    if (!hst) return [];
+    const out = [];
+    if (hst.nickname && hst.name) out.push(`se presenta como «${hst.name}»`);
+    if (hst.vendor) out.push(hst.vendor_hint ? `marca ${hst.vendor} (suele ser ${hst.vendor_hint})` : `marca ${hst.vendor}`);
+    if (hst.os) out.push(`con ${hst.os}`);
+    if (hst.random_mac) out.push("MAC aleatoria: móvil o portátil con privacidad activada");
+    if (hst.name && hst.name_source && !hst.nickname) out.push(`nombre anunciado por ${hst.name_source}`);
+    return out;
+  }
+
+  function renameButton(ip) {
+    if (!isLanIp(ip)) return null;
+    const hst = hostOf(ip);
+    return h(
+      "button",
+      {
+        class: "btn link",
+        type: "button",
+        title: "Ponle un nombre que reconozcas («Portátil de Ana»)",
+        onclick: (e) => {
+          e.stopPropagation();
+          openNickDialog(ip);
+        },
+      },
+      hst && hst.nickname ? "Cambiar nombre" : "Ponerle nombre",
+    );
+  }
+
+  /** «Quién empezó» / «Con quién»: nombre, dirección y lo que se sabe. */
+  function whoFact(ip, endpointText, extra) {
+    const hst = hostOf(ip);
+    const facts = hostFacts(hst);
+    return [
+      hst && hst.short ? h("b", { class: "host-name" }, hst.short, " ") : null,
+      h("span", { class: "mono" }, endpointText),
+      extra ? ` · ${extra}` : "",
+      " ",
+      renameButton(ip),
+      facts.length ? h("div", { class: "sub" }, facts.join(" · ")) : null,
+    ];
+  }
+
+  async function loadHosts() {
+    try {
+      const list = await api("/api/hosts");
+      state.hosts = new Map(list.map((x) => [x.ip, x]));
+    } catch {
+      state.hosts = new Map();
+    }
+  }
+
+  let nickTarget = null;
+  function openNickDialog(ip) {
+    const hst = hostOf(ip);
+    nickTarget = { key: hst ? hst.key : `ip:${ip}`, ip };
+    const who = [hst && hst.short, ip, hst && hst.mac ? `MAC ${hst.mac}` : null].filter(Boolean).join(" · ");
+    $("#nick-who").textContent = who;
+    $("#nick-input").value = (hst && hst.nickname) || "";
+    $("#nick-remove").hidden = !(hst && hst.nickname);
+    $("#nick-error").hidden = true;
+    $("#nick-dlg").showModal();
+    $("#nick-input").focus();
+  }
+
+  async function saveNick(name) {
+    if (!nickTarget) return;
+    const err = $("#nick-error");
+    try {
+      const ses = await api(`/api/hosts/nick?key=${encodeURIComponent(nickTarget.key)}&name=${encodeURIComponent(name)}`, { method: "POST" });
+      $("#nick-dlg").close();
+      await refresh(ses);
+      renderDetail();
+      toast(name ? `Ahora se llama «${name.trim()}».` : "Nombre quitado.", "info");
+    } catch (e) {
+      err.hidden = false;
+      err.textContent = e.message;
+    }
+  }
 
   function dot(level) {
     const l = LEVEL[level] || LEVEL.ok;
@@ -499,12 +588,14 @@
       h("td", null, dot(e.level)),
       h("td", { class: "time" }, fmtTime(f.first_seen_micros)),
       h("td", { class: "mono" }, r.proto),
-      h("td", { class: "mono" }, ep(f, "src")),
+      h("td", { class: "mono" }, ep(f, "src"), r.src_name ? h("div", { class: "sub", title: r.src_name }, r.src_name) : null),
       h(
         "td",
         { class: "mono" },
         ep(f, "dst"),
-        f.resolved_domain ? h("div", { class: "sub", title: f.resolved_domain }, f.resolved_domain) : null,
+        r.dst_name || f.resolved_domain
+          ? h("div", { class: "sub", title: r.dst_name || f.resolved_domain }, r.dst_name || f.resolved_domain)
+          : null,
       ),
       h("td", { class: "num" }, nf.format(f.packets + f.packets_rev)),
       h("td", { class: "num" }, fmtBytes(f.bytes + f.bytes_rev)),
@@ -705,8 +796,11 @@
 
     const facts = [];
     const fact = (k, ...v) => facts.push(h("dt", null, k), h("dd", null, ...v));
-    fact("Quién empezó", h("span", { class: "mono" }, ep(f, "src")));
-    fact("Con quién", h("span", { class: "mono" }, ep(f, "dst")), f.resolved_domain ? ` · ${f.resolved_domain}` : "");
+    fact("Quién empezó", ...whoFact(f.src_ip, ep(f, "src")));
+    if (f.process_name) {
+      fact("Programa", h("b", null, f.process_name), f.pid != null ? h("span", { class: "sub" }, ` · proceso ${f.pid}`) : null);
+    }
+    fact("Con quién", ...whoFact(f.dst_ip, ep(f, "dst"), hostOf(f.dst_ip) && hostOf(f.dst_ip).short ? null : f.resolved_domain));
     fact("Protocolo", rich(TRANSPORTS.includes(r.proto) ? r.proto : `${r.proto} sobre ${transportName(f)}`));
     fact("Cuándo", `${fmtDateTime(f.first_seen_micros)} · duró ${fmtDuration(f.duration_micros)}`);
     fact(
@@ -1417,7 +1511,17 @@
             },
           },
           h("td", null, dot(e.level)),
-          h("td", { class: "mono" }, e.ip, e.domain ? h("div", { class: "sub", title: e.domain }, e.domain) : null),
+          h(
+            "td",
+            null,
+            e.host && e.host.short ? h("div", { class: "host-name" }, e.host.short, " ", renameButton(e.ip)) : null,
+            h("div", { class: e.host && e.host.short ? "mono sub" : "mono" }, e.ip, e.host && e.host.short ? null : [" ", renameButton(e.ip)]),
+            e.host && hostFacts(e.host).length
+              ? h("div", { class: "sub" }, hostFacts(e.host).slice(0, 2).join(" · "))
+              : e.domain
+                ? h("div", { class: "sub", title: e.domain }, e.domain)
+                : null,
+          ),
           h("td", null, h("span", { class: `scope ${e.scope}` }, SCOPE_ES[e.scope] || e.scope)),
           h("td", { class: "num" }, nf.format(e.flows)),
           h("td", { class: "num" }, nf.format(e.peers)),
@@ -1578,13 +1682,16 @@
   }
 
   function hostMenu(ip, domain) {
-    return [
-      { title: domain ? `${ip} · ${domain}` : ip },
+    const hst = hostOf(ip);
+    const items = [
+      { title: [hst && hst.short, ip, domain].filter(Boolean).join(" · ") },
       { label: "Ver solo este equipo", expr: exprHost(ip) },
       { label: "Ocultar este equipo", expr: exprNotHost(ip) },
       "-",
-      { label: "Copiar la dirección", action: () => copy(ip) },
     ];
+    if (isLanIp(ip)) items.push({ label: hst && hst.nickname ? "Cambiar su nombre…" : "Ponerle nombre…", action: () => openNickDialog(ip) });
+    items.push({ label: "Copiar la dirección", action: () => copy(ip) });
+    return items;
   }
 
   function flowMenu(r) {
@@ -1603,6 +1710,12 @@
       "-",
       { label: "Ver sus paquetes", action: () => (switchView("flows"), select(r.idx), setTab("packets")) },
       { label: "Ver lo que se dijeron", action: () => (switchView("flows"), select(r.idx), setTab("stream")) },
+      "-",
+    );
+    for (const ip of [f.src_ip, f.dst_ip]) {
+      if (isLanIp(ip)) items.push({ label: `Ponerle nombre a ${(hostOf(ip) && hostOf(ip).short) || ip}…`, action: () => openNickDialog(ip) });
+    }
+    items.push(
       "-",
       { label: "Copiar origen", hint: ep(f, "src"), action: () => copy(ep(f, "src")) },
       { label: "Copiar destino", hint: ep(f, "dst"), action: () => copy(ep(f, "dst")) },
@@ -1659,7 +1772,7 @@
     state.pk.selPos = -1;
     $("#filter-input").value = "";
     setFilterError(null);
-    const [stories, data] = await Promise.all([api("/api/stories"), loadFlows("")]);
+    const [stories, data] = await Promise.all([api("/api/stories"), loadFlows(""), loadHosts()]);
     state.stories = stories;
     if (data.truncated) toast(`Hay ${nf.format(data.total)} conversaciones: se muestran las primeras 10.000. Usa un filtro para acotar.`, "info");
     document.title = `${state.session.name} · soc-shark`;
@@ -1692,7 +1805,7 @@
 
   async function doRefresh(ses) {
     try {
-      const [stories] = await Promise.all([api("/api/stories"), loadFlows(state.filter)]);
+      const [stories] = await Promise.all([api("/api/stories"), loadFlows(state.filter), loadHosts()]);
       state.session = ses;
       state.stories = stories;
       if (state.storyFilter) {
@@ -2214,6 +2327,12 @@
       if (!$("#live-go").disabled) startLive();
     });
     for (const b of $$("#live-dlg [data-close]")) b.addEventListener("click", () => $("#live-dlg").close());
+    for (const b of $$("#nick-dlg [data-close]")) b.addEventListener("click", () => $("#nick-dlg").close());
+    $("#nick-form").addEventListener("submit", (e) => {
+      e.preventDefault();
+      saveNick($("#nick-input").value);
+    });
+    $("#nick-remove").addEventListener("click", () => saveNick(""));
     $("#filter-form").addEventListener("submit", (e) => {
       e.preventDefault();
       applyFilter();

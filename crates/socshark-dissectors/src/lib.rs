@@ -17,6 +17,7 @@
 //! workers concurrentes. Queda para fases posteriores: dissectors
 //! registrables (incluidos plugins WASM, ver `docs/wasm-plugins.md`).
 
+pub mod discovery;
 pub mod dns;
 pub mod ethernet;
 pub mod ipv4;
@@ -33,6 +34,7 @@ use std::net::IpAddr;
 
 use socshark_core::{L7Protocol, LinkType, RawPacket, Transport};
 
+pub use discovery::{clean_name, parse_dhcp, parse_nbns, DhcpInfo, NbnsName};
 pub use dns::{parse_dns, DnsInfo, DnsQuestion, DnsRecord};
 pub use ethernet::{parse_ethernet, EthernetInfo};
 pub use ipv4::{parse_ipv4, Ipv4Info};
@@ -218,7 +220,8 @@ impl DissectorPipeline {
 pub fn detect_l7(transport: Transport, sport: u16, dport: u16, payload: &[u8]) -> L7Protocol {
     match transport {
         Transport::Udp => match (sport, dport) {
-            (67, _) | (_, 68) => return L7Protocol::Dhcp,
+            // Petición (68→67, a menudo a difusión) y respuesta (67→68).
+            (67 | 68, 67 | 68) => return L7Protocol::Dhcp,
             (123, _) | (_, 123) => return L7Protocol::Ntp,
             _ => {}
         },

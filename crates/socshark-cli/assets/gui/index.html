@@ -173,6 +173,27 @@
   </form>
 </dialog>
 
+<dialog id="nick-dlg" class="dlg">
+  <form id="nick-form" method="dialog">
+    <div class="dlg-head"><h2>Ponerle nombre a un equipo</h2><button class="tb-icon" type="button" data-close aria-label="Cerrar">✕</button></div>
+    <div class="dlg-body">
+      <p id="nick-who" class="lead-sm"></p>
+      <label class="field">
+        <span>Nombre</span>
+        <input id="nick-input" type="text" maxlength="40" autocomplete="off" placeholder="p. ej.  Portátil de Ana  ·  Tele del salón  ·  Cámara de la entrada">
+      </label>
+      <small class="muted">Se guarda en este ordenador y se usa en todas las capturas y en las frases. Al equipo se le reconoce por su tarjeta de red (MAC); si no se conoce, por su IP.</small>
+      <div id="nick-error" class="dlg-error" role="alert" hidden></div>
+    </div>
+    <div class="dlg-foot">
+      <button id="nick-remove" class="btn ghost" type="button">Quitar el nombre</button>
+      <span class="spacer"></span>
+      <button class="btn" type="button" data-close>Cancelar</button>
+      <button class="btn primary" type="submit">Guardar</button>
+    </div>
+  </form>
+</dialog>
+
 <dialog id="help" class="dlg help">
   <form method="dialog" class="dlg-head"><h2>Ayuda</h2><button class="tb-icon" aria-label="Cerrar">✕</button></form>
   <div class="dlg-body help-body">
@@ -184,6 +205,7 @@
       <li>Abajo, <b>Explicación</b> cuenta qué pasó y qué hacer; <b>Paquetes</b>, cada paquete con sus capas y bytes; <b>Contenido</b>, lo que se dijeron tal cual.</li>
       <li><b>Paquetes</b> (arriba) es la lista completa, paquete a paquete, como en Wireshark. <b>Estadísticas</b>: protocolos, equipos que más hablan y actividad en el tiempo.</li>
       <li><b>Clic derecho</b> en cualquier fila: filtrar por ese equipo, puerto o conversación, u ocultarlo.</li>
+      <li><b>Quién es quién</b>: los equipos que se presentan solos en la red (móviles, ordenadores, impresoras, teles) aparecen con su nombre y su marca; el router, como «el router». Puedes <b>ponerles nombre</b> («Portátil de Ana») desde su explicación o con clic derecho. En vivo, además, se ve <b>qué programa</b> de tu ordenador hizo cada conexión.</li>
       <li>Las palabras <span class="term demo">subrayadas</span> tienen explicación: pasa el ratón por encima. Los separadores entre paneles se pueden arrastrar.</li>
     </ul>
     <h3>Atajos</h3>

@@ -357,6 +357,9 @@ table.grid { width: 100%; border-collapse: separate; border-spacing: 0; font-siz
 .dot.raro { background: var(--raro); }
 .dot.peligro { background: var(--peligro); }
 .headline { font-weight: 500; overflow-wrap: anywhere; }
+.host-name { font-weight: 600; }
+.btn.link { border: 0; background: transparent; color: var(--accent); padding: 0 2px; font-size: 12.5px; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+.btn.link:hover { background: transparent; filter: brightness(1.15); }
 .grid td.mono .sub { max-width: 40ch; overflow: hidden; text-overflow: ellipsis; }
 .sub { color: var(--muted); font-size: 12px; }
 .risk { font-weight: 700; }

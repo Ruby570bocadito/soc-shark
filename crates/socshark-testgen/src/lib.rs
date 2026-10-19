@@ -13,6 +13,9 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 use std::path::Path;
 
 pub mod fuzz;
+pub mod home;
+
+pub use home::*;
 
 // ---------------------------------------------------------------- checksums
 
