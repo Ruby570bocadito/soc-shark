@@ -89,7 +89,7 @@ pub struct Story {
 
 /// Servicios conocidos por puerto y transporte: (nombre corto, descripción
 /// para personas). UDP tiene su propia tabla: el 8080/udp no es web.
-fn service_by_port(port: u16, transport: Transport) -> Option<(&'static str, &'static str)> {
+pub fn service_by_port(port: u16, transport: Transport) -> Option<(&'static str, &'static str)> {
     if transport == Transport::Udp {
         return Some(match port {
             53 => ("DNS", "DNS"),

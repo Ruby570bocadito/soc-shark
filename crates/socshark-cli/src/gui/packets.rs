@@ -7,110 +7,246 @@
 //! cuenta capa a capa: cada campo con su valor y qué significa, y el rango
 //! de bytes de cada capa para resaltarlo en el volcado hexadecimal.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::net::IpAddr;
 use std::path::Path;
 
 use anyhow::{Context, Result};
 use serde::Serialize;
 use socshark_capture::{CaptureSource, PcapFileReader};
-use socshark_core::{dns_rcode_str, dns_type_str, EnrichedFlow, LinkType, RawPacket, Transport};
+use socshark_core::{
+    dns_rcode_str, dns_type_str, EnrichedFlow, L7Protocol, LinkType, RawPacket, Transport,
+};
 use socshark_dissectors::{DissectedPacket, DissectorPipeline};
 use socshark_flow::FlowKey;
 use socshark_soc::explain::{host_name, port_label};
 use socshark_soc::summarize::fmt_bytes;
 
-/// Cota de bytes de tramas que se guardan en memoria. Por encima, el resto
-/// de paquetes se indexan sin contenido (la lista sigue, el detalle no).
+/// Cota de bytes de tramas que se guardan en memoria. En un archivo, por
+/// encima se indexan las tramas sin contenido (la lista sigue, el detalle
+/// no); en vivo se descartan las más antiguas.
 const MAX_STORED_BYTES: usize = 256 * 1024 * 1024;
+/// Cota de tramas en el búfer circular del modo en vivo.
+const MAX_LIVE_PACKETS: usize = 500_000;
 
 /// Paquetes que se devuelven como mucho en la lista de un flujo.
 pub const MAX_LIST: usize = 5000;
+/// Bytes como mucho en "seguir la conversación".
+const MAX_STREAM: usize = 1024 * 1024;
+/// Sin flujo (no IP): marca en `flow_of`.
+const NO_FLOW: u32 = u32::MAX;
 
-/// Todas las tramas de la captura, agrupables por flujo.
+/// Tramas de una captura asociadas a su flujo.
+///
+/// Los paquetes se numeran desde 1 en orden de llegada, como en Wireshark.
+/// En vivo funciona como búfer circular: `base` es el índice global del
+/// primer paquete aún guardado.
 pub struct PacketIndex {
     link: LinkType,
-    packets: Vec<RawPacket>,
-    by_flow: HashMap<String, Vec<usize>>,
-    /// Se alcanzó [`MAX_STORED_BYTES`]: hay tramas sin contenido.
+    packets: VecDeque<RawPacket>,
+    /// Flujo de cada paquete guardado (índice en `flow_ids`).
+    flow_of: VecDeque<u32>,
+    base: usize,
+    flow_ids: Vec<String>,
+    flow_lookup: HashMap<String, u32>,
+    /// Índices globales de los paquetes de cada flujo.
+    by_flow: Vec<Vec<usize>>,
+    stored_bytes: usize,
+    ring: bool,
+    evicted_since_prune: usize,
+    dissectors: DissectorPipeline,
+    /// Archivo: se alcanzó la cota y hay tramas sin contenido. En vivo: ya
+    /// se descartaron paquetes antiguos.
     pub truncated: bool,
 }
 
 impl PacketIndex {
-    /// Relee la captura y asocia cada trama a su flujo.
+    /// Índice vacío. `ring` = búfer circular (modo en vivo).
+    pub fn new(link: LinkType, ring: bool) -> Self {
+        Self {
+            link,
+            packets: VecDeque::new(),
+            flow_of: VecDeque::new(),
+            base: 0,
+            flow_ids: Vec::new(),
+            flow_lookup: HashMap::new(),
+            by_flow: Vec::new(),
+            stored_bytes: 0,
+            ring,
+            evicted_since_prune: 0,
+            dissectors: DissectorPipeline::new(),
+            truncated: false,
+        }
+    }
+
+    /// Relee una captura de archivo y asocia cada trama a su flujo.
     pub fn build(path: &Path) -> Result<Self> {
         let mut reader = PcapFileReader::open(path)
             .with_context(|| format!("no se pudo abrir {}", path.display()))?;
-        let link = reader.link_type();
-        let dissectors = DissectorPipeline::new();
-        let mut packets = Vec::new();
-        let mut by_flow: HashMap<String, Vec<usize>> = HashMap::new();
-        let mut stored = 0usize;
-        let mut truncated = false;
-        while let Some(mut pkt) = reader.next_packet().context("error leyendo paquetes")? {
-            let i = packets.len();
-            if let Some(id) = dissectors.dissect(&pkt, link).as_ref().and_then(flow_id) {
-                by_flow.entry(id).or_default().push(i);
-            }
-            if stored + pkt.data.len() > MAX_STORED_BYTES {
-                truncated = true;
-                pkt.data = Vec::new();
-            }
-            stored += pkt.data.len();
-            packets.push(pkt);
+        let mut index = Self::new(reader.link_type(), false);
+        while let Some(pkt) = reader.next_packet().context("error leyendo paquetes")? {
+            index.push(pkt);
         }
-        Ok(Self {
-            link,
-            packets,
-            by_flow,
-            truncated,
-        })
+        Ok(index)
     }
 
-    pub fn len(&self) -> usize {
-        self.packets.len()
+    /// Añade una trama al final.
+    pub fn push(&mut self, mut pkt: RawPacket) {
+        let fid = match self
+            .dissectors
+            .dissect(&pkt, self.link)
+            .as_ref()
+            .and_then(flow_id)
+        {
+            Some(id) => self.intern(id),
+            None => NO_FLOW,
+        };
+        let global = self.base + self.packets.len();
+        if fid != NO_FLOW {
+            self.by_flow[fid as usize].push(global);
+        }
+        if self.ring {
+            while !self.packets.is_empty()
+                && (self.stored_bytes + pkt.data.len() > MAX_STORED_BYTES
+                    || self.packets.len() >= MAX_LIVE_PACKETS)
+            {
+                self.evict_oldest();
+            }
+        } else if self.stored_bytes + pkt.data.len() > MAX_STORED_BYTES {
+            self.truncated = true;
+            pkt.data = Vec::new();
+        }
+        self.stored_bytes += pkt.data.len();
+        self.packets.push_back(pkt);
+        self.flow_of.push_back(fid);
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.packets.is_empty()
+    fn intern(&mut self, id: String) -> u32 {
+        if let Some(&i) = self.flow_lookup.get(&id) {
+            return i;
+        }
+        let i = self.flow_ids.len() as u32;
+        self.flow_ids.push(id.clone());
+        self.flow_lookup.insert(id, i);
+        self.by_flow.push(Vec::new());
+        i
+    }
+
+    fn evict_oldest(&mut self) {
+        if let Some(old) = self.packets.pop_front() {
+            self.stored_bytes -= old.data.len();
+            self.flow_of.pop_front();
+            self.base += 1;
+            self.truncated = true;
+            self.evicted_since_prune += 1;
+        }
+        // Las listas por flujo se podan de vez en cuando (no en cada paquete).
+        if self.evicted_since_prune >= 10_000 {
+            let base = self.base;
+            for v in &mut self.by_flow {
+                v.retain(|&g| g >= base);
+            }
+            self.evicted_since_prune = 0;
+        }
+    }
+
+    /// Paquetes vistos desde el principio (guardados o no).
+    pub fn total(&self) -> usize {
+        self.base + self.packets.len()
+    }
+
+    pub fn link(&self) -> LinkType {
+        self.link
+    }
+
+    fn get(&self, global: usize) -> Option<&RawPacket> {
+        self.packets.get(global.checked_sub(self.base)?)
+    }
+
+    /// Índices globales aún guardados de un flujo.
+    fn flow_packets(&self, flow_id: &str) -> &[usize] {
+        let Some(&fid) = self.flow_lookup.get(flow_id) else {
+            return &[];
+        };
+        let v = &self.by_flow[fid as usize];
+        let first = v.partition_point(|&g| g < self.base);
+        &v[first..]
     }
 
     /// Lista de paquetes de un flujo con una frase por paquete.
     pub fn list(&self, flow: &EnrichedFlow) -> (Vec<PacketRow>, bool) {
-        let idx = self
-            .by_flow
-            .get(&flow.flow_id.0)
-            .map(Vec::as_slice)
-            .unwrap_or(&[]);
-        let t0 = idx.first().map(|&i| self.packets[i].ts_micros).unwrap_or(0);
-        let dissectors = DissectorPipeline::new();
+        let idx = self.flow_packets(&flow.flow_id.0);
+        let t0 = idx
+            .first()
+            .and_then(|&g| self.get(g))
+            .map(|p| p.ts_micros)
+            .unwrap_or(0);
         let rows = idx
             .iter()
             .take(MAX_LIST)
-            .map(|&i| {
-                let pkt = &self.packets[i];
-                let dp = dissectors.dissect(pkt, self.link);
-                PacketRow {
-                    n: i + 1,
+            .filter_map(|&g| {
+                let pkt = self.get(g)?;
+                let dp = self.dissectors.dissect(pkt, self.link);
+                Some(PacketRow {
+                    n: g + 1,
                     ts_micros: pkt.ts_micros,
                     rel_micros: pkt.ts_micros.saturating_sub(t0),
                     len: pkt.orig_len as usize,
                     outbound: dp.as_ref().is_some_and(|d| is_outbound(d, flow)),
-                    summary: match &dp {
-                        Some(d) => summary(d),
-                        None if pkt.data.is_empty() => "(contenido no guardado)".into(),
-                        None => "Paquete que no se pudo interpretar".into(),
-                    },
-                }
+                    summary: summary_or_reason(dp.as_ref(), pkt),
+                })
             })
             .collect();
         (rows, idx.len() > MAX_LIST)
     }
 
+    /// Página de la lista global de paquetes (la vista principal de
+    /// Wireshark). `keep` decide qué flujos se muestran (filtro DSL); los
+    /// paquetes sin flujo solo aparecen sin filtro.
+    pub fn page(
+        &self,
+        offset: usize,
+        limit: usize,
+        keep: Option<&dyn Fn(&str) -> bool>,
+    ) -> (Vec<GlobalRow>, usize) {
+        let t0 = self.packets.front().map(|p| p.ts_micros).unwrap_or(0);
+        // El filtro se evalúa una vez por flujo, no por paquete.
+        let allowed: Option<Vec<bool>> =
+            keep.map(|k| self.flow_ids.iter().map(|id| k(id)).collect());
+        let mut total = 0usize;
+        let mut rows = Vec::new();
+        for (i, (pkt, &fid)) in self.packets.iter().zip(&self.flow_of).enumerate() {
+            let shown = match &allowed {
+                None => true,
+                Some(a) => fid != NO_FLOW && a[fid as usize],
+            };
+            if !shown {
+                continue;
+            }
+            if total >= offset && rows.len() < limit {
+                let dp = self.dissectors.dissect(pkt, self.link);
+                let (src, dst) = dp.as_ref().map(endpoints).unwrap_or_default();
+                rows.push(GlobalRow {
+                    n: self.base + i + 1,
+                    rel_micros: pkt.ts_micros.saturating_sub(t0),
+                    ts_micros: pkt.ts_micros,
+                    src,
+                    dst,
+                    protocol: dp.as_ref().map(protocol_name).unwrap_or_default(),
+                    len: pkt.orig_len as usize,
+                    summary: summary_or_reason(dp.as_ref(), pkt),
+                    flow_id: (fid != NO_FLOW).then(|| self.flow_ids[fid as usize].clone()),
+                });
+            }
+            total += 1;
+        }
+        (rows, total)
+    }
+
     /// Detalle de un paquete (número 1-based, como en Wireshark).
     pub fn detail(&self, n: usize) -> Option<PacketDetail> {
-        let pkt = self.packets.get(n.checked_sub(1)?)?;
-        let dp = DissectorPipeline::new().dissect(pkt, self.link);
+        let pkt = self.get(n.checked_sub(1)?)?;
+        let dp = self.dissectors.dissect(pkt, self.link);
         Some(PacketDetail {
             n,
             ts_micros: pkt.ts_micros,
@@ -124,6 +260,196 @@ impl PacketIndex {
             hex: hex(&pkt.data),
         })
     }
+
+    /// "Seguir la conversación": los datos de aplicación de ambos lados en
+    /// orden, sin retransmisiones, agrupados en turnos.
+    pub fn stream(&self, flow: &EnrichedFlow) -> StreamView {
+        let mut view = StreamView::default();
+        // Siguiente secuencia esperada por dirección (solo TCP).
+        let mut next: [Option<u32>; 2] = [None, None];
+        for &g in self.flow_packets(&flow.flow_id.0) {
+            let Some(pkt) = self.get(g) else { continue };
+            let Some(dp) = self.dissectors.dissect(pkt, self.link) else {
+                continue;
+            };
+            let mut data: &[u8] = &dp.payload;
+            if data.is_empty() {
+                continue;
+            }
+            let outbound = is_outbound(&dp, flow);
+            if let Some(t) = &dp.tcp {
+                let slot = &mut next[usize::from(!outbound)];
+                let len = data.len() as u32;
+                if let Some(exp) = *slot {
+                    let ahead = t.seq.wrapping_sub(exp) as i32;
+                    if ahead < 0 {
+                        // Retransmisión total o parcial: solo lo nuevo.
+                        let dup = ahead.unsigned_abs();
+                        if dup >= len {
+                            continue;
+                        }
+                        data = &data[dup as usize..];
+                    } else if ahead > 0 {
+                        view.gaps = true;
+                    }
+                }
+                // Fin del segmento (sin recortar): lo siguiente esperado.
+                *slot = Some(t.seq.wrapping_add(len));
+            }
+            let room = MAX_STREAM.saturating_sub(view.client_bytes + view.server_bytes);
+            if room == 0 {
+                view.truncated = true;
+                break;
+            }
+            let data = &data[..data.len().min(room)];
+            if outbound {
+                view.client_bytes += data.len();
+            } else {
+                view.server_bytes += data.len();
+            }
+            match view.chunks.last_mut() {
+                Some(last) if last.outbound == outbound => last.hex.push_str(&hex(data)),
+                _ => view.chunks.push(StreamChunk {
+                    outbound,
+                    n: g + 1,
+                    hex: hex(data),
+                }),
+            }
+        }
+        view
+    }
+
+    /// Paquetes y bytes por intervalo de tiempo (la "gráfica de E/S"). Con
+    /// `keep` solo cuentan las conversaciones que pasan el filtro; el eje de
+    /// tiempo sigue siendo el de toda la captura, para poder comparar.
+    pub fn timeline(&self, buckets: usize, keep: Option<&dyn Fn(&str) -> bool>) -> Timeline {
+        let (Some(first), Some(last)) = (self.packets.front(), self.packets.back()) else {
+            return Timeline::default();
+        };
+        let (t0, t1) = (first.ts_micros, last.ts_micros.max(first.ts_micros));
+        let buckets = buckets.max(1);
+        let span = (t1 - t0).max(1);
+        let width = span.div_ceil(buckets as u64).max(1);
+        let n = ((span / width) as usize + 1).min(buckets);
+        let mut packets = vec![0u64; n];
+        let mut bytes = vec![0u64; n];
+        let allowed: Option<Vec<bool>> =
+            keep.map(|k| self.flow_ids.iter().map(|id| k(id)).collect());
+        for (p, &fid) in self.packets.iter().zip(&self.flow_of) {
+            if let Some(a) = &allowed {
+                if fid == NO_FLOW || !a[fid as usize] {
+                    continue;
+                }
+            }
+            let b = (((p.ts_micros.saturating_sub(t0)) / width) as usize).min(n - 1);
+            packets[b] += 1;
+            bytes[b] += u64::from(p.orig_len);
+        }
+        Timeline {
+            start_micros: t0,
+            bucket_micros: width,
+            packets,
+            bytes,
+        }
+    }
+
+    /// Las tramas guardadas como pcap clásico (para "Guardar captura").
+    pub fn to_pcap(&self) -> Vec<u8> {
+        let link: u32 = match self.link {
+            LinkType::Ethernet => 1,
+            LinkType::RawIp => 101,
+            LinkType::Unknown(code) => code,
+        };
+        let mut out = Vec::with_capacity(24 + self.stored_bytes + 16 * self.packets.len());
+        out.extend_from_slice(&0xa1b2_c3d4u32.to_le_bytes());
+        out.extend_from_slice(&2u16.to_le_bytes());
+        out.extend_from_slice(&4u16.to_le_bytes());
+        out.extend_from_slice(&0i32.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&65_535u32.to_le_bytes());
+        out.extend_from_slice(&link.to_le_bytes());
+        for p in self.packets.iter().filter(|p| !p.data.is_empty()) {
+            out.extend_from_slice(&((p.ts_micros / 1_000_000) as u32).to_le_bytes());
+            out.extend_from_slice(&((p.ts_micros % 1_000_000) as u32).to_le_bytes());
+            out.extend_from_slice(&(p.data.len() as u32).to_le_bytes());
+            out.extend_from_slice(&p.orig_len.max(p.data.len() as u32).to_le_bytes());
+            out.extend_from_slice(&p.data);
+        }
+        out
+    }
+}
+
+/// Frase del paquete o, si no se pudo diseccionar, el motivo.
+fn summary_or_reason(dp: Option<&DissectedPacket>, pkt: &RawPacket) -> String {
+    match dp {
+        Some(d) => summary(d),
+        None if pkt.data.is_empty() => "(contenido no guardado)".into(),
+        None => "Paquete que no se pudo interpretar".into(),
+    }
+}
+
+/// `origen:puerto` y `destino:puerto` de un paquete.
+fn endpoints(dp: &DissectedPacket) -> (String, String) {
+    let (sp, dpp) = ports(dp);
+    let fmt = |ip: Option<IpAddr>, port: u16| match ip {
+        Some(IpAddr::V6(v6)) if port != 0 => format!("[{v6}]:{port}"),
+        Some(ip) if port != 0 => format!("{ip}:{port}"),
+        Some(ip) => ip.to_string(),
+        None => String::new(),
+    };
+    (fmt(dp.src_ip(), sp), fmt(dp.dst_ip(), dpp))
+}
+
+/// Protocolo más alto reconocido (columna "Protocolo" de Wireshark).
+fn protocol_name(dp: &DissectedPacket) -> String {
+    if dp.l7 != L7Protocol::Unknown {
+        return dp.l7.as_str().to_string();
+    }
+    dp.transport.as_str().to_string()
+}
+
+/// Fila de la lista global de paquetes.
+#[derive(Debug, Serialize)]
+pub struct GlobalRow {
+    pub n: usize,
+    pub ts_micros: u64,
+    /// Desde el primer paquete guardado.
+    pub rel_micros: u64,
+    pub src: String,
+    pub dst: String,
+    pub protocol: String,
+    pub len: usize,
+    pub summary: String,
+    pub flow_id: Option<String>,
+}
+
+/// Un turno de la conversación: datos seguidos de un mismo lado.
+#[derive(Debug, Serialize)]
+pub struct StreamChunk {
+    /// Del iniciador (si no, del otro extremo).
+    pub outbound: bool,
+    /// Primer paquete del turno.
+    pub n: usize,
+    pub hex: String,
+}
+
+#[derive(Debug, Default, Serialize)]
+pub struct StreamView {
+    pub chunks: Vec<StreamChunk>,
+    pub client_bytes: usize,
+    pub server_bytes: usize,
+    /// Faltan datos (paquetes no capturados).
+    pub gaps: bool,
+    /// Se cortó en [`MAX_STREAM`].
+    pub truncated: bool,
+}
+
+#[derive(Debug, Default, Serialize)]
+pub struct Timeline {
+    pub start_micros: u64,
+    pub bucket_micros: u64,
+    pub packets: Vec<u64>,
+    pub bytes: Vec<u64>,
 }
 
 /// Identificador del flujo de un paquete, igual que lo calcula el agregador.
@@ -706,6 +1032,46 @@ mod tests {
         );
     }
 
+    fn demo_index() -> PacketIndex {
+        let mut idx = PacketIndex::new(LinkType::Ethernet, false);
+        for (ts, data) in sample_pcap_packets() {
+            idx.push(RawPacket {
+                ts_micros: ts,
+                orig_len: data.len() as u32,
+                data,
+            });
+        }
+        idx
+    }
+
+    fn flow_of(id_part: &str, idx: &PacketIndex) -> EnrichedFlow {
+        // Flujo mínimo con el id y los extremos que usa el índice.
+        let id = idx
+            .flow_ids
+            .iter()
+            .find(|f| f.contains(id_part))
+            .expect("flujo de la demo")
+            .clone();
+        let g = idx.flow_packets(&id)[0];
+        let dp = idx
+            .dissectors
+            .dissect(idx.get(g).unwrap(), idx.link)
+            .unwrap();
+        let (sp, dpp) = ports(&dp);
+        let mut f: EnrichedFlow = serde_json::from_value(serde_json::json!({
+            "flow_id": id, "state": "Idle", "transport": "Tcp", "l7_protocol": "Unknown",
+            "ip_version": 4, "src_ip": dp.src_ip().unwrap(), "src_port": sp,
+            "dst_ip": dp.dst_ip().unwrap(), "dst_port": dpp,
+            "first_seen_micros": 0, "last_seen_micros": 0, "duration_micros": 0,
+            "packets": 0, "bytes": 0, "packets_rev": 0, "bytes_rev": 0,
+            "tcp_flags": {"syn":0,"ack":0,"fin":0,"rst":0,"psh":0,"urg":0},
+            "is_background_noise": false, "human_summary": "", "risk_score": 0
+        }))
+        .unwrap();
+        f.flow_id.0 = id;
+        f
+    }
+
     #[test]
     fn indice_de_la_demo_capas_y_rangos_coherentes() {
         let dir = std::env::temp_dir();
@@ -713,11 +1079,11 @@ mod tests {
         write_pcap(&path, 1, &sample_pcap_packets()).unwrap();
         let idx = PacketIndex::build(&path).unwrap();
         std::fs::remove_file(&path).ok();
-        assert_eq!(idx.len(), 45);
+        assert_eq!(idx.total(), 45);
         assert!(!idx.truncated);
 
         // Cada trama de flujo cae en su flujo: el total coincide.
-        let in_flows: usize = idx.by_flow.values().map(Vec::len).sum();
+        let in_flows: usize = idx.by_flow.iter().map(Vec::len).sum();
         assert_eq!(in_flows, 45);
 
         // Paquete 1: pregunta DNS por example.com con Ethernet/IPv4/UDP/DNS.
@@ -735,5 +1101,96 @@ mod tests {
         assert_eq!(r[3].0, 42);
         assert_eq!(p.hex.len(), p.captured * 2);
         assert!(idx.detail(0).is_none() && idx.detail(46).is_none());
+    }
+
+    #[test]
+    fn lista_global_paginada_y_filtrada_por_flujo() {
+        let idx = demo_index();
+        let (all, total) = idx.page(0, 10, None);
+        assert_eq!(total, 45);
+        assert_eq!(all.len(), 10);
+        assert_eq!(all[0].n, 1);
+        assert_eq!(all[0].protocol, "DNS");
+        assert_eq!(all[0].src, "192.168.1.10:53001");
+        let (tail, _) = idx.page(40, 10, None);
+        assert_eq!(tail.len(), 5);
+        assert_eq!(tail[4].n, 45);
+
+        let only_443 = |id: &str| id.contains(":443-");
+        let (rows, total) = idx.page(0, 100, Some(&only_443));
+        assert_eq!(total, 7, "los 7 paquetes de la sesión TLS");
+        assert!(rows
+            .iter()
+            .all(|r| r.protocol == "TLS" || r.protocol == "TCP"));
+    }
+
+    #[test]
+    fn seguir_conversacion_http_y_linea_de_tiempo() {
+        let idx = demo_index();
+        let http = flow_of(":80-192.168.1.20:40112", &idx);
+        let v = idx.stream(&http);
+        assert!(v.chunks.len() >= 2, "petición y respuesta");
+        assert!(v.chunks[0].outbound);
+        let first = String::from_utf8(
+            (0..v.chunks[0].hex.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&v.chunks[0].hex[i..i + 2], 16).unwrap())
+                .collect(),
+        )
+        .unwrap();
+        assert!(first.starts_with("GET /downloads/factura.jpg"), "{first}");
+        assert!(!v.chunks[1].outbound);
+        assert!(v.server_bytes > 0 && !v.truncated);
+
+        let t = idx.timeline(50, None);
+        assert_eq!(t.packets.iter().sum::<u64>(), 45);
+        assert!(t.packets.len() <= 50);
+        // Filtrada: mismo eje, menos paquetes.
+        let solo_http = |id: &str| id == http.flow_id.0;
+        let f = idx.timeline(50, Some(&solo_http));
+        assert_eq!(
+            (f.start_micros, f.bucket_micros),
+            (t.start_micros, t.bucket_micros)
+        );
+        assert_eq!(
+            f.packets.iter().sum::<u64>(),
+            idx.flow_packets(&http.flow_id.0).len() as u64
+        );
+        assert!(f.packets.iter().sum::<u64>() < 45);
+    }
+
+    #[test]
+    fn buffer_circular_en_vivo_descarta_lo_antiguo() {
+        let mut idx = PacketIndex::new(LinkType::Ethernet, true);
+        let frame = sample_pcap_packets()[0].1.clone();
+        for i in 0..(MAX_LIVE_PACKETS + 10) {
+            idx.push(RawPacket {
+                ts_micros: i as u64,
+                orig_len: frame.len() as u32,
+                data: frame.clone(),
+            });
+        }
+        assert_eq!(idx.total(), MAX_LIVE_PACKETS + 10);
+        assert!(idx.truncated);
+        assert!(idx.detail(1).is_none(), "el primero ya se descartó");
+        assert!(idx.detail(MAX_LIVE_PACKETS + 10).is_some());
+        let (rows, total) = idx.page(0, 1, None);
+        assert_eq!(total, MAX_LIVE_PACKETS);
+        assert_eq!(rows[0].n, 11);
+    }
+
+    #[test]
+    fn guardar_como_pcap_se_relee_igual() {
+        let idx = demo_index();
+        let bytes = idx.to_pcap();
+        let mut r = PcapFileReader::new(&bytes[..]).unwrap();
+        let mut n = 0;
+        let originals = sample_pcap_packets();
+        while let Some(p) = r.next_packet().unwrap() {
+            assert_eq!(p.data, originals[n].1);
+            assert_eq!(p.ts_micros, originals[n].0);
+            n += 1;
+        }
+        assert_eq!(n, 45);
     }
 }

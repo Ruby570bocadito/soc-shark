@@ -155,6 +155,8 @@ pub struct Response {
     pub status: u16,
     pub content_type: &'static str,
     pub body: Vec<u8>,
+    /// Nombre de archivo si la respuesta es una descarga.
+    pub attachment: Option<String>,
 }
 
 impl Response {
@@ -163,6 +165,25 @@ impl Response {
             status,
             content_type,
             body: body.into(),
+            attachment: None,
+        }
+    }
+
+    /// Descarga con nombre de archivo (solo ASCII seguro en la cabecera).
+    pub fn download(filename: &str, content_type: &'static str, body: Vec<u8>) -> Self {
+        let safe: String = filename
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        Self {
+            attachment: Some(safe),
+            ..Self::new(200, content_type, body)
         }
     }
 
@@ -206,13 +227,20 @@ pub fn write_response(mut stream: impl Write, resp: &Response) -> io::Result<()>
          Referrer-Policy: no-referrer\r\n\
          Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; \
          img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; \
-         frame-ancestors 'none'\r\n\r\n",
+         frame-ancestors 'none'\r\n",
         resp.status,
         reason(resp.status),
         resp.content_type,
         resp.body.len()
     );
     stream.write_all(head.as_bytes())?;
+    if let Some(name) = &resp.attachment {
+        write!(
+            stream,
+            "Content-Disposition: attachment; filename=\"{name}\"\r\n"
+        )?;
+    }
+    stream.write_all(b"\r\n")?;
     stream.write_all(&resp.body)?;
     stream.flush()
 }

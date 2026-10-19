@@ -45,6 +45,7 @@ field    = ident , { "." , ident } ;
 | Campo | Tipo | Descripción |
 |---|---|---|
 | `ip.src`, `ip.dst` | IP | Extremos según primer paquete |
+| `ip.addr` (`host`) | IP (multi) | Cualquiera de los dos extremos, como en Wireshark. Para excluir un equipo usa `!(ip.addr == X)`: `ip.addr != X` es cierto si *algún* extremo es distinto |
 | `ip.version` | num | Familia del flujo: `4` o `6` (Fase 2) |
 | `sport`, `dport` (`src.port`, `dst.port`) | num | Puertos individuales |
 | `tcp.port`, `udp.port`, `port` | num (multi) | Ambos puertos; `tcp.port` solo aplica a flujos TCP y `udp.port` a UDP (igual que tcpdump) |

@@ -11,8 +11,10 @@
 //! Contrato con libpcap (solo funciones estables de la API pública):
 //! 1. `pcap_create` → handle inactivo.
 //! 2. Configuración *pre-activación*: snaplen, promiscuo, timeout de lectura
-//!    e *immediate mode* (los paquetes se entregan sin agrupar; imprescindible
-//!    para un SOC que quiere latencia mínima en las alertas).
+//!    e *immediate mode* en unix (los paquetes se entregan sin agrupar:
+//!    latencia mínima en las alertas). En Windows no se usa: Npcap entrega
+//!    al vencer el timeout, que ya acota la latencia, y así también vale con
+//!    versiones e implementaciones que no lo tienen.
 //! 3. *Pushdown* BPF (ADR-004): el filtro DSL↔BPF se compila con
 //!    `pcap_compile` y baja al kernel con `pcap_setfilter`, de modo que el
 //!    tráfico irrelevante nunca llega al userspace.
@@ -22,9 +24,11 @@
 //! `LiveCapture` se declara `Send` (se puede mover a otro hilo) pero no
 //! `Sync` (no se comparte). El daemon lo usa desde un único hilo de lectura.
 //!
-//! Restricción de plataforma: el bloque FFI asume LP64 unix (Linux/macOS de
-//! 64 bits). En otras plataformas se compila un stub que devuelve
-//! [`CaptureError::LiveUnavailable`].
+//! Plataformas: Linux y macOS de 64 bits (libpcap con `dlopen`) y Windows
+//! x64 (Npcap: `wpcap.dll` con `LoadLibraryExW`, misma API que libpcap). En
+//! el resto se compila un stub que devuelve [`CaptureError::LiveUnavailable`].
+//! En Windows no hay `poll`: el timeout de lectura de Npcap sí devuelve el
+//! control sin tráfico, así que el *tick* lo da `pcap_next_ex`.
 
 use crate::{CaptureError, CaptureSource};
 use socshark_core::{LinkType, RawPacket};
@@ -81,16 +85,31 @@ impl LiveCaptureConfig {
     }
 }
 
-#[cfg(not(all(unix, target_pointer_width = "64")))]
+#[cfg(not(any(
+    all(unix, target_pointer_width = "64"),
+    all(windows, target_pointer_width = "64")
+)))]
 mod backend {
     use super::*;
 
     pub struct LiveCapture;
 
+    /// Sin captura no hay nada que interrumpir.
+    #[derive(Debug, Clone)]
+    pub struct LiveBreaker;
+
+    impl LiveBreaker {
+        pub fn interrupt(&self) {}
+    }
+
     impl LiveCapture {
+        pub fn breaker(&self) -> LiveBreaker {
+            LiveBreaker
+        }
+
         pub fn open(_cfg: LiveCaptureConfig) -> Result<Self, CaptureError> {
             Err(CaptureError::LiveUnavailable(
-                "la captura en vivo solo está soportada en unix de 64 bits".into(),
+                "la captura en vivo necesita un sistema de 64 bits (Linux, macOS o Windows)".into(),
             ))
         }
 
@@ -118,49 +137,133 @@ mod backend {
 }
 
 // ---------------------------------------------------------------------------
-// Backend real: unix LP64
+// Backend real: unix LP64 (libpcap) y Windows x64 (Npcap)
 // ---------------------------------------------------------------------------
 
-#[cfg(all(unix, target_pointer_width = "64"))]
+#[cfg(any(
+    all(unix, target_pointer_width = "64"),
+    all(windows, target_pointer_width = "64")
+))]
 mod backend {
     use std::ffi::{c_char, c_int, c_void, CStr, CString};
+    use std::sync::{Arc, Mutex};
 
     use super::*;
 
-    // ---------------------------------------------------- dlopen / dlsym
+    // ---------------------------------------------------- carga dinámica
 
-    const RTLD_NOW: c_int = 0x2;
-    const RTLD_LOCAL: c_int = 0x0;
+    /// `dlopen`/`dlsym` sobre libpcap.
+    #[cfg(unix)]
+    mod dl {
+        use std::ffi::{c_char, c_int, c_void, CString};
 
+        const RTLD_NOW: c_int = 0x2;
+        const RTLD_LOCAL: c_int = 0x0;
+
+        extern "C" {
+            fn dlopen(filename: *const c_char, flags: c_int) -> *mut c_void;
+            fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
+            fn dlclose(handle: *mut c_void) -> c_int;
+        }
+
+        pub const LIB_NAME: &str = "libpcap";
+        pub const INSTALL_HINT: &str = "instala la biblioteca de captura (Debian/Ubuntu: `apt install libpcap0.8`; Fedora: `dnf install libpcap`; macOS ya la trae el sistema)";
+        pub const PERM_HINT: &str =
+            "ejecuta como root o concede CAP_NET_RAW (setcap cap_net_raw+ep)";
+
+        /// Debian/Ubuntu (`so.0.8`), Fedora/Arch (`so.1`), genérico con
+        /// `-dev` instalado y macOS (`libpcap` resuelve `libpcap.dylib`).
+        pub fn candidates() -> Vec<String> {
+            ["libpcap.so.0.8", "libpcap.so.1", "libpcap.so", "libpcap"]
+                .map(String::from)
+                .to_vec()
+        }
+
+        pub unsafe fn open(name: &str) -> *mut c_void {
+            let c = CString::new(name).expect("nombre de biblioteca sin NUL");
+            dlopen(c.as_ptr(), RTLD_NOW | RTLD_LOCAL)
+        }
+
+        pub unsafe fn sym(h: *mut c_void, name: *const c_char) -> *mut c_void {
+            dlsym(h, name)
+        }
+
+        pub unsafe fn close(h: *mut c_void) {
+            dlclose(h);
+        }
+    }
+
+    /// `LoadLibraryExW`/`GetProcAddress` sobre `wpcap.dll` de Npcap.
+    #[cfg(windows)]
+    mod dl {
+        use std::ffi::{c_char, c_void, OsStr};
+        use std::os::windows::ffi::OsStrExt;
+
+        /// Resuelve las dependencias (`Packet.dll`) en la carpeta de la DLL.
+        const LOAD_WITH_ALTERED_SEARCH_PATH: u32 = 0x0000_0008;
+
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn LoadLibraryExW(name: *const u16, file: *mut c_void, flags: u32) -> *mut c_void;
+            fn GetProcAddress(module: *mut c_void, name: *const c_char) -> *mut c_void;
+            fn FreeLibrary(module: *mut c_void) -> i32;
+        }
+
+        pub const LIB_NAME: &str = "Npcap (wpcap.dll)";
+        pub const INSTALL_HINT: &str =
+            "instala Npcap desde https://npcap.com y deja marcado «WinPcap API-compatible Mode»";
+        pub const PERM_HINT: &str =
+            "abre la consola como administrador (Npcap se instaló solo para administradores)";
+
+        /// Instalación propia de Npcap y, si no, la ruta de búsqueda normal
+        /// (modo compatible con WinPcap, que la copia en System32).
+        pub fn candidates() -> Vec<String> {
+            let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+            vec![
+                format!(r"{root}\System32\Npcap\wpcap.dll"),
+                "wpcap.dll".into(),
+            ]
+        }
+
+        pub unsafe fn open(name: &str) -> *mut c_void {
+            let wide: Vec<u16> = OsStr::new(name).encode_wide().chain(Some(0)).collect();
+            let flags = if name.contains('\\') {
+                LOAD_WITH_ALTERED_SEARCH_PATH
+            } else {
+                0
+            };
+            LoadLibraryExW(wide.as_ptr(), std::ptr::null_mut(), flags)
+        }
+
+        pub unsafe fn sym(h: *mut c_void, name: *const c_char) -> *mut c_void {
+            GetProcAddress(h, name)
+        }
+
+        pub unsafe fn close(h: *mut c_void) {
+            FreeLibrary(h);
+        }
+    }
+
+    #[cfg(unix)]
     extern "C" {
-        fn dlopen(filename: *const c_char, flags: c_int) -> *mut c_void;
-        fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
-        fn dlclose(handle: *mut c_void) -> c_int;
         fn poll(fds: *mut PollFd, nfds: NfdsT, timeout: c_int) -> c_int;
     }
 
     /// `struct pollfd` (idéntica en Linux y macOS).
+    #[cfg(unix)]
     #[repr(C)]
     struct PollFd {
         fd: c_int,
         events: i16,
         revents: i16,
     }
+    #[cfg(unix)]
     const POLLIN: i16 = 0x1;
     /// `nfds_t`: `unsigned long` en Linux, `unsigned int` en macOS.
     #[cfg(target_os = "macos")]
     type NfdsT = std::ffi::c_uint;
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(all(unix, not(target_os = "macos")))]
     type NfdsT = std::ffi::c_ulong;
-
-    /// Nombres de soname probados en orden: Debian/Ubuntu (`so.0.8`),
-    /// Fedora/Arch (`so.1`), genérico con `-dev` instalado y macOS
-    /// (`dlopen("libpcap")` resuelve `libpcap.dylib` en las rutas del
-    /// sistema).
-    const LIBPCAP_CANDIDATES: [&str; 4] =
-        ["libpcap.so.0.8", "libpcap.so.1", "libpcap.so", "libpcap"];
-
-    const INSTALL_HINT: &str = "instala la biblioteca de captura (Debian/Ubuntu: `apt install libpcap0.8`; Fedora: `dnf install libpcap`; macOS ya la trae el sistema)";
 
     /// Biblioteca cargada; al soltarla se hace `dlclose`.
     struct LibPcap {
@@ -176,24 +279,26 @@ mod backend {
         /// Carga libpcap y resuelve todos los símbolos usados por el
         /// backend. Si falta alguno, se considera la instalación rota.
         fn load() -> Result<LibPcap, CaptureError> {
-            for name in LIBPCAP_CANDIDATES {
-                let cname = CString::new(name).expect("soname sin NUL");
-                let h = unsafe { dlopen(cname.as_ptr(), RTLD_NOW | RTLD_LOCAL) };
+            for name in dl::candidates() {
+                let h = unsafe { dl::open(&name) };
                 if !h.is_null() {
                     return Ok(LibPcap { handle: h });
                 }
             }
             Err(CaptureError::LiveUnavailable(format!(
-                "libpcap no encontrada ({INSTALL_HINT})"
+                "{} no encontrada ({})",
+                dl::LIB_NAME,
+                dl::INSTALL_HINT
             )))
         }
 
         fn sym(&self, name: &str) -> Result<*mut c_void, CaptureError> {
             let cname = CString::new(name).expect("nombre de símbolo sin NUL");
-            let p = unsafe { dlsym(self.handle, cname.as_ptr()) };
+            let p = unsafe { dl::sym(self.handle, cname.as_ptr()) };
             if p.is_null() {
                 return Err(CaptureError::LiveUnavailable(format!(
-                    "libpcap incompleta: falta el símbolo {name}"
+                    "{} incompleta: falta el símbolo {name}",
+                    dl::LIB_NAME
                 )));
             }
             Ok(p)
@@ -202,7 +307,7 @@ mod backend {
 
     impl Drop for LibPcap {
         fn drop(&mut self) {
-            unsafe { dlclose(self.handle) };
+            unsafe { dl::close(self.handle) };
         }
     }
 
@@ -225,19 +330,25 @@ mod backend {
     }
 
     /// `timeval` según la plataforma: en Linux LP64 ambos campos son i64;
-    /// en macOS `tv_usec` es de 32 bits (el layout cambia, y equivocarse
-    /// aquí desplaza `caplen`/`len`).
+    /// en macOS `tv_usec` es de 32 bits; en Windows (LLP64) `long` es de 32
+    /// bits y ambos lo son. Equivocarse aquí desplaza `caplen`/`len`.
     #[cfg(target_os = "macos")]
     #[repr(C)]
     struct PcapTimeval {
         tv_sec: i64,
         tv_usec: i32,
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(all(unix, not(target_os = "macos")))]
     #[repr(C)]
     struct PcapTimeval {
         tv_sec: i64,
         tv_usec: i64,
+    }
+    #[cfg(windows)]
+    #[repr(C)]
+    struct PcapTimeval {
+        tv_sec: i32,
+        tv_usec: i32,
     }
 
     #[repr(C)]
@@ -247,11 +358,17 @@ mod backend {
         len: u32,
     }
 
+    /// En Windows `pcap_stat` lleva tres contadores más (`ps_capt`,
+    /// `ps_sent`, `ps_netdrop`): la estructura debe tener su tamaño real
+    /// aunque no se lean, o `pcap_stats` escribiría fuera de ella.
     #[repr(C)]
+    #[derive(Default)]
     struct PcapStat {
         ps_recv: u32,
         ps_drop: u32,
         ps_ifdrop: u32,
+        #[cfg(windows)]
+        _win_extra: [u32; 3],
     }
 
     #[repr(C)]
@@ -281,6 +398,7 @@ mod backend {
         set_snaplen: unsafe extern "C" fn(*mut PcapT, c_int) -> c_int,
         set_promisc: unsafe extern "C" fn(*mut PcapT, c_int) -> c_int,
         set_timeout: unsafe extern "C" fn(*mut PcapT, c_int) -> c_int,
+        #[cfg(unix)]
         set_immediate_mode: unsafe extern "C" fn(*mut PcapT, c_int) -> c_int,
         activate: unsafe extern "C" fn(*mut PcapT) -> c_int,
         compile:
@@ -291,10 +409,14 @@ mod backend {
         next_ex: unsafe extern "C" fn(*mut PcapT, *mut *const PcapPkthdr, *mut *const u8) -> c_int,
         geterr: unsafe extern "C" fn(*mut PcapT) -> *const c_char,
         close: unsafe extern "C" fn(*mut PcapT),
+        breakloop: unsafe extern "C" fn(*mut PcapT),
         stats: unsafe extern "C" fn(*mut PcapT, *mut PcapStat) -> c_int,
         findalldevs: unsafe extern "C" fn(*mut *mut PcapIf, *mut c_char) -> c_int,
         freealldevs: unsafe extern "C" fn(*mut PcapIf),
+        // Solo unix: Npcap no exporta pcap_get_selectable_fd.
+        #[cfg(unix)]
         setnonblock: unsafe extern "C" fn(*mut PcapT, c_int, *mut c_char) -> c_int,
+        #[cfg(unix)]
         get_selectable_fd: unsafe extern "C" fn(*mut PcapT) -> c_int,
     }
 
@@ -324,6 +446,7 @@ mod backend {
                 set_snaplen: unsafe { sym_as(s("pcap_set_snaplen")?) },
                 set_promisc: unsafe { sym_as(s("pcap_set_promisc")?) },
                 set_timeout: unsafe { sym_as(s("pcap_set_timeout")?) },
+                #[cfg(unix)]
                 set_immediate_mode: unsafe { sym_as(s("pcap_set_immediate_mode")?) },
                 activate: unsafe { sym_as(s("pcap_activate")?) },
                 compile: unsafe { sym_as(s("pcap_compile")?) },
@@ -333,10 +456,13 @@ mod backend {
                 next_ex: unsafe { sym_as(s("pcap_next_ex")?) },
                 geterr: unsafe { sym_as(s("pcap_geterr")?) },
                 close: unsafe { sym_as(s("pcap_close")?) },
+                breakloop: unsafe { sym_as(s("pcap_breakloop")?) },
                 stats: unsafe { sym_as(s("pcap_stats")?) },
                 findalldevs: unsafe { sym_as(s("pcap_findalldevs")?) },
                 freealldevs: unsafe { sym_as(s("pcap_freealldevs")?) },
+                #[cfg(unix)]
                 setnonblock: unsafe { sym_as(s("pcap_setnonblock")?) },
+                #[cfg(unix)]
                 get_selectable_fd: unsafe { sym_as(s("pcap_get_selectable_fd")?) },
             })
         }
@@ -353,9 +479,13 @@ mod backend {
         prog: Option<BpfProgram>,
         /// Descriptor para `poll` en modo no bloqueante; -1 si la
         /// plataforma no lo ofrece (se delega la espera en libpcap).
+        #[cfg(unix)]
         fd: c_int,
         /// Espera máxima por paquete antes de devolver un tick.
+        #[cfg(unix)]
         timeout_ms: c_int,
+        /// Estado compartido con los [`LiveBreaker`] de otros hilos.
+        brk: Arc<BreakState>,
         /// Biblioteca subyacente; DEBE ser el último campo: al soltar la
         /// struct se hace `dlclose`, que debe ocurrir después de
         /// `pcap_close` (el orden de drop de campos es el de declaración).
@@ -363,6 +493,39 @@ mod backend {
     }
 
     unsafe impl Send for LiveCapture {}
+
+    /// Interrumpe desde otro hilo una lectura en curso (`pcap_breakloop`),
+    /// para que "Detener" nunca espere al siguiente paquete. Comparte con la
+    /// captura un cerrojo que impide llamarlo cuando el handle ya se cerró.
+    #[derive(Clone)]
+    pub struct LiveBreaker {
+        inner: Arc<BreakState>,
+    }
+
+    impl std::fmt::Debug for LiveBreaker {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("LiveBreaker").finish_non_exhaustive()
+        }
+    }
+
+    struct BreakState {
+        /// Dirección del handle abierto; `None` en cuanto se cierra.
+        handle: Mutex<Option<usize>>,
+        breakloop: unsafe extern "C" fn(*mut PcapT),
+    }
+
+    impl LiveBreaker {
+        pub fn interrupt(&self) {
+            if let Ok(h) = self.inner.handle.lock() {
+                if let Some(addr) = *h {
+                    // SAFETY: el handle sigue abierto mientras se tenga el
+                    // cerrojo (Drop lo marca cerrado y cierra con él tomado),
+                    // y pcap_breakloop está pensada para otro hilo.
+                    unsafe { (self.inner.breakloop)(addr as *mut PcapT) };
+                }
+            }
+        }
+    }
 
     impl std::fmt::Debug for LiveCapture {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -394,7 +557,7 @@ mod backend {
             }
 
             // Configuración pre-activación: cada paso devuelve 0 en éxito.
-            let steps: [(&str, c_int); 4] = [
+            let steps = [
                 ("snaplen", unsafe {
                     (syms.set_snaplen)(handle, cfg.snaplen)
                 }),
@@ -404,6 +567,7 @@ mod backend {
                 ("timeout", unsafe {
                     (syms.set_timeout)(handle, cfg.timeout_ms)
                 }),
+                #[cfg(unix)]
                 ("modo inmediato", unsafe {
                     (syms.set_immediate_mode)(handle, 1)
                 }),
@@ -423,7 +587,7 @@ mod backend {
             let rc = unsafe { (syms.activate)(handle) };
             if rc < 0 {
                 let detail: String = if rc == PCAP_ERROR_PERM_DENIED {
-                    "sin privilegios de captura: ejecuta como root o concede CAP_NET_RAW (setcap cap_net_raw+ep)".to_string()
+                    format!("sin privilegios de captura: {}", dl::PERM_HINT)
                 } else if rc == PCAP_ERROR_NO_SUCH_DEVICE {
                     "la interfaz no existe (¿nombre correcto? prueba `socshark daemon --list`)"
                         .to_string()
@@ -484,33 +648,48 @@ mod backend {
             // lectura de libpcap no garantiza que `pcap_next_ex` vuelva sin
             // tráfico (repite el poll por dentro), y el daemon necesita ese
             // tick para expirar flujos y atender `--duration` y Ctrl-C.
-            let mut fd = unsafe { (syms.get_selectable_fd)(handle) };
-            if fd >= 0 && unsafe { (syms.setnonblock)(handle, 1, errbuf.as_mut_ptr()) } != 0 {
-                fd = -1;
-            }
+            #[cfg(unix)]
+            let fd = {
+                let fd = unsafe { (syms.get_selectable_fd)(handle) };
+                if fd >= 0 && unsafe { (syms.setnonblock)(handle, 1, errbuf.as_mut_ptr()) } != 0 {
+                    -1
+                } else {
+                    fd
+                }
+            };
 
             let dlt = unsafe { (syms.datalink)(handle) };
             let link = LinkType::from_pcap_code(dlt as u32);
 
+            let brk = Arc::new(BreakState {
+                handle: Mutex::new(Some(handle as usize)),
+                breakloop: syms.breakloop,
+            });
             Ok(Self {
                 syms,
                 handle,
                 link,
                 prog,
+                brk,
+                #[cfg(unix)]
                 fd,
+                #[cfg(unix)]
                 timeout_ms: cfg.timeout_ms,
                 lib,
             })
         }
 
+        /// Interruptor para despertar la lectura desde otro hilo.
+        pub fn breaker(&self) -> LiveBreaker {
+            LiveBreaker {
+                inner: Arc::clone(&self.brk),
+            }
+        }
+
         /// Contadores del kernel desde la última consulta: `(recibidos,
         /// descartados por el búfer)`. `None` si el backend no los da.
         pub fn kernel_stats(&self) -> Option<(u32, u32)> {
-            let mut st = PcapStat {
-                ps_recv: 0,
-                ps_drop: 0,
-                ps_ifdrop: 0,
-            };
+            let mut st = PcapStat::default();
             let rc = unsafe { (self.syms.stats)(self.handle, &mut st) };
             if rc == 0 {
                 Some((st.ps_recv, st.ps_drop))
@@ -533,7 +712,9 @@ mod backend {
         fn next_packet(&mut self) -> Result<Option<RawPacket>, CaptureError> {
             let mut hdr: *const PcapPkthdr = std::ptr::null();
             let mut data: *const u8 = std::ptr::null();
+            #[allow(unused_mut)] // solo unix reintenta tras el poll
             let mut rc = unsafe { (self.syms.next_ex)(self.handle, &mut hdr, &mut data) };
+            #[cfg(unix)]
             if rc == 0 && self.fd >= 0 {
                 // Nada disponible: esperar al descriptor como mucho un
                 // timeout. Vencido o interrumpido por una señal (EINTR,
@@ -583,6 +764,10 @@ mod backend {
 
     impl Drop for LiveCapture {
         fn drop(&mut self) {
+            // Se cierra con el cerrojo del interruptor tomado: nadie puede
+            // llamar a pcap_breakloop sobre un handle ya liberado.
+            let mut open = self.brk.handle.lock().unwrap_or_else(|e| e.into_inner());
+            *open = None;
             if let Some(mut prog) = self.prog.take() {
                 unsafe { (self.syms.freecode)(&mut prog) };
             }
@@ -593,6 +778,7 @@ mod backend {
                 let _lib = &self.lib;
                 unsafe { (self.syms.close)(self.handle) };
             }
+            drop(open);
         }
     }
 
@@ -647,7 +833,7 @@ mod backend {
 }
 
 // Cada plataforma compila exactamente un `backend` (real o stub).
-pub use backend::{list_ifaces, LiveCapture};
+pub use backend::{list_ifaces, LiveBreaker, LiveCapture};
 
 #[cfg(test)]
 mod tests {
@@ -710,6 +896,28 @@ mod tests {
                 t.elapsed()
             );
         }
+    }
+
+    /// El interruptor es seguro antes y después de cerrar la captura.
+    #[test]
+    fn interrumpir_es_seguro_con_handle_abierto_o_cerrado() {
+        let iface = if cfg!(target_os = "macos") {
+            "lo0"
+        } else {
+            "lo"
+        };
+        let Ok(mut cap) =
+            LiveCapture::open(LiveCaptureConfig::new(iface).with_bpf(Some("udp port 9".into())))
+        else {
+            eprintln!("sin captura en vivo en este entorno: se omite");
+            return;
+        };
+        let brk = cap.breaker();
+        brk.interrupt();
+        // Tras interrumpir, la siguiente lectura es un tick, no un error.
+        assert!(matches!(cap.next_packet(), Ok(None)));
+        drop(cap);
+        brk.interrupt(); // handle cerrado: no hace nada
     }
 
     #[test]

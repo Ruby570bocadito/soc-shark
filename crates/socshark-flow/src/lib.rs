@@ -215,6 +215,32 @@ struct FlowAccum {
 }
 
 impl FlowAccum {
+    /// Copia del acumulador sin los segmentos TCP (que pesan hasta 1 MiB
+    /// por dirección): lo que necesita una foto periódica en vivo.
+    fn clone_without_streams(&self) -> FlowAccum {
+        FlowAccum {
+            key: self.key.clone(),
+            src: self.src,
+            src_port: self.src_port,
+            dst: self.dst,
+            dst_port: self.dst_port,
+            src_mac: self.src_mac.clone(),
+            dst_mac: self.dst_mac.clone(),
+            first_seen: self.first_seen,
+            last_seen: self.last_seen,
+            packets_fwd: self.packets_fwd,
+            bytes_fwd: self.bytes_fwd,
+            packets_rev: self.packets_rev,
+            bytes_rev: self.bytes_rev,
+            flags: self.flags,
+            l7: self.l7,
+            dns: self.dns.clone(),
+            streams: None,
+            hello: self.hello.clone(),
+            times_fwd: self.times_fwd.clone(),
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn new(
         key: FlowKey,
@@ -439,6 +465,25 @@ impl FlowAggregator {
                     .map(|acc| Self::export_with_streams(acc).0)
             })
             .collect()
+    }
+
+    /// Foto de los flujos que siguen vivos, sin expulsarlos (vista en
+    /// tiempo real). Los que no se han cerrado se marcan `Active`; no
+    /// incluye streams reensamblados.
+    pub fn snapshot(&self) -> Vec<EnrichedFlow> {
+        let mut out: Vec<EnrichedFlow> = self
+            .flows
+            .values()
+            .map(|acc| {
+                let mut flow = Self::export_with_streams(acc.clone_without_streams()).0;
+                if flow.state == FlowState::Idle {
+                    flow.state = FlowState::Active;
+                }
+                flow
+            })
+            .collect();
+        out.sort_by_key(|f| f.first_seen_micros);
+        out
     }
 
     /// Finaliza la captura y exporta todos los flujos restantes, ordenados
@@ -947,6 +992,34 @@ mod tests {
         let expired = agg.drain_expired(200_000_000); // t = 200 s: expira
         assert_eq!(expired.len(), 1);
         assert!(agg.finish().is_empty());
+    }
+
+    #[test]
+    fn snapshot_no_consume_y_marca_activos() {
+        let mut agg = FlowAggregator::new(1000, 120, false);
+        for (ts, sport) in [(1_000_000, 53001), (2_000_000, 53002), (3_000_000, 53001)] {
+            let (len, d) = dissected(tg::frame_udp(
+                tg::MAC_HOST_A,
+                tg::MAC_ROUTER,
+                tg::HOST_A,
+                tg::DNS_EXT,
+                sport,
+                53,
+                &tg::dns_query(1, "a.example", 1),
+            ));
+            agg.on_packet(ts, len, &d);
+        }
+        let snap = agg.snapshot();
+        assert_eq!(snap.len(), 2);
+        assert_eq!(snap[0].packets, 2, "ordenado por primer avistamiento");
+        assert!(snap.iter().all(|f| f.state == FlowState::Active));
+        // La foto no cambia nada: los flujos siguen en el agregador.
+        let again: Vec<u64> = agg.snapshot().iter().map(|f| f.packets).collect();
+        assert_eq!(again, [2, 1]);
+        assert_eq!(agg.stats().total_packets, 3);
+        let fin = agg.finish();
+        assert_eq!(fin.len(), 2);
+        assert_eq!(fin[0].state, FlowState::Idle);
     }
 
     #[test]

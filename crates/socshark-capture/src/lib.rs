@@ -44,5 +44,5 @@ pub trait CaptureSource {
     fn link_type(&self) -> LinkType;
 }
 
-pub use live::{list_ifaces, LiveCapture, LiveCaptureConfig, LiveIface};
+pub use live::{list_ifaces, LiveBreaker, LiveCapture, LiveCaptureConfig, LiveIface};
 pub use pcap_file::PcapFileReader;

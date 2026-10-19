@@ -94,8 +94,42 @@ fn install_stop_handler() {
     }
 }
 
-/// Sin captura en vivo fuera de unix (ver `socshark-capture::live`).
-#[cfg(not(unix))]
+/// Interruptor de la lectura en curso. En Windows no hay señal que corte la
+/// espera de Npcap, así que el manejador de consola (que corre en su propio
+/// hilo) la despierta con `pcap_breakloop`.
+#[cfg(windows)]
+static BREAKER: std::sync::OnceLock<socshark_capture::LiveBreaker> = std::sync::OnceLock::new();
+
+/// Windows: Ctrl-C y el cierre de la consola llegan como eventos de
+/// consola. El primero marca la parada (se atiende: el proceso sigue y cierra
+/// ordenado); si ya estaba marcada, se deja al manejador por defecto, que
+/// termina el proceso (segundo Ctrl-C = salida forzada, como en unix).
+#[cfg(windows)]
+fn install_stop_handler() {
+    extern "system" {
+        fn SetConsoleCtrlHandler(
+            handler: Option<unsafe extern "system" fn(u32) -> i32>,
+            add: i32,
+        ) -> i32;
+    }
+
+    unsafe extern "system" fn on_ctrl(_event: u32) -> i32 {
+        let first = !STOP.swap(true, Ordering::SeqCst);
+        if first {
+            if let Some(b) = BREAKER.get() {
+                b.interrupt();
+            }
+        }
+        i32::from(first)
+    }
+
+    unsafe {
+        SetConsoleCtrlHandler(Some(on_ctrl), 1);
+    }
+}
+
+/// Sin captura en vivo en el resto de plataformas.
+#[cfg(not(any(unix, windows)))]
 fn install_stop_handler() {}
 
 /// Enumera interfaces capturables (`socshark daemon --list`).
@@ -118,6 +152,8 @@ pub fn run_daemon(opts: &DaemonOptions) -> Result<()> {
     let cap_cfg = LiveCaptureConfig::new(opts.iface.clone()).with_bpf(opts.bpf.clone());
     let mut source = LiveCapture::open(cap_cfg).map_err(|e| anyhow::anyhow!("{e}"))?;
     let link = source.link_type();
+    #[cfg(windows)]
+    let _ = BREAKER.set(source.breaker());
     install_stop_handler();
 
     eprintln!("[*] Daemon en vivo: {} (enlace {link:?})", opts.iface);

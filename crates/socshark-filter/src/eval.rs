@@ -44,6 +44,8 @@ pub fn get_fields(flow: &EnrichedFlow, path: &FieldPath) -> Vec<FieldValue> {
     match name.as_str() {
         "ip.src" => vec![FieldValue::Ip(flow.src_ip)],
         "ip.dst" => vec![FieldValue::Ip(flow.dst_ip)],
+        // Cualquiera de los dos extremos, como `ip.addr` en Wireshark.
+        "ip.addr" | "host" => vec![FieldValue::Ip(flow.src_ip), FieldValue::Ip(flow.dst_ip)],
         // Fase 2: filtrar por familia (p. ej. `ip.version == 6`).
         "ip.version" => vec![FieldValue::Num(match flow.src_ip {
             IpAddr::V4(_) => 4.0,
@@ -320,6 +322,11 @@ mod tests {
         assert!(eval(&parse("dns.qtype == \"A\"").unwrap(), &f));
         assert!(eval(&parse("dns.rcode == \"NOERROR\"").unwrap(), &f));
         assert!(eval(&parse("dns.answer == 1.2.3.4").unwrap(), &f));
+        // ip.addr: cualquiera de los extremos; negarlo excluye el equipo.
+        assert!(eval(&parse("ip.addr == 8.8.8.8").unwrap(), &f));
+        assert!(eval(&parse("host == 10.0.0.1").unwrap(), &f));
+        assert!(!eval(&parse("!(ip.addr == 8.8.8.8)").unwrap(), &f));
+        assert!(eval(&parse("!(ip.addr == 9.9.9.9)").unwrap(), &f));
     }
 
     #[test]
