@@ -287,12 +287,18 @@ mod backend {
             // real del símbolo según la ABI pública de libpcap; las firmas
             // de `Syms` son la única fuente de verdad y están auditadas
             // contra `pcap/pcap.h` (API estable, sin variantes de tamaño
-            // dependientes de la versión). `ptr::read` copia los 8 bytes de
-            // la dirección como valor de `T` (patrón habitual para dlsym,
-            // evita el transmute genérico).
+            // dependientes de la versión). `transmute_copy(&p)` reinterpreta
+            // el *valor* de la dirección como `T`; leer *a través* de `p`
+            // (`ptr::read(p)`) copiaría los primeros bytes del código
+            // máquina de la función y el primer call saltaría a basura.
             unsafe fn sym_as<T>(p: *mut c_void) -> T {
                 debug_assert!(!p.is_null());
-                std::ptr::read(p as *const T)
+                assert_eq!(
+                    std::mem::size_of::<T>(),
+                    std::mem::size_of::<*mut c_void>(),
+                    "sym_as: T debe ser un puntero a función"
+                );
+                std::mem::transmute_copy(&p)
             }
             let s = |name: &str| -> Result<*mut c_void, CaptureError> { lib.sym(name) };
             Ok(Syms {
@@ -387,8 +393,10 @@ mod backend {
                 }
             }
 
+            // rc > 0 son avisos (PCAP_WARNING*, p. ej. promiscuo no
+            // soportado): la captura queda activa y se continúa.
             let rc = unsafe { (syms.activate)(handle) };
-            if rc != 0 {
+            if rc < 0 {
                 let detail: String = if rc == PCAP_ERROR_PERM_DENIED {
                     "sin privilegios de captura: ejecuta como root o concede CAP_NET_RAW (setcap cap_net_raw+ep)".to_string()
                 } else if rc == PCAP_ERROR_NO_SUCH_DEVICE {
@@ -397,7 +405,10 @@ mod backend {
                 } else if rc == PCAP_ERROR_NOT_ACTIVATED {
                     "la interfaz no pudo activarse".to_string()
                 } else {
-                    err_str(&errbuf)
+                    // Tras pcap_create el error vive en el handle, no en errbuf.
+                    unsafe { CStr::from_ptr((syms.geterr)(handle)) }
+                        .to_string_lossy()
+                        .into_owned()
                 };
                 unsafe { (syms.close)(handle) };
                 return Err(CaptureError::Live(format!(

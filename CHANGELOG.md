@@ -3,6 +3,23 @@
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/)
 y [SemVer](https://semver.org/lang/es/).
 
+## [Sin publicar]
+
+### Corregido
+
+- **Captura en vivo: SIGSEGV en la primera llamada a libpcap.** `sym_as`
+  convertía la dirección de `dlsym` con `ptr::read(p)`, que lee los primeros
+  bytes del *código* de la función en lugar de usar la dirección; ahora usa
+  `transmute_copy(&p)`. Afectaba a `daemon -i`, `daemon --list` y a los tests
+  de `socshark-capture` en cualquier máquina con libpcap instalada (el CI de
+  GitHub fallaba por esto desde la 0.4.0).
+- `pcap_activate`: los avisos (`rc > 0`, p. ej. promiscuo no soportado) ya no
+  abortan la captura, y los errores genéricos muestran el mensaje de
+  `pcap_geterr` en lugar de una cadena vacía.
+- `clippy -D warnings` vuelve a pasar en toolchains anteriores a
+  `clippy::chunks_exact_to_as_chunks` (p. ej. 1.97): los `allow` incluyen
+  `unknown_lints`.
+
 ## [0.6.0] — 2026-10-16
 
 ### Añadido (Fase 4, piezas puras: file carving, threat intel, export SIEM)

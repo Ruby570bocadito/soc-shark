@@ -266,7 +266,7 @@ fn parse_u16_list_be(data: &[u8], hdr_bytes: usize) -> Vec<u16> {
     }
     let p = &data[hdr_bytes..];
     // as_chunks es de Rust 1.88; el MSRV del workspace es 1.75 (ADR-001).
-    #[allow(clippy::chunks_exact_to_as_chunks)]
+    #[allow(unknown_lints, clippy::chunks_exact_to_as_chunks)]
     p.chunks_exact(2)
         .map(|c| u16::from_be_bytes([c[0], c[1]]))
         .collect()
@@ -307,7 +307,7 @@ pub fn parse_client_hello(data: &[u8]) -> Option<ClientHello> {
     }
     let cipher_suites: Vec<u16> = {
         // as_chunks es de Rust 1.88; el MSRV del workspace es 1.75 (ADR-001).
-        #[allow(clippy::chunks_exact_to_as_chunks)]
+        #[allow(unknown_lints, clippy::chunks_exact_to_as_chunks)]
         let pairs = p[..cs_len].chunks_exact(2);
         pairs.map(|c| u16::from_be_bytes([c[0], c[1]])).collect()
     };
