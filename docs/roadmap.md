@@ -73,7 +73,7 @@ operación en tiempo real.
       (DNS con `QDCOUNT=0`). cargo-fuzz/libFuzzer con cobertura guiada
       queda como tarea de contribución (ver CONTRIBUTING.md).
 
-Estado 0.6.0: 152 tests verdes (158 tras los arreglos posteriores, ver CHANGELOG). El único criterio de fase pendiente de
+Estado 0.6.0: 152 tests verdes (175 tras los arreglos y la GUI, ver CHANGELOG). El único criterio de fase pendiente de
 verificación sobre hardware real es el rendimiento en vivo (≥ 200 Mbps
 sostenidos y TUI fluida con 10k flujos): el resto del criterio (Follow
 Stream legible, salida determinista con paralelismo) ya está cubierto por
@@ -138,9 +138,14 @@ ecosistemas (son las únicas piezas que justificarían dependencias nuevas).
 - [x] Export SIEM: mapeo ECS 8.x completo en lo esencial + salida Wazuh
       (reglas de ejemplo documentadas en `docs/siem-export.md`); push a
       TheHive pendiente (exigiría cliente HTTP propio)
-- [ ] GUI con Tauri + WebGL: tabla virtualizada de flujos, RadarSidebar de
-      IOCs, SequenceView de handshakes, StreamInspector con decodificador
-      CyberChef-style (pipelines Base64→XOR→Zlib→JSON)
+- [x] GUI (`socshark gui`, ADR-013): página local servida por el binario,
+      sin dependencias nuevas. Historias agrupadas con «qué hacer»,
+      conversaciones en lenguaje claro (modo Simple) o técnico (Experto),
+      vista de paquetes con capas explicadas y bytes resaltados, filtro DSL,
+      glosario, abrir/arrastrar capturas. Ver [gui.md](gui.md)
+- [ ] GUI empaquetada (Tauri) con tabla virtualizada, SequenceView de
+      handshakes y StreamInspector con decodificador CyberChef-style
+      (pipelines Base64→XOR→Zlib→JSON)
 - [ ] Runtime de plugins WASM (wasmtime) con la API WIT de
       [wasm-plugins.md](wasm-plugins.md) + firma Ed25519 + plugins oficiales
 - [ ] Persistencia de sesiones (DuckDB) con consultas analíticas

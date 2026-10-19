@@ -4,7 +4,9 @@
 //! - [`noise`]: Smart Noise Dimming (clasificación de tráfico de fondo).
 //! - [`passive_dns`]: caché dominio↔IP construida con las respuestas DNS.
 //! - [`risk`]: mini-IDS heurístico + puntuación de riesgo (0-100).
-//! - [`summarize`]: traducción semántica a lenguaje humano.
+//! - [`summarize`]: resumen técnico de una línea por flujo.
+//! - [`explain`]: traducción a lenguaje humano (semáforo, frases, qué hacer
+//!   e historias agrupadas) para la GUI y cualquier persona.
 //! - [`carve`]: file carving HTTP + detección de encubrimiento T1036.
 //! - [`intel`]: threat intel offline (Feodo C2, salidas de Tor).
 //! - [`siem`]: export a SIEM (ECS y Wazuh).
@@ -15,6 +17,7 @@
 
 pub mod carve;
 pub mod enrich;
+pub mod explain;
 pub mod intel;
 pub mod noise;
 pub mod passive_dns;

@@ -5,6 +5,7 @@ use socshark_cli::cli::{Cli, Cmd, DevCmd};
 use socshark_cli::daemon::{self, DaemonOptions};
 use socshark_cli::follow;
 use socshark_cli::fuzz::{self, FuzzOptions};
+use socshark_cli::gui::{self, GuiOptions};
 use socshark_cli::output;
 use socshark_cli::pipeline::{run_capture, run_follow};
 use socshark_cli::tui;
@@ -139,6 +140,26 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             };
             daemon::run_daemon(&opts)
         }
+
+        Cmd::Gui {
+            read,
+            port,
+            no_open,
+            intel_feodo,
+            intel_tor,
+        } => gui::run(GuiOptions {
+            read,
+            port,
+            open: !no_open,
+            // La GUI talla archivos siempre: el encubrimiento (T1036) es de
+            // lo primero que una persona necesita ver.
+            cfg: PipelineConfig {
+                file_carving: true,
+                intel_feodo,
+                intel_tor,
+                ..PipelineConfig::default()
+            },
+        }),
 
         Cmd::Export {
             read,

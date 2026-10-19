@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="socshark-token" content="__SOCSHARK_TOKEN__">
+<title>soc-shark</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230e7490'/%3E%3Cpath d='M6 21c4-1 7-6 9-13 2 6 5 10 11 13-7-1-13 0-20 0z' fill='%23fff'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/app.css">
+<script src="/app.js" defer></script>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand" aria-label="soc-shark">
+    <svg class="logo" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8"/><path d="M6 21c4-1 7-6 9-13 2 6 5 10 11 13-7-1-13 0-20 0z"/></svg>
+    <span>soc-shark</span>
+  </div>
+  <button id="open-btn" class="btn primary" type="button">Abrir captura…</button>
+  <input id="file-input" type="file" accept=".pcap,.cap,.dmp,.pcapng" hidden>
+  <div id="capture-info" class="capture-info" aria-live="polite"></div>
+  <div class="spacer"></div>
+  <div class="segmented" role="group" aria-label="Nivel de detalle">
+    <button type="button" data-mode="simple" aria-pressed="true" title="Frases en lenguaje claro">Simple</button>
+    <button type="button" data-mode="experto" aria-pressed="false" title="Columnas técnicas como en Wireshark">Experto</button>
+  </div>
+  <button id="theme-btn" class="btn icon" type="button" title="Cambiar entre tema claro y oscuro" aria-label="Cambiar tema"><svg class="icon-theme" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 3.5a8.5 8.5 0 0 1 0 17z"/></svg></button>
+  <button id="help-btn" class="btn icon" type="button" title="Ayuda y glosario (F1)" aria-label="Ayuda">?</button>
+</header>
+
+<section class="filterbar" aria-label="Filtros">
+  <div class="chips" role="group" aria-label="Qué mostrar">
+    <button type="button" class="chip" data-view="todo" aria-pressed="true">Todo</button>
+    <button type="button" class="chip" data-view="importante" aria-pressed="false">Solo lo importante</button>
+    <label class="chip check"><input id="noise-toggle" type="checkbox"> Mostrar tráfico de fondo</label>
+  </div>
+  <form id="filter-form" class="filter-form" autocomplete="off">
+    <input id="filter-input" type="search" spellcheck="false" placeholder="Filtro avanzado (pulsa /), p. ej.  tcp.port == 443  ·  flow.risk >= 30  ·  dns.qname contains &quot;google&quot;" aria-label="Filtro avanzado" aria-describedby="filter-error">
+    <button class="btn" type="submit">Filtrar</button>
+    <button id="filter-clear" class="btn ghost" type="button" title="Quitar el filtro">✕</button>
+  </form>
+  <div id="filter-error" class="filter-error" role="alert"></div>
+  <div id="story-chip" class="story-chip" hidden></div>
+</section>
+
+<main class="layout">
+  <aside class="sidebar" aria-label="Resumen">
+    <div id="overview" class="overview"></div>
+    <h2 class="side-title">Lo que ha pasado</h2>
+    <ol id="stories" class="stories"></ol>
+  </aside>
+
+  <section class="flows-pane" aria-label="Conversaciones">
+    <div class="pane-head">
+      <h2>Conversaciones <span id="flows-count" class="count"></span></h2>
+      <label class="sort">Ordenar
+        <select id="sort-select">
+          <option value="time">por hora</option>
+          <option value="level">por gravedad</option>
+          <option value="bytes">por tamaño</option>
+        </select>
+      </label>
+    </div>
+    <div class="table-wrap" id="table-wrap">
+      <table id="flows-table" class="flows">
+        <thead id="flows-head"></thead>
+        <tbody id="flows-body"></tbody>
+      </table>
+      <div id="flows-empty" class="empty-msg" hidden></div>
+    </div>
+  </section>
+
+  <section class="detail-pane" aria-label="Detalle">
+    <div class="tabs" role="tablist">
+      <button type="button" role="tab" id="tab-explain" aria-selected="true" data-tab="explain">Explicación</button>
+      <button type="button" role="tab" id="tab-packets" aria-selected="false" data-tab="packets">Paquetes</button>
+      <button type="button" role="tab" id="tab-tech" aria-selected="false" data-tab="tech">Técnico</button>
+    </div>
+    <div id="detail" class="detail">
+      <p class="placeholder">Elige una conversación de la lista para ver qué pasó.</p>
+    </div>
+  </section>
+</main>
+
+<div id="welcome" class="welcome" hidden>
+  <div class="welcome-card">
+    <svg class="logo big" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8"/><path d="M6 21c4-1 7-6 9-13 2 6 5 10 11 13-7-1-13 0-20 0z"/></svg>
+    <h1>Entiende lo que pasa en tu red</h1>
+    <p>Abre una captura de tráfico y soc-shark te la explica en lenguaje claro: quién habla con quién, qué es normal y qué deberías revisar.</p>
+    <button id="welcome-open" class="btn primary big" type="button">Abrir captura…</button>
+    <p class="hint">También puedes arrastrar el archivo a esta ventana.</p>
+    <details class="howto">
+      <summary>¿No tienes ninguna captura?</summary>
+      <ul>
+        <li>Genera una de ejemplo en la consola: <code>socshark dev sample-pcap -o demo.pcap</code></li>
+        <li>Con Wireshark: captura y guarda con <em>Archivo → Guardar como → pcap</em> (no pcapng).</li>
+        <li>Con tshark: <code>tshark -i 1 -a duration:60 -F pcap -w captura.pcap</code></li>
+      </ul>
+    </details>
+  </div>
+</div>
+
+<div id="busy" class="busy" hidden><div class="busy-card"><div class="spinner" aria-hidden="true"></div><p id="busy-text">Analizando…</p></div></div>
+<div id="drop" class="drop" hidden><div>Suelta aquí tu captura</div></div>
+<div id="tooltip" class="tooltip" role="tooltip" hidden></div>
+
+<dialog id="help" class="help">
+  <form method="dialog" class="help-head"><h2>Ayuda</h2><button class="btn icon" aria-label="Cerrar">✕</button></form>
+  <div class="help-body">
+    <h3>Cómo se usa</h3>
+    <ul>
+      <li><b>Lo que ha pasado</b> (izquierda) resume lo importante. Pulsa <em>Ver conversaciones</em> para ver las que forman cada historia.</li>
+      <li><b>Conversaciones</b>: cada línea es una conversación completa entre dos equipos. 🟢 normal · 🟠 raro · 🔴 peligro.</li>
+      <li><b>Explicación</b>: qué pasó y qué hacer. <b>Paquetes</b>: cada paquete con sus capas y bytes, como en Wireshark, pero explicado.</li>
+      <li>Las palabras <span class="term demo">subrayadas</span> tienen explicación: pasa el ratón por encima.</li>
+    </ul>
+    <h3>Atajos</h3>
+    <ul class="keys">
+      <li><kbd>/</kbd> escribir un filtro</li>
+      <li><kbd>↑</kbd> <kbd>↓</kbd> moverse por las conversaciones</li>
+      <li><kbd>Ctrl</kbd>+<kbd>O</kbd> abrir captura</li>
+      <li><kbd>F1</kbd> esta ayuda</li>
+    </ul>
+    <h3>Filtros de ejemplo <small>(pulsa para usarlo)</small></h3>
+    <ul id="filter-examples" class="examples"></ul>
+    <h3>Glosario</h3>
+    <dl id="glossary" class="glossary"></dl>
+  </div>
+</dialog>
+</body>
+</html>

@@ -8,12 +8,15 @@ Wireshark responde a la pregunta *«¿qué hay en este paquete?»*. **soc-shark 
 ![Estado](https://img.shields.io/badge/fase-2%20de%204%20completa-blue)
 ![Licencia](https://img.shields.io/badge/licencia-MIT-green)
 
+![La GUI de soc-shark: historias, conversaciones en lenguaje claro y explicación](docs/img/gui-explicacion.png)
+
 ---
 
 ## Características clave (visión de producto)
 
 | Función | Descripción | Estado |
 |---|---|---|
+| **GUI estilo Wireshark, en lenguaje claro** | `socshark gui`: cada conversación contada en una frase con semáforo 🟢🟠🔴, alertas agrupadas en historias con «qué hacer», y vista de paquetes con capas explicadas y bytes resaltados ([docs/gui.md](docs/gui.md)) | **Implementado** |
 | **Atribución de proceso con eBPF** | Cada flujo muestra PID, binario y usuario que lo originó | Diseño (`docs/ebpf-design.md`) — Fase 3 |
 | **TLS 1.3 transparente** | Descifrado vía uprobes a `SSL_read/SSL_write`, sin `SSLKEYLOGFILE` | Diseño — Fase 3+ |
 | **Plugins WASM en sandbox** | Dissectors seguros escritos por la comunidad, sin riesgo de RCE | Diseño (`docs/wasm-plugins.md`) — Fase 4 |
@@ -35,7 +38,7 @@ Wireshark responde a la pregunta *«¿qué hay en este paquete?»*. **soc-shark 
 
 ## Estado actual: Fases 1-2 completas ✅ · Fase 3 piezas puras ✅ · Fase 4 piezas puras ✅
 
-El pipeline funciona de extremo a extremo sobre archivos **y en vivo**: **lectura/libpcap → disección (Ethernet/IPv4/IPv6/TCP/UDP/DNS/TLS, secuencial o en pool de N hilos) → agregación de flujos bidireccionales (JA4 + SNI + estadística de intervalos) → file carving opcional (T1036) → enriquecimiento SOC (incluidas listas Feodo/Tor) → filtro DSL → tabla/TUI/JSONL/follow/daemon/export ECS-Wazuh**. 158 tests automatizados cubren parsers (barrido anti-panic), JA4 (vectores oficiales FoxIO + NIST), SHA-256 (FIPS 180-4), pool concurrente, agregador, reensamblado, DSL, capa SOC (escaneo vertical/horizontal T1046, beaconing T1071, masquerading T1036, threat intel), backend de captura (incluido el tick sin tráfico en vivo), export SIEM e integración; el fuzzing determinista recorre millones de tramas mutadas en cada build.
+El pipeline funciona de extremo a extremo sobre archivos **y en vivo**: **lectura/libpcap → disección (Ethernet/IPv4/IPv6/TCP/UDP/DNS/TLS, secuencial o en pool de N hilos) → agregación de flujos bidireccionales (JA4 + SNI + estadística de intervalos) → file carving opcional (T1036) → enriquecimiento SOC (incluidas listas Feodo/Tor) → filtro DSL → tabla/TUI/JSONL/follow/daemon/export ECS-Wazuh**. 175 tests automatizados cubren parsers (barrido anti-panic), JA4 (vectores oficiales FoxIO + NIST), SHA-256 (FIPS 180-4), pool concurrente, agregador, reensamblado, DSL, capa SOC (escaneo vertical/horizontal T1046, beaconing T1071, masquerading T1036, threat intel), backend de captura (incluido el tick sin tráfico en vivo), export SIEM e integración; el fuzzing determinista recorre millones de tramas mutadas en cada build.
 
 ### Inicio rápido
 
@@ -61,6 +64,9 @@ cargo build --release
 
 # 3. Analizarla (con file carving para ver también la descarga encubierta)
 ./target/release/socshark capture -r demo.pcap --carve-files
+
+# 4. O verla en la interfaz gráfica (se abre una ventana)
+./target/release/socshark gui -r demo.pcap
 ```
 
 Salida real de la demo (45 paquetes → 20 flujos relevantes, ruido excluido):
@@ -113,6 +119,10 @@ que incluye la demo desde la Fase 2 (respuesta AAAA incluida).
 ### Comandos
 
 ```bash
+# Interfaz gráfica: ventana con explicaciones en lenguaje claro
+socshark gui -r captura.pcap
+socshark gui                    # vacía: abre o arrastra la captura a la ventana
+
 # Tabla resumen (por defecto)
 socshark capture -r captura.pcap
 
@@ -167,16 +177,18 @@ soc-shark/
 │   ├── socshark-dissectors/   # Ethernet, IPv4/6, TCP, UDP, DNS + pool concurrente
 │   ├── socshark-flow/         # Agregador de flujos bidireccionales
 │   ├── socshark-filter/       # DSL de filtrado (lexer, parser, evaluador)
-│   ├── socshark-soc/          # Ruido, DNS pasivo, riesgo, resúmenes, carving (T1036), threat intel, export ECS/Wazuh
+│   ├── socshark-soc/          # Ruido, DNS pasivo, riesgo, lenguaje claro (explain), carving (T1036), threat intel, export ECS/Wazuh
 │   ├── socshark-ebpf-common/  # Tipos compartidos probe/userspace eBPF (repr(C), no_std)
 │   ├── socshark-testgen/      # Constructores de tramas + demo + primitivas de fuzzing
-│   └── socshark-cli/          # Binario `socshark` (capture/daemon/follow/tui/export/fuzz) + tests
+│   └── socshark-cli/          # Binario `socshark` (capture/gui/daemon/follow/tui/export/fuzz) + tests
+│       └── assets/gui/        # Frontend de la GUI (HTML/CSS/JS, incrustado en el binario)
 ├── docs/                      # Documentación completa (índice en docs/index.md)
 │   ├── architecture.md        # Visión general y decisiones técnicas
 │   ├── pipeline.md            # Las 4 etapas del pipeline
 │   ├── data-model.md          # EnrichedFlow campo por campo
 │   ├── security.md            # Modelo de privilegios y threat model
 │   ├── filter-dsl.md          # Gramática y campos del DSL
+│   ├── gui.md                 # La GUI: uso, API local y seguridad
 │   ├── tui.md                 # La TUI Flow-First (atajos, paneles, diseño)
 │   ├── ebpf-design.md         # Diseño eBPF (procesos, TLS, correlación)
 │   ├── wasm-plugins.md        # Diseño del sandbox de plugins
@@ -191,7 +203,7 @@ soc-shark/
 
 ## Calidad
 
-- **158 tests** unitarios y de integración (`cargo test --workspace`),
+- **175 tests** unitarios y de integración (`cargo test --workspace`),
   incluido el barrido anti-panic, el reensamblado con segmentos fuera de
   orden, el test de igualdad JSONL entre el pool de 4 hilos y el camino
   secuencial, el carving T1036 sobre el escenario demo y el E2E de threat

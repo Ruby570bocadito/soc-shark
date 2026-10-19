@@ -8,6 +8,7 @@ pub mod cli;
 pub mod daemon;
 pub mod follow;
 pub mod fuzz;
+pub mod gui;
 pub mod output;
 pub mod pipeline;
 pub mod tui;
