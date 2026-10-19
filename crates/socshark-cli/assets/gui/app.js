@@ -2298,7 +2298,7 @@
     clear(list);
     if (!ifaces.length) {
       err.hidden = false;
-      err.textContent = "No se encontró ninguna interfaz. En Windows instala Npcap (npcap.com); en Linux/macOS ejecuta soc-shark con permisos de captura (sudo).";
+      err.textContent = "No se encontró ninguna interfaz. En Windows instala Npcap (npcap.com). En Linux da el permiso de captura una vez: sudo setcap cap_net_raw,cap_net_admin=eip \"$(command -v socshark)\" (el instalador ya lo hace), o ejecútalo con sudo.";
       return;
     }
     // Tu red primero (las conectadas y con dirección, arriba); después este
