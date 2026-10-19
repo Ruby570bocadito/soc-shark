@@ -35,7 +35,7 @@ Wireshark responde a la pregunta *«¿qué hay en este paquete?»*. **soc-shark 
 
 ## Estado actual: Fases 1-2 completas ✅ · Fase 3 piezas puras ✅ · Fase 4 piezas puras ✅
 
-El pipeline funciona de extremo a extremo sobre archivos **y en vivo**: **lectura/libpcap → disección (Ethernet/IPv4/IPv6/TCP/UDP/DNS/TLS, secuencial o en pool de N hilos) → agregación de flujos bidireccionales (JA4 + SNI + estadística de intervalos) → file carving opcional (T1036) → enriquecimiento SOC (incluidas listas Feodo/Tor) → filtro DSL → tabla/TUI/JSONL/follow/daemon/export ECS-Wazuh**. 152 tests automatizados cubren parsers (barrido anti-panic), JA4 (vectores oficiales FoxIO + NIST), SHA-256 (FIPS 180-4), pool concurrente, agregador, reensamblado, DSL, capa SOC (beaconing T1071, masquerading T1036, threat intel), backend de captura, export SIEM e integración; el fuzzing determinista recorre millones de tramas mutadas en cada build.
+El pipeline funciona de extremo a extremo sobre archivos **y en vivo**: **lectura/libpcap → disección (Ethernet/IPv4/IPv6/TCP/UDP/DNS/TLS, secuencial o en pool de N hilos) → agregación de flujos bidireccionales (JA4 + SNI + estadística de intervalos) → file carving opcional (T1036) → enriquecimiento SOC (incluidas listas Feodo/Tor) → filtro DSL → tabla/TUI/JSONL/follow/daemon/export ECS-Wazuh**. 158 tests automatizados cubren parsers (barrido anti-panic), JA4 (vectores oficiales FoxIO + NIST), SHA-256 (FIPS 180-4), pool concurrente, agregador, reensamblado, DSL, capa SOC (escaneo vertical/horizontal T1046, beaconing T1071, masquerading T1036, threat intel), backend de captura (incluido el tick sin tráfico en vivo), export SIEM e integración; el fuzzing determinista recorre millones de tramas mutadas en cada build.
 
 ### Inicio rápido
 
@@ -150,6 +150,8 @@ socshark capture -r captura.pcap --workers 4
 socshark daemon --list
 socshark daemon -i eth0 --bpf "tcp port 443" --json flujos.jsonl
 socshark daemon -i eth0 --min-risk 30 --flush-secs 5   # alertas por stderr
+# Ctrl+C (o SIGTERM) cierra ordenadamente: exporta los flujos vivos al JSONL;
+# un segundo Ctrl+C fuerza la salida
 
 # Fuzzing determinista (el mismo motor que corre en CI)
 socshark dev fuzz --seed 42 --iterations 20000
@@ -189,7 +191,7 @@ soc-shark/
 
 ## Calidad
 
-- **152 tests** unitarios y de integración (`cargo test --workspace`),
+- **158 tests** unitarios y de integración (`cargo test --workspace`),
   incluido el barrido anti-panic, el reensamblado con segmentos fuera de
   orden, el test de igualdad JSONL entre el pool de 4 hilos y el camino
   secuencial, el carving T1036 sobre el escenario demo y el E2E de threat

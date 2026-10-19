@@ -12,8 +12,9 @@
 //!   análisis de archivos, donde el throughput manda.
 //! - **Los ticks de timeout no terminan nada**: [`CaptureSource`] devuelve
 //!   `Ok(None)` cuando vence el timeout de lectura sin tráfico; aquí es la
-//!   señal para barrer expiraciones. Solo un `Err` (o los límites
-//!   `--duration`/`--max-packets`) cierra la sesión.
+//!   señal para barrer expiraciones. Solo un `Err`, los límites
+//!   `--duration`/`--max-packets` o Ctrl-C/SIGTERM cierran la sesión, y
+//!   siempre de forma ordenada: los flujos vivos se exportan antes de salir.
 //! - **Contexto SOC persistente**: la DNS pasiva y el resto de contexto se
 //!   acumulan durante toda la sesión, como en el análisis de archivo.
 //! - Los timestamps de los paquetes son de reloj de pared (epoch µs), así
@@ -23,6 +24,7 @@
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
@@ -61,6 +63,41 @@ fn now_micros() -> u64 {
         .unwrap_or(0)
 }
 
+/// Parada pedida por señal. El manejador solo marca la bandera (operación
+/// async-signal-safe); el bucle la consulta en cada tick, que llega como
+/// mucho cada timeout de lectura porque la señal interrumpe el `poll`.
+static STOP: AtomicBool = AtomicBool::new(false);
+
+/// Instala el manejador de SIGINT (Ctrl-C) y SIGTERM. El primero que llega
+/// restaura la acción por defecto, así que un segundo Ctrl-C mata el
+/// proceso sin esperar al cierre ordenado.
+#[cfg(unix)]
+fn install_stop_handler() {
+    use std::ffi::c_int;
+
+    const SIGINT: c_int = 2;
+    const SIGTERM: c_int = 15;
+
+    extern "C" {
+        /// `handler = None` es `SIG_DFL` (puntero nulo).
+        fn signal(signum: c_int, handler: Option<extern "C" fn(c_int)>) -> usize;
+    }
+
+    extern "C" fn on_stop(sig: c_int) {
+        STOP.store(true, Ordering::SeqCst);
+        unsafe { signal(sig, None) };
+    }
+
+    unsafe {
+        signal(SIGINT, Some(on_stop));
+        signal(SIGTERM, Some(on_stop));
+    }
+}
+
+/// Sin captura en vivo fuera de unix (ver `socshark-capture::live`).
+#[cfg(not(unix))]
+fn install_stop_handler() {}
+
 /// Enumera interfaces capturables (`socshark daemon --list`).
 pub fn list_interfaces() -> Result<()> {
     let ifaces = socshark_capture::list_ifaces().map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -75,12 +112,13 @@ pub fn list_interfaces() -> Result<()> {
 }
 
 /// Bucle principal del daemon. Vuelve cuando se alcanza `--duration` /
-/// `--max-packets` o ante un error fatal de captura (agotando lo
-/// acumulado); Ctrl-C termina el proceso (el kernel limpia el handle).
+/// `--max-packets`, al recibir Ctrl-C/SIGTERM o ante un error fatal de
+/// captura; en todos los casos exporta lo acumulado antes de volver.
 pub fn run_daemon(opts: &DaemonOptions) -> Result<()> {
     let cap_cfg = LiveCaptureConfig::new(opts.iface.clone()).with_bpf(opts.bpf.clone());
     let mut source = LiveCapture::open(cap_cfg).map_err(|e| anyhow::anyhow!("{e}"))?;
     let link = source.link_type();
+    install_stop_handler();
 
     eprintln!("[*] Daemon en vivo: {} (enlace {link:?})", opts.iface);
     if let Some(bpf) = &opts.bpf {
@@ -142,6 +180,10 @@ pub fn run_daemon(opts: &DaemonOptions) -> Result<()> {
     let mut alerts: u64 = 0;
 
     loop {
+        if STOP.load(Ordering::SeqCst) {
+            eprintln!("[*] Parada solicitada: cierre ordenado (otro Ctrl-C fuerza la salida)");
+            break;
+        }
         if let Some(d) = opts.duration_secs {
             if start.elapsed() >= Duration::from_secs(d) {
                 eprintln!("[*] Límite de duración alcanzado ({}s)", d);

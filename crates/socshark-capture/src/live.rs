@@ -136,7 +136,22 @@ mod backend {
         fn dlopen(filename: *const c_char, flags: c_int) -> *mut c_void;
         fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
         fn dlclose(handle: *mut c_void) -> c_int;
+        fn poll(fds: *mut PollFd, nfds: NfdsT, timeout: c_int) -> c_int;
     }
+
+    /// `struct pollfd` (idéntica en Linux y macOS).
+    #[repr(C)]
+    struct PollFd {
+        fd: c_int,
+        events: i16,
+        revents: i16,
+    }
+    const POLLIN: i16 = 0x1;
+    /// `nfds_t`: `unsigned long` en Linux, `unsigned int` en macOS.
+    #[cfg(target_os = "macos")]
+    type NfdsT = std::ffi::c_uint;
+    #[cfg(not(target_os = "macos"))]
+    type NfdsT = std::ffi::c_ulong;
 
     /// Nombres de soname probados en orden: Debian/Ubuntu (`so.0.8`),
     /// Fedora/Arch (`so.1`), genérico con `-dev` instalado y macOS
@@ -279,6 +294,8 @@ mod backend {
         stats: unsafe extern "C" fn(*mut PcapT, *mut PcapStat) -> c_int,
         findalldevs: unsafe extern "C" fn(*mut *mut PcapIf, *mut c_char) -> c_int,
         freealldevs: unsafe extern "C" fn(*mut PcapIf),
+        setnonblock: unsafe extern "C" fn(*mut PcapT, c_int, *mut c_char) -> c_int,
+        get_selectable_fd: unsafe extern "C" fn(*mut PcapT) -> c_int,
     }
 
     impl Syms {
@@ -319,6 +336,8 @@ mod backend {
                 stats: unsafe { sym_as(s("pcap_stats")?) },
                 findalldevs: unsafe { sym_as(s("pcap_findalldevs")?) },
                 freealldevs: unsafe { sym_as(s("pcap_freealldevs")?) },
+                setnonblock: unsafe { sym_as(s("pcap_setnonblock")?) },
+                get_selectable_fd: unsafe { sym_as(s("pcap_get_selectable_fd")?) },
             })
         }
     }
@@ -332,6 +351,11 @@ mod backend {
         link: LinkType,
         /// Programa BPF compilado; se libera en Drop tras cerrar el handle.
         prog: Option<BpfProgram>,
+        /// Descriptor para `poll` en modo no bloqueante; -1 si la
+        /// plataforma no lo ofrece (se delega la espera en libpcap).
+        fd: c_int,
+        /// Espera máxima por paquete antes de devolver un tick.
+        timeout_ms: c_int,
         /// Biblioteca subyacente; DEBE ser el último campo: al soltar la
         /// struct se hace `dlclose`, que debe ocurrir después de
         /// `pcap_close` (el orden de drop de campos es el de declaración).
@@ -456,6 +480,15 @@ mod backend {
                 None
             };
 
+            // Modo no bloqueante + `poll` propio: en Linux el timeout de
+            // lectura de libpcap no garantiza que `pcap_next_ex` vuelva sin
+            // tráfico (repite el poll por dentro), y el daemon necesita ese
+            // tick para expirar flujos y atender `--duration` y Ctrl-C.
+            let mut fd = unsafe { (syms.get_selectable_fd)(handle) };
+            if fd >= 0 && unsafe { (syms.setnonblock)(handle, 1, errbuf.as_mut_ptr()) } != 0 {
+                fd = -1;
+            }
+
             let dlt = unsafe { (syms.datalink)(handle) };
             let link = LinkType::from_pcap_code(dlt as u32);
 
@@ -464,6 +497,8 @@ mod backend {
                 handle,
                 link,
                 prog,
+                fd,
+                timeout_ms: cfg.timeout_ms,
                 lib,
             })
         }
@@ -493,11 +528,26 @@ mod backend {
 
     impl CaptureSource for LiveCapture {
         /// Contrato en vivo: `Ok(None)` es un *tick* (venció el timeout de
-        /// lectura sin tráfico), no un fin de captura; `Err` sí es fatal.
+        /// lectura sin tráfico o llegó una señal), no un fin de captura;
+        /// `Err` sí es fatal.
         fn next_packet(&mut self) -> Result<Option<RawPacket>, CaptureError> {
             let mut hdr: *const PcapPkthdr = std::ptr::null();
             let mut data: *const u8 = std::ptr::null();
-            let rc = unsafe { (self.syms.next_ex)(self.handle, &mut hdr, &mut data) };
+            let mut rc = unsafe { (self.syms.next_ex)(self.handle, &mut hdr, &mut data) };
+            if rc == 0 && self.fd >= 0 {
+                // Nada disponible: esperar al descriptor como mucho un
+                // timeout. Vencido o interrumpido por una señal (EINTR,
+                // p. ej. Ctrl-C), es un tick sin datos.
+                let mut pfd = PollFd {
+                    fd: self.fd,
+                    events: POLLIN,
+                    revents: 0,
+                };
+                if unsafe { poll(&mut pfd, 1, self.timeout_ms) } <= 0 {
+                    return Ok(None);
+                }
+                rc = unsafe { (self.syms.next_ex)(self.handle, &mut hdr, &mut data) };
+            }
             match rc {
                 // Paquete disponible.
                 1 => {
@@ -620,6 +670,45 @@ mod tests {
                 // debería haber fallado; si no, no rompemos el test pero
                 // cerramos soltando el objeto.
             }
+        }
+    }
+
+    /// Sin tráfico, `next_packet` debe devolver un tick (`Ok(None)`) en
+    /// torno al timeout de lectura: el daemon depende de él para expirar
+    /// flujos y atender `--duration` y Ctrl-C. Solo corre donde se puede
+    /// capturar en `lo` (root/CAP_NET_RAW); en CI sin privilegios se omite.
+    #[test]
+    fn next_packet_vuelve_dentro_del_timeout_sin_trafico() {
+        let iface = if cfg!(target_os = "macos") {
+            "lo0"
+        } else {
+            "lo"
+        };
+        // Filtro válido pero sin tráfico en loopback (9/udp = discard). Uno
+        // imposible no sirve: libpcap lo detecta y ni siquiera espera.
+        let cfg = LiveCaptureConfig {
+            timeout_ms: 200,
+            ..LiveCaptureConfig::new(iface).with_bpf(Some("udp port 9".into()))
+        };
+        let mut cap = match LiveCapture::open(cfg) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("sin captura en vivo en este entorno ({e}): se omite");
+                return;
+            }
+        };
+        for _ in 0..3 {
+            let t = std::time::Instant::now();
+            match cap.next_packet() {
+                Ok(None) => {}
+                Ok(Some(_)) => panic!("tráfico inesperado en 9/udp de loopback"),
+                Err(e) => panic!("error de lectura: {e}"),
+            }
+            assert!(
+                t.elapsed() < std::time::Duration::from_secs(2),
+                "next_packet tardó {:?} sin tráfico",
+                t.elapsed()
+            );
         }
     }
 

@@ -7,6 +7,31 @@ y [SemVer](https://semver.org/lang/es/).
 
 ### Corregido
 
+- **Mini-IDS: la regla de escaneo no detectaba escaneos de puertos reales.**
+  Contaba SYNs por (origen, destino, *mismo* puerto) y descartaba cualquier
+  flujo con ACK; un `nmap -sS` de 100 puertos daba 0 alertas (un SYN por
+  puerto, y los cerrados responden RST/ACK) y lo que alertaba eran
+  reintentos al mismo puerto. Ahora R2 trabaja sobre *sondas fallidas*
+  (SYN sin datos ni FIN: sin respuesta, RST/ACK o half-open) y emite
+  `PORT-SCAN` (≥ 10 puertos de un host, T1046), `NETWORK-SWEEP` (mismo
+  puerto en ≥ 20 hosts, T1046) o, si no llega a escaneo,
+  `REPEATED-ATTEMPTS` (≥ 4 intentos al mismo servicio, severidad baja).
+  `PipelineConfig::scan_syn_threshold` se sustituye por
+  `scan_port_threshold`, `scan_host_threshold` y
+  `repeated_attempt_threshold`.
+- `INSECURE-PORT` (telnet) y `EXPOSED-DB` ya no saltan con una sonda
+  fallida: un SYN sin respuesta al 23 no transporta credenciales.
+- Escenario demo: el escaneo pasa a ser de 12 puertos del gateway con
+  puertos abiertos, cerrados y filtrados (45 paquetes, 20 flujos).
+- **Daemon: sin tráfico no volvía nunca del bucle de lectura.** En Linux el
+  timeout de libpcap no garantiza que `pcap_next_ex` regrese, así que
+  `--duration`, la expiración de flujos y los informes de estado esperaban
+  al siguiente paquete. El handle va ahora en modo no bloqueante con
+  `poll` propio sobre `pcap_get_selectable_fd`.
+- **Daemon: Ctrl-C/SIGTERM perdían los flujos vivos y el JSONL en búfer.**
+  Ahora cierran de forma ordenada exportándolo todo; un segundo Ctrl-C
+  fuerza la salida.
+
 - **Captura en vivo: SIGSEGV en la primera llamada a libpcap.** `sym_as`
   convertía la dirección de `dlsym` con `ptr::read(p)`, que lee los primeros
   bytes del *código* de la función en lugar de usar la dirección; ahora usa

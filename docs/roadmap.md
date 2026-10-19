@@ -39,11 +39,13 @@ operación en tiempo real.
       Soporta snaplen, promiscuo, *immediate mode*, timeout de lectura y
       **pushdown BPF** al kernel; `socshark daemon` consume el flujo con
       expiración incremental y exportación JSONL/alertas por cadencia, más
-      `--list` (interfaces), `--duration` y `--max-packets`. La
-      verificación *en una interfaz real* queda pendiente de un entorno con
-      privilegios de captura (el sandbox de desarrollo no tiene libpcap ni
-      CAP_NET_RAW); la frontera FFI está testeada (errores limpios, sin
-      panics) y el resto del pipeline es idéntico al modo archivo.
+      `--list` (interfaces), `--duration` y `--max-packets`. Verificado en
+      una interfaz real (loopback de Linux con libpcap 1.10): la primera
+      prueba con libpcap instalada destapó un SIGSEGV en la carga de
+      símbolos y que el timeout de lectura no devolvía el control sin
+      tráfico; ahora el handle va en modo no bloqueante con `poll` propio
+      (tick garantizado, testeado cuando hay privilegios de captura) y
+      Ctrl-C/SIGTERM cierran exportando los flujos vivos.
       AF_XDP sigue siendo el objetivo de alto rendimiento (Fase 3+).
 - [x] Pipeline en streaming: agregador incremental con `drain_expired`
       testado; el daemon en vivo lo consume por cadencia (`--flush-secs`).
@@ -71,7 +73,7 @@ operación en tiempo real.
       (DNS con `QDCOUNT=0`). cargo-fuzz/libFuzzer con cobertura guiada
       queda como tarea de contribución (ver CONTRIBUTING.md).
 
-Estado 0.6.0: 152 tests verdes. El único criterio de fase pendiente de
+Estado 0.6.0: 152 tests verdes (158 tras los arreglos posteriores, ver CHANGELOG). El único criterio de fase pendiente de
 verificación sobre hardware real es el rendimiento en vivo (≥ 200 Mbps
 sostenidos y TUI fluida con 10k flujos): el resto del criterio (Follow
 Stream legible, salida determinista con paralelismo) ya está cubierto por
