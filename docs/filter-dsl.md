@@ -119,8 +119,9 @@ valor, encontrado ')'`. Los errores comunes:
 # Solo exfiltración potencial y C2
 -f "flow.risk >= 45"
 
-# Reconocimiento: SYNs sin respuesta
--f "tcp.flags.syn && !tcp.flags.ack"
+# Reconocimiento: sondas que nunca establecieron conexión
+# (sin respuesta, RST/ACK de puerto cerrado o half-open con RST)
+-f "tcp.flags.syn && !tcp.flags.psh && !tcp.flags.fin && (!tcp.flags.ack || tcp.flags.rst)"
 
 # Todo lo que hable con el DNS externo salvo consultas normales
 -f "ip.dst == 8.8.8.8 && !(dns.qtype == \"A\")"

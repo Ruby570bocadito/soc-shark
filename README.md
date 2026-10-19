@@ -29,7 +29,7 @@ Wireshark responde a la pregunta *«¿qué hay en este paquete?»*. **soc-shark 
 | **Fuzzing determinista en CI** | Corpus mutado sobre parsers + agregador + SOC + DSL, reproducible por semilla | **Implementado** |
 | **TUI interactiva (Ratatui)** | Lista Flow-First + panel de alertas + filtro DSL en vivo | **Implementado** |
 | **Paradigma Flow-First** | 1 línea = 1 sesión; expansión bajo demanda | **Núcleo implementado** |
-| **Mini-IDS heurístico** | Túnel DNS, escaneos SYN, puertos inseguros, beaconing, masquerading, threat intel | **Implementado** |
+| **Mini-IDS heurístico** | Túnel DNS, escaneo de puertos y barrido de red, puertos inseguros, beaconing, masquerading, threat intel | **Implementado** |
 | **DNS pasivo** | Dominio ↔ IP observados, etiqueta el resto de flujos (+ SNI del ClientHello desde F3) | **Implementado** |
 | **Smart Noise Dimming** | NTP/mDNS/SSDP marcados como ruido y atenuados | **Implementado** |
 
@@ -59,23 +59,23 @@ cargo build --release
 # 2. Generar una captura de demostración con eventos SOC interesantes
 ./target/release/socshark dev sample-pcap -o demo.pcap
 
-# 3. Analizarla
-./target/release/socshark capture -r demo.pcap
+# 3. Analizarla (con file carving para ver también la descarga encubierta)
+./target/release/socshark capture -r demo.pcap --carve-files
 ```
 
-Salida real de la demo (33 paquetes → 13 flujos relevantes, ruido excluido):
+Salida real de la demo (45 paquetes → 20 flujos relevantes, ruido excluido):
 
 ```text
-═══ soc-shark · 13 flujos (demo.pcap) ═══
+═══ soc-shark · 20 flujos (demo.pcap) ═══
 FLUJO                                                        L7        PAQ      BYTES  RIESGO  ALERTAS
-udp/192.168.1.30:53100-198.51.100.23:8080                    ?           8      848 B      20  BEACONING
 tcp/93.184.216.34:80-192.168.1.20:40112                      HTTP        4      956 B      55  FILE-MASQUERADING
+udp/192.168.1.30:53100-198.51.100.23:8080                    ?           8      848 B      20  BEACONING
 tcp/93.184.216.34:443-192.168.1.10:52000                     TLS         7      583 B       0  -
 udp/2001:4860:4860::8888:53-fd00::10:53010                   DNS         2      216 B       0  -
+tcp/192.168.1.1:22-192.168.1.30:40001                        ?           3      162 B      30  PORT-SCAN
 udp/8.8.8.8:53-192.168.1.10:53001                            DNS         2      158 B       0  -
 udp/8.8.8.8:53-192.168.1.30:53002                            DNS         1      137 B      45  DNS-TUNNELING
-tcp/93.184.216.34:80-192.168.1.20:40111                      HTTP        1      101 B       0  -
-tcp/192.168.1.1:22-192.168.1.30:40001                        ?           1       54 B      30  PORT-SCAN
+tcp/192.168.1.1:21-192.168.1.30:40001                        ?           2      108 B      30  PORT-SCAN
 ...
 
 ─── Alertas SOC ───
@@ -83,13 +83,20 @@ tcp/192.168.1.1:22-192.168.1.30:40001                        ?           1      
   tipo real ≠ extensión declarada en factura.jpg · MITRE T1036
 ▸ (alta) Posible túnel DNS · udp/8.8.8.8:53-192.168.1.30:53002 ·
   qname 'az3k9...chfdgs.tun.evil.example' (77 caracteres, entropía 5.09 ≥ 3.50) · MITRE T1048.003
-▸ (media) Posible escaneo de puertos · tcp/192.168.1.1:22-192.168.1.30:40001 ·
-  5 SYNs sin respuesta hacia 192.168.1.1:22 · MITRE T1046
+▸ (media) Posible escaneo de puertos · tcp/192.168.1.1:21-192.168.1.30:40001 ·
+  192.168.1.30 probó 12 puertos distintos de 192.168.1.1 sin establecer conexión · MITRE T1046
+...
 ▸ (media) Comunicación periódica (beacon) · udp/192.168.1.30:53100-198.51.100.23:8080 ·
   intervalo medio 30.0s con jitter ±0.0% en 7 intervalos · MITRE T1071
 
-Estadísticas: 33 paquetes leídos · 33 diseccionados · 0 descartados · 15 flujos
+Estadísticas: 45 paquetes leídos · 45 diseccionados · 0 descartados · 22 flujos
 ```
+
+Las 12 sondas del **escaneo de puertos** (T1046) alertan sea cual sea la
+respuesta del gateway: el 22 abierto (SYN/ACK y el escáner aborta con RST),
+el 21/25/110 cerrados (RST/ACK) y el resto filtrados. Las sondas al 23 y al
+3306 no disparan las reglas de telnet ni de base de datos: un SYN sin
+respuesta no transporta credenciales.
 
 El flujo TLS lleva la **huella JA4** del ClientHello (`t13d0208h2_777cda164f4b_af51ac0c444f`)
 y el **SNI** declarado por el cliente (`store.ejemplo-corporativo.com`) —

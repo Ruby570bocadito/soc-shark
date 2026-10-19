@@ -22,7 +22,7 @@ pub mod risk;
 pub mod siem;
 pub mod summarize;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 
 use socshark_core::{EnrichedFlow, Transport};
@@ -30,40 +30,96 @@ use socshark_core::{EnrichedFlow, Transport};
 pub use enrich::{enrich_all, SocContext};
 pub use intel::ThreatIntelDb;
 
-/// (ip_origen, ip_destino, puerto_destino) objetivo de un posible escaneo.
+/// (ip_origen, ip_destino, puerto_destino): un servicio concreto.
 pub type ScanKey = (IpAddr, IpAddr, u16);
 
-/// Rastrea patrones de escaneo SYN a través de flujos.
+/// Cota de puertos/hosts distintos recordados por clave. Supera con creces
+/// cualquier umbral y evita que un barrido masivo (o direcciones
+/// falsificadas) haga crecer los conjuntos sin límite en el daemon.
+const MAX_DISTINCT_PER_KEY: usize = 4096;
+
+/// ¿Es el flujo un intento de conexión TCP que nunca llegó a establecerse?
 ///
-/// ¿Por qué aquí y no en el agregador? Un escáner cambia de puerto origen en
-/// cada conexión, así que produce *flujos distintos* de un solo SYN. El
-/// patrón solo es visible con estado **entre flujos**, agrupado por
-/// (origen, destino, puerto_destino): exactamente lo que hace este tracker.
+/// Los contadores de flags suman las dos direcciones, así que se reconocen
+/// los tres desenlaces de una sonda: sin respuesta (puerto filtrado: solo
+/// SYN), RST/ACK (puerto cerrado) y SYN/ACK seguido de RST del cliente
+/// (half-open de `nmap -sS`, o connect + RST). Lo que una sonda nunca tiene
+/// es carga útil (PSH) ni cierre ordenado (FIN).
+pub fn is_failed_connect(flow: &EnrichedFlow) -> bool {
+    let f = &flow.tcp_flags;
+    flow.transport == Transport::Tcp
+        && f.syn > 0
+        && f.psh == 0
+        && f.fin == 0
+        && (f.ack == 0 || f.rst > 0)
+}
+
+/// Señales de escaneo acumuladas para el origen y destino de un flujo.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ScanSignals {
+    /// Puertos distintos de `dst_ip` que el origen probó sin éxito
+    /// (escaneo vertical).
+    pub distinct_ports: u32,
+    /// Hosts distintos en `dst_port` que el origen probó sin éxito
+    /// (barrido horizontal).
+    pub distinct_hosts: u32,
+    /// Intentos fallidos del origen al mismo `dst_ip:dst_port`.
+    pub attempts: u32,
+}
+
+/// Rastrea intentos de conexión fallidos a través de flujos.
+///
+/// ¿Por qué aquí y no en el agregador? Cada sonda de un escáner es un
+/// *flujo distinto* (otro puerto o host destino), así que el patrón solo es
+/// visible con estado **entre flujos**. Se agrupa de tres formas: por
+/// (origen, destino) → puertos probados, por (origen, puerto) → hosts
+/// probados y por servicio exacto → número de intentos.
 #[derive(Default)]
 pub struct ScanTracker {
-    counts: HashMap<ScanKey, u32>,
+    ports: HashMap<(IpAddr, IpAddr), HashSet<u16>>,
+    hosts: HashMap<(IpAddr, u16), HashSet<IpAddr>>,
+    attempts: HashMap<ScanKey, u32>,
 }
 
 impl ScanTracker {
-    /// Observa un flujo exportado y acumula sus SYNs "en seco" (SYN sin ACK
-    /// en el flujo completo). Un SYN+SYN-ACK legítimo nunca cuenta porque el
-    /// flujo contiene ACKs.
+    /// Observa un flujo exportado; solo cuentan los intentos fallidos
+    /// ([`is_failed_connect`]): una conexión establecida nunca es una sonda.
     pub fn observe(&mut self, flow: &EnrichedFlow) {
-        if flow.transport == Transport::Tcp
-            && flow.tcp_flags.syn > 0
-            && flow.tcp_flags.ack == 0
-            && flow.tcp_flags.fin == 0
-        {
-            *self
-                .counts
-                .entry((flow.src_ip, flow.dst_ip, flow.dst_port))
-                .or_default() += flow.tcp_flags.syn;
+        if !is_failed_connect(flow) {
+            return;
         }
+        let ports = self.ports.entry((flow.src_ip, flow.dst_ip)).or_default();
+        if ports.len() < MAX_DISTINCT_PER_KEY {
+            ports.insert(flow.dst_port);
+        }
+        let hosts = self.hosts.entry((flow.src_ip, flow.dst_port)).or_default();
+        if hosts.len() < MAX_DISTINCT_PER_KEY {
+            hosts.insert(flow.dst_ip);
+        }
+        *self
+            .attempts
+            .entry((flow.src_ip, flow.dst_ip, flow.dst_port))
+            .or_default() += 1;
     }
 
-    /// Número de SYNs en seco observados hacia este destino desde esa origen.
-    pub fn hits(&self, key: &ScanKey) -> u32 {
-        self.counts.get(key).copied().unwrap_or(0)
+    /// Señales acumuladas para el origen/destino/puerto de este flujo.
+    pub fn signals(&self, flow: &EnrichedFlow) -> ScanSignals {
+        let len = |s: Option<usize>| s.unwrap_or(0) as u32;
+        ScanSignals {
+            distinct_ports: len(self
+                .ports
+                .get(&(flow.src_ip, flow.dst_ip))
+                .map(HashSet::len)),
+            distinct_hosts: len(self
+                .hosts
+                .get(&(flow.src_ip, flow.dst_port))
+                .map(HashSet::len)),
+            attempts: self
+                .attempts
+                .get(&(flow.src_ip, flow.dst_ip, flow.dst_port))
+                .copied()
+                .unwrap_or(0),
+        }
     }
 }
 
@@ -118,57 +174,69 @@ pub(crate) mod tests_support {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use socshark_core::{FlowId, FlowState, L7Protocol};
+    use socshark_core::TcpFlagCounts;
 
-    fn flujo_syn_solo(sport: u16) -> EnrichedFlow {
-        EnrichedFlow {
-            flow_id: FlowId(format!("tcp/10.0.0.9:{sport}-10.0.0.1:22")),
-            state: FlowState::Idle,
-            transport: Transport::Tcp,
-            ip_version: 4,
-            l7_protocol: L7Protocol::Unknown,
-            src_ip: "10.0.0.9".parse().unwrap(),
-            src_port: sport,
-            dst_ip: "10.0.0.1".parse().unwrap(),
-            dst_port: 22,
-            src_mac: None,
-            dst_mac: None,
-            first_seen_micros: 0,
-            last_seen_micros: 1,
-            duration_micros: 1,
-            packets: 1,
-            bytes: 60,
-            packets_rev: 0,
-            bytes_rev: 0,
-            tcp_flags: socshark_core::TcpFlagCounts {
-                syn: 1,
-                ..Default::default()
-            },
-            process_name: None,
-            pid: None,
-            user: None,
-            resolved_domain: None,
-            dns: None,
-            dst_geo_asn: None,
-            ja4_fingerprint: None,
-            tls_sni: None,
-            interval_stats: None,
-            threat_intel: vec![],
-            is_background_noise: false,
-            human_summary: String::new(),
-            risk_score: 0,
-            alerts: vec![],
-            extracted_files: vec![],
+    fn flujo_tcp(dst: &str, dport: u16, flags: TcpFlagCounts) -> EnrichedFlow {
+        let mut f = crate::tests_support::flujo_basico(6, 45000, dport);
+        f.src_ip = "10.0.0.9".parse().unwrap();
+        f.dst_ip = dst.parse().unwrap();
+        f.tcp_flags = flags;
+        f
+    }
+
+    fn flags(syn: u32, ack: u32, rst: u32, psh: u32, fin: u32) -> TcpFlagCounts {
+        TcpFlagCounts {
+            syn,
+            ack,
+            rst,
+            psh,
+            fin,
+            urg: 0,
         }
     }
 
     #[test]
-    fn tracker_acumula_flujos_distintos_del_mismo_escaneo() {
+    fn sondas_fallidas_vs_conexiones_establecidas() {
+        let es = |f: TcpFlagCounts| is_failed_connect(&flujo_tcp("10.0.0.1", 22, f));
+        assert!(es(flags(1, 0, 0, 0, 0)), "filtrado: solo SYN");
+        assert!(es(flags(2, 0, 0, 0, 0)), "filtrado con retransmisión");
+        assert!(es(flags(1, 1, 1, 0, 0)), "cerrado: SYN → RST/ACK");
+        assert!(
+            es(flags(2, 1, 1, 0, 0)),
+            "abierto, half-open: SYN, SYN/ACK, RST"
+        );
+        assert!(es(flags(2, 2, 1, 0, 0)), "connect + RST sin datos");
+        assert!(!es(flags(2, 3, 0, 0, 0)), "handshake completo sin cerrar");
+        assert!(!es(flags(2, 6, 0, 2, 2)), "sesión con datos y FIN");
+        assert!(!es(flags(2, 5, 1, 1, 0)), "datos y luego RST");
+        assert!(!es(flags(0, 4, 0, 2, 0)), "captura a mitad de sesión");
+        let mut udp = flujo_tcp("10.0.0.1", 53, flags(1, 0, 0, 0, 0));
+        udp.transport = Transport::Udp;
+        assert!(!is_failed_connect(&udp));
+    }
+
+    #[test]
+    fn tracker_separa_vertical_horizontal_y_reintentos() {
         let mut t = ScanTracker::default();
-        for i in 0..3u16 {
-            t.observe(&flujo_syn_solo(40000 + i));
+        let sonda = flags(1, 0, 0, 0, 0);
+        // Vertical: 3 puertos de 10.0.0.1 (uno con dos intentos).
+        for p in [22, 80, 443, 443] {
+            t.observe(&flujo_tcp("10.0.0.1", p, sonda));
         }
-        let key: ScanKey = ("10.0.0.9".parse().unwrap(), "10.0.0.1".parse().unwrap(), 22);
-        assert_eq!(t.hits(&key), 3);
+        // Horizontal: el 445 en 2 hosts más.
+        for h in ["10.0.0.2", "10.0.0.3"] {
+            t.observe(&flujo_tcp(h, 445, sonda));
+        }
+        // Una conexión establecida no cuenta para nada.
+        t.observe(&flujo_tcp("10.0.0.1", 8080, flags(2, 6, 0, 2, 2)));
+
+        let s = t.signals(&flujo_tcp("10.0.0.1", 443, sonda));
+        assert_eq!(s.distinct_ports, 3);
+        assert_eq!(s.attempts, 2);
+        assert_eq!(
+            t.signals(&flujo_tcp("10.0.0.3", 445, sonda)).distinct_hosts,
+            2
+        );
+        assert_eq!(t.signals(&flujo_tcp("10.0.0.1", 8080, sonda)).attempts, 0);
     }
 }

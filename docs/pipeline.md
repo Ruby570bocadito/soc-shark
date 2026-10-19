@@ -43,7 +43,7 @@ en [security.md](security.md).
 
 **Hoy (Fase 1).** El enriquecimiento se hace en dos pasadas sobre los flujos
 agregados (`socshark_soc::enrich_all`): la primera alimenta los trackers
-globales (base de DNS pasivo y tracker de escaneos SYN); la segunda etiqueta
+globales (base de DNS pasivo y tracker de escaneos); la segunda etiqueta
 cada flujo con dominio resuelto (`resolved_domain`), marca de ruido
 (`is_background_noise`), riesgo y alertas (`risk_score`, `alerts`) y el
 resumen humano (`human_summary`). Las dos pasadas son necesarias: una señal
@@ -113,11 +113,11 @@ agotamiento de tabla). La exportación (`finish()`) produce los
    9 TCP, 2 UDP de ruido, ... y detecta L7: DNS×4, TLS, SSH, HTTP, NTP.
 3. `FlowAggregator` las reduce a **12 flujos** bidireccionales: la respuesta
    DNS comparte flujo con su pregunta, los 8 paquetes de la sesión TLS son
-   un solo flujo, y cada SYN del escaneo es un flujo distinto (puertos
-   origen diferentes) — exactamente lo que el tracker de escaneos necesita.
+   un solo flujo, y cada sonda del escaneo es un flujo distinto (otro
+   puerto destino) — exactamente lo que el tracker de escaneos necesita.
 4. `enrich_all` alimenta el DNS pasivo (1 entrada: `example.com` →
-   93.184.216.34), detecta el patrón de escaneo (5 SYNs en seco hacia
-   192.168.1.1:22 desde 192.168.1.30), puntúa y genera alertas con mapeo
+   93.184.216.34), detecta el escaneo (192.168.1.30 prueba 12 puertos de
+   192.168.1.1 sin establecer conexión), puntúa y genera alertas con mapeo
    MITRE, y etiqueta el flujo HTTP hacia 93.184.216.34 con
    `resolved_domain = example.com` gracias al DNS pasivo.
 5. La CLI excluye el ruido (NTP + mDNS: 2 flujos), aplica el filtro si lo

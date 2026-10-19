@@ -10,9 +10,11 @@ SIEM: los `alerts[].mitre` del JSONL llevan exactamente estos IDs.
 | ID | Técnica | Detección en soc-shark | Señal concreta | Estado |
 |---|---|---|---|---|
 | **T1048.003** | Exfiltration Over Alternative Protocol: DNS | `DNS-TUNNELING` | qname ≥ 30 caracteres con entropía de Shannon ≥ 3.5 bits (subdominio codificado) | **Implementado (F1)** |
-| **T1046** | Network Service Discovery / Scanning | `PORT-SCAN` | ≥ 4 SYNs sin ACK hacia el mismo (src, dst, puerto) — tracker entre flujos | **Implementado (F1)** |
-| **T1021** | Remote Services | `INSECURE-PORT` | Conexión a telnet 23/tcp (credenciales en claro) | **Implementado (F1)** |
-| — (hardening) | Network Service Scanning (objetivo expuesto) | `EXPOSED-DB` | Conexión directa a 3306/5432/1433/6379/27017 | **Implementado (F1)** |
+| **T1046** | Network Service Discovery / Scanning | `PORT-SCAN` | Escaneo vertical: un origen prueba ≥ 10 puertos distintos de un host sin establecer conexión (sin respuesta, RST/ACK o half-open) — tracker entre flujos | **Implementado (F1, corregido)** |
+| **T1046** | Network Service Discovery / Scanning | `NETWORK-SWEEP` | Barrido horizontal: un origen prueba el mismo puerto en ≥ 20 hosts sin establecer conexión | **Implementado** |
+| — (aviso) | — | `REPEATED-ATTEMPTS` | ≥ 4 intentos fallidos del mismo origen al mismo host:puerto sin llegar a escaneo (servicio caído, C2 muerto, sondeo insistente); severidad baja | **Implementado** |
+| **T1021** | Remote Services | `INSECURE-PORT` | Conexión a telnet 23/tcp que no es una sonda fallida (credenciales en claro) | **Implementado (F1)** |
+| — (hardening) | Network Service Scanning (objetivo expuesto) | `EXPOSED-DB` | Conexión a 3306/5432/1433/6379/27017 que no es una sonda fallida | **Implementado (F1)** |
 | **T1071** | Application Layer Protocol (genérico) | `BEACONING` | Intervalos entre paquetes del iniciador con CV ≤ 0.15, ≥ 6 intervalos, media entre 5 s y 1 h (excluye ruido atenuado) | **Implementado (F3)** |
 | **T1036** | Masquerading: masquerade file type | `FILE-MASQUERADING` | Carving HTTP (Content-Length/chunked) + magic bytes propio: magic ≠ extensión declarada o doble extensión ejecutable (`informe.pdf.exe`) | **Implementado (F4)** |
 | **T1071.001** | Application Layer Protocol: Web (C2 conocido) | `THREAT-INTEL-FEODO` | Destino en lista Feodo cargada con `--intel-feodo` (IP o CIDR, v4/v6) | **Implementado (F4)** |

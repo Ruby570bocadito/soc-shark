@@ -61,9 +61,19 @@ regla suma a `risk_score` (tope 100) y emite alerta al superar su umbral.
 | ID | Regla | Señal | Riesgo | Estado |
 |---|---|---|---|---|
 | `DNS-TUNNELING` | qname con longitud ≥ 30 **y** entropía de Shannon ≥ 3.5 | subdominios codificados (base32/hex) de exfiltración o C2 | +45 | **implementado** |
-| `PORT-SCAN` | ≥ 4 SYNs sin ningún ACK de respuesta hacia el mismo (origen, destino, puerto) — tracker *entre flujos* | escaneo SYN (cada SYN cambia de puerto origen: patrón invisible por flujo aislado) | +30 | **implementado** |
-| `INSECURE-PORT` | conexión a telnet 23/tcp | credenciales y comandos en texto claro | +35 | **implementado** |
-| `EXPOSED-DB` | conexión directa a 3306/5432/1433/6379/27017 | base de datos alcanzable desde la red observada | +25 | **implementado** |
+| `PORT-SCAN` | un origen prueba ≥ 10 puertos distintos de un host sin establecer conexión — tracker *entre flujos* | escaneo vertical (`nmap -sS`/`-sT`): cada sonda es un flujo distinto, invisible por flujo aislado | +30 | **implementado** |
+| `NETWORK-SWEEP` | un origen prueba el mismo puerto en ≥ 20 hosts sin establecer conexión | barrido horizontal (gusanos, búsqueda de SMB/RDP abiertos) | +30 (una vez con `PORT-SCAN`) | **implementado** |
+| `REPEATED-ATTEMPTS` | ≥ 4 intentos fallidos al mismo host:puerto sin llegar a escaneo | servicio caído, C2 muerto o sondeo insistente (severidad baja) | +10 | **implementado** |
+| `INSECURE-PORT` | conexión a telnet 23/tcp que no es una sonda fallida | credenciales y comandos en texto claro | +35 | **implementado** |
+| `EXPOSED-DB` | conexión a 3306/5432/1433/6379/27017 que no es una sonda fallida | base de datos alcanzable desde la red observada | +25 | **implementado** |
+
+Una **sonda fallida** es un flujo TCP con SYN que nunca transportó datos
+ni se cerró con FIN: sin respuesta (puerto filtrado), RST/ACK (cerrado) o
+SYN/ACK seguido de RST del cliente (half-open). Los umbrales son
+configurables en `PipelineConfig` (`scan_port_threshold`,
+`scan_host_threshold`, `repeated_attempt_threshold`). El horizontal es más
+alto porque el descubrimiento de red de Windows (SMB/NetBIOS) toca muchos
+hosts del mismo puerto de forma legítima.
 
 La entropía de Shannon por carácter distingue `www.ejemplo-corporativo.com`
 (≈2.3 bits) de `az3k9t2wq7xm5vb8n...chfdgs` (≈4.9 bits). El umbral y la
