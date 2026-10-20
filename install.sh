@@ -1,29 +1,28 @@
 #!/usr/bin/env bash
 # =====================================================================
-#  SOC SHARK · instalador para Linux (también vale en macOS)
+#  SOC SHARK · Linux and macOS installer
 #  ---------------------------------------------------------------------
-#  En una línea:
+#  One line:
 #
 #    curl -fsSL https://raw.githubusercontent.com/Ruby570bocadito/soc-shark/main/install.sh | bash
 #
-#  Descarga el binario del último release (comprobando su SHA-256), lo
-#  instala en ~/.local/bin y le da el permiso de captura (setcap) para ver
-#  la red en vivo sin sudo. Si no hay binario para tu sistema, o falla, lo
-#  compila desde el código (instalando git, un enlazador de C y Rust).
-#  Desde una copia del repositorio (./install.sh) compila esa copia.
-#  Se puede volver a ejecutar para actualizar.
+#  Downloads the ready-made binary from the latest release (checking its
+#  SHA-256), installs it into ~/.local/bin and grants it the capture
+#  permission (setcap) so live capture works without sudo. If there is no
+#  binary for your system, or it fails, it builds from source instead
+#  (installing git, a C linker and Rust). From a clone (./install.sh) it
+#  builds that clone. Run it again any time to update.
 #
-#  Ajustes (variables de entorno, todas opcionales):
-#    SOCSHARK_VERSION         versión a instalar, p. ej. 0.7.0 (por defecto, la última)
-#    SOCSHARK_FROM_SOURCE=1   compilar desde el código en vez de descargar
-#    SOCSHARK_DOWNLOAD_URL    otra dirección de descarga (réplica) con los
-#                             mismos archivos que el release
-#    SOCSHARK_BIN             dónde instalar  (por defecto ~/.local/bin)
-#    SOCSHARK_NO_SETCAP=1     no dar el permiso de captura
-#    SOCSHARK_REPO            dueño/repo      (por defecto Ruby570bocadito/soc-shark)
-#    SOCSHARK_REF             rama o etiqueta a compilar (por defecto main)
-#    SOCSHARK_DIR             código fuente   (por defecto ~/soc-shark)
-#    GH_TOKEN / GITHUB_TOKEN  token, solo si clonas un repositorio privado
+#  Options (environment variables, all optional):
+#    SOCSHARK_VERSION         version to install, e.g. 0.7.0 (default: latest)
+#    SOCSHARK_FROM_SOURCE=1   build from source instead of downloading
+#    SOCSHARK_DOWNLOAD_URL    another download location (a release mirror)
+#    SOCSHARK_BIN             install folder (default ~/.local/bin)
+#    SOCSHARK_NO_SETCAP=1     do not grant the capture permission
+#    SOCSHARK_REPO            owner/repo     (default Ruby570bocadito/soc-shark)
+#    SOCSHARK_REF             branch or tag to build (default main)
+#    SOCSHARK_DIR             source folder  (default ~/soc-shark)
+#    GH_TOKEN / GITHUB_TOKEN  token, only to build from a private repository
 # =====================================================================
 set -euo pipefail
 
@@ -36,7 +35,7 @@ VERSION="${SOCSHARK_VERSION:-}"
 VERSION="${VERSION#v}"
 MIN_RUST="1.75"
 
-# --- presentación ---------------------------------------------------
+# --- output ---------------------------------------------------------
 if [ -t 1 ]; then
     C=$'\033[36m' G=$'\033[32m' Y=$'\033[33m' R=$'\033[31m' D=$'\033[2m' B=$'\033[1m' N=$'\033[0m'
 else
@@ -55,13 +54,12 @@ printf '%s  ███████╗██║   ██║██║         █�
 printf '%s  ╚════██║██║   ██║██║         ╚════██║██╔══██║██╔══██║██╔══██╗██╔═██╗%s\n' "$C$B" "$N"
 printf '%s  ███████║╚██████╔╝╚██████╗    ███████║██║  ██║██║  ██║██║  ██║██║  ██╗%s\n' "$C$B" "$N"
 printf '%s  ╚══════╝ ╚═════╝  ╚═════╝    ╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝%s\n' "$C$B" "$N"
-printf '%s  Tu red, explicada en lenguaje claro · instalador para Linux y macOS · %s%s\n' "$D" "$REPO" "$N"
+printf '%s  Your network, explained in plain language · Linux and macOS installer%s\n' "$D" "$N"
 
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/socshark-install.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 
-# --- plataforma -----------------------------------------------------
-step "Plataforma"
+# --- system ---------------------------------------------------------
 OS="$(uname -s)"
 ARCH="$(uname -m)"
 case "$OS/$ARCH" in
@@ -69,11 +67,10 @@ case "$OS/$ARCH" in
     Linux/aarch64 | Linux/arm64) ASSET="socshark-aarch64-unknown-linux-gnu.tar.gz" ;;
     Darwin/*) ASSET="socshark-universal-apple-darwin.tar.gz" ;;
     Linux/*) ASSET="" ;;
-    *) die "Sistema no soportado: $OS. En Windows usa install.ps1." ;;
+    *) die "Unsupported system: $OS. On Windows use install.ps1." ;;
 esac
-ok "$OS $ARCH"
 
-# sudo solo cuando hace falta (y si existe).
+# sudo only when needed (and only if there is one).
 if [ "$(id -u)" -eq 0 ]; then
     SUDO=""
 elif have sudo; then
@@ -86,19 +83,20 @@ as_root() {
     ${SUDO:+$SUDO} "$@"
 }
 
-# Ejecutado como archivo (./install.sh) dentro del repositorio: se compila
-# esa copia. Con `curl | bash` no hay archivo.
+# Run as a file (./install.sh) inside the repository: build that clone.
+# With `curl | bash` there is no file.
 here=""
 if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
     here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 fi
 in_checkout() { [ -n "$here" ] && [ -f "$here/Cargo.toml" ] && grep -q 'socshark' "$here/Cargo.toml"; }
 
-# --- binario del release ----------------------------------------------
+# --- ready-made binary from the release ------------------------------
 sha256_of() {
     if have sha256sum; then sha256sum "$1" | awk '{print $1}'; else shasum -a 256 "$1" | awk '{print $1}'; fi
 }
-# Descarga, comprueba y prueba el binario; deja la ruta en $NEW_BIN.
+# Downloads, verifies and tries the binary; leaves its path in $NEW_BIN or
+# the reason it cannot be used in $WHY.
 download_release() {
     local base
     if [ -n "${SOCSHARK_DOWNLOAD_URL:-}" ]; then
@@ -108,47 +106,44 @@ download_release() {
     else
         base="https://github.com/$REPO/releases/latest/download"
     fi
-    have curl || { warn "Falta curl para descargar."; return 1; }
-    curl -fsL --retry 3 -o "$TMP/$ASSET" "$base/$ASSET" || { warn "No hay $ASSET en el release${VERSION:+ v$VERSION}."; return 1; }
-    curl -fsL --retry 3 -o "$TMP/SHA256SUMS" "$base/SHA256SUMS" || { warn "El release no trae SHA256SUMS."; return 1; }
+    have curl || { WHY="curl is missing"; return 1; }
+    curl -fsL --retry 3 -o "$TMP/$ASSET" "$base/$ASSET" || { WHY="the release${VERSION:+ v$VERSION} has no $ASSET"; return 1; }
+    curl -fsL --retry 3 -o "$TMP/SHA256SUMS" "$base/SHA256SUMS" || { WHY="the release has no SHA256SUMS"; return 1; }
     local want got
     want="$(awk -v f="$ASSET" '$2 == f || $2 == "*" f {print $1}' "$TMP/SHA256SUMS")"
     got="$(sha256_of "$TMP/$ASSET")"
     if [ -z "$want" ] || [ "$want" != "$got" ]; then
-        warn "La suma SHA-256 no coincide: no se instala ese archivo."
+        WHY="its SHA-256 does not match"
         return 1
     fi
-    ok "SHA-256 comprobado"
-    tar -xzf "$TMP/$ASSET" -C "$TMP" socshark || { warn "No se pudo descomprimir $ASSET."; return 1; }
-    # Arranca aquí (glibc, arquitectura): si no, se compila.
-    "$TMP/socshark" --version >/dev/null 2>&1 || { warn "El binario no arranca en este sistema."; return 1; }
+    tar -xzf "$TMP/$ASSET" -C "$TMP" socshark || { WHY="$ASSET could not be unpacked"; return 1; }
+    # It must start here (glibc, architecture); if not, build instead.
+    "$TMP/socshark" --version >/dev/null 2>&1 || { WHY="the binary does not start on this system"; return 1; }
     NEW_BIN="$TMP/socshark"
 }
 
 NEW_BIN=""
+WHY=""
 if [ -n "${SOCSHARK_FROM_SOURCE:-}" ] && [ "${SOCSHARK_FROM_SOURCE}" != 0 ]; then
-    MODE=source
+    WHY="SOCSHARK_FROM_SOURCE is set"
 elif in_checkout; then
-    MODE=source
+    WHY="you ran it from a clone"
 elif [ -z "$ASSET" ]; then
-    warn "No hay binario ya compilado para $ARCH: se compilará desde el código."
-    MODE=source
+    WHY="there is no ready-made binary for $ARCH"
 else
-    step "Descargando SOC SHARK${VERSION:+ v$VERSION}"
+    step "Downloading SOC SHARK${VERSION:+ v$VERSION}"
     if download_release; then
-        MODE=binary
-        ok "$("$NEW_BIN" --version)"
-    else
-        warn "Se compilará desde el código."
-        MODE=source
+        ok "$("$NEW_BIN" --version) (SHA-256 verified)"
     fi
 fi
+MODE=binary
+[ -n "$NEW_BIN" ] || MODE=source
 
-# --- paquetes del sistema ---------------------------------------------
+# --- system packages (only what is missing) ---------------------------
 has_libpcap() {
-    if [ "$OS" = "Darwin" ]; then return 0; fi # viene con macOS
+    if [ "$OS" = "Darwin" ]; then return 0; fi # part of macOS
     { ldconfig -p 2>/dev/null || /sbin/ldconfig -p 2>/dev/null || true; } | grep -q 'libpcap\.so' && return 0
-    # Sin ldconfig -p (Alpine/musl): se busca el archivo.
+    # No `ldconfig -p` (Alpine/musl): look for the file.
     compgen -G '/usr/lib*/libpcap.so*' >/dev/null || compgen -G '/usr/lib/*/libpcap.so*' >/dev/null \
         || compgen -G '/lib/*/libpcap.so*' >/dev/null
 }
@@ -158,7 +153,7 @@ find_setcap() {
     done
     return 1
 }
-# Nombre del paquete de cada pieza en cada gestor.
+# Package name of each piece in each package manager.
 pkg_name() {
     case "$1:$2" in
         apt:cc) echo build-essential ;; apt:libpcap) echo libpcap0.8 ;; apt:setcap) echo libcap2-bin ;;
@@ -176,19 +171,14 @@ install_pkgs() {
     else return 1; fi
     for p in "$@"; do names+=("$(pkg_name "$pm" "$p")"); done
     case "$pm" in
-        apt) as_root apt-get update -qq && as_root apt-get install -y -qq "${names[@]}" ;;
-        dnf | yum) as_root "$pm" install -y -q "${names[@]}" ;;
-        pacman) as_root pacman -S --needed --noconfirm "${names[@]}" ;;
-        zypper) as_root zypper --non-interactive install "${names[@]}" ;;
-        apk) as_root apk add --no-cache "${names[@]}" ;;
+        apt) as_root apt-get update -qq >/dev/null && as_root apt-get install -y -qq "${names[@]}" >/dev/null ;;
+        dnf | yum) as_root "$pm" install -y -q "${names[@]}" >/dev/null ;;
+        pacman) as_root pacman -S --needed --noconfirm "${names[@]}" >/dev/null ;;
+        zypper) as_root zypper --non-interactive --quiet install "${names[@]}" >/dev/null ;;
+        apk) as_root apk add --no-cache --quiet "${names[@]}" ;;
     esac
 }
 
-if [ "$MODE" = source ]; then
-    step "Paquetes del sistema (git, enlazador de C, libpcap)"
-else
-    step "Paquetes del sistema (libpcap, para ver la red en vivo)"
-fi
 missing=()
 if [ "$MODE" = source ]; then
     have git || missing+=(git)
@@ -199,55 +189,46 @@ has_libpcap || missing+=(libpcap)
 if [ "$OS" = "Linux" ] && [ -z "${SOCSHARK_NO_SETCAP:-}" ]; then
     find_setcap >/dev/null || missing+=(setcap)
 fi
-
-if [ ${#missing[@]} -eq 0 ]; then
-    ok "Ya está todo instalado"
-elif [ "$OS" = "Darwin" ]; then
-    warn "Instalando las herramientas de línea de comandos de Xcode (git y el enlazador)..."
-    xcode-select --install 2>/dev/null || true
-    die "Termina la instalación de las herramientas de Xcode y vuelve a ejecutar este instalador."
-else
-    warn "Falta: ${missing[*]}"
+if [ ${#missing[@]} -gt 0 ]; then
+    if [ "$OS" = "Darwin" ]; then
+        warn "Installing the Xcode command line tools (git and the linker)..."
+        xcode-select --install 2>/dev/null || true
+        die "Finish the Xcode tools installation and run this installer again."
+    fi
+    step "Installing system packages: ${missing[*]}"
     if [ "$SUDO" != "none" ] && install_pkgs "${missing[@]}"; then
-        ok "Paquetes instalados"
+        ok "Installed"
     else
-        warn "No se pudo instalar todo con el gestor de paquetes (¿sin sudo?)."
+        warn "Could not install everything with the package manager (no sudo?)."
     fi
 fi
-if [ "$MODE" = source ]; then
-    have git || die "Falta git: instálalo con tu gestor de paquetes y vuelve a ejecutar este instalador."
-    have cc || die "Falta un compilador de C (gcc o clang): Rust lo necesita para enlazar."
-fi
-if has_libpcap; then
-    ok "libpcap presente (captura en vivo)"
-else
-    warn "No se encontró libpcap: abrir capturas funciona; ver la red en vivo, no."
-fi
 
-# --- compilar desde el código -------------------------------------------
+# --- build from source (only without a usable binary) -----------------
 if [ "$MODE" = source ]; then
-    step "Rust"
+    step "Building from source"
+    warn "Building because $WHY."
+    have git || die "git is missing: install it with your package manager and run this installer again."
+    have cc || die "A C compiler (gcc or clang) is missing: Rust needs it to link."
+
     # shellcheck disable=SC1091
     [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
     version_ge() { [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -n1)" = "$2" ]; }
     rust_ok() { have cargo && version_ge "$(rustc --version 2>/dev/null | awk '{print $2}')" "$MIN_RUST"; }
     if ! rust_ok; then
         if have rustup; then
-            warn "Rust es anterior a $MIN_RUST: actualizando..."
-            rustup update stable
+            rustup update stable >/dev/null
         else
-            warn "Instalando Rust con rustup (perfil mínimo)..."
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+            printf '   Installing Rust with rustup...\n'
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y -q --profile minimal --default-toolchain stable >/dev/null
             # shellcheck disable=SC1091
             . "$HOME/.cargo/env"
         fi
     fi
-    rust_ok || die "Hace falta Rust $MIN_RUST o más nuevo."
+    rust_ok || die "Rust $MIN_RUST or newer is required."
     ok "$(cargo --version)"
 
-    step "Código fuente"
-    # Con token (repositorio privado), va en una cabecera solo para git:
-    # nunca acaba en .git/config ni en la línea de comandos.
+    # With a token (private repository) it travels in a header for git
+    # only: it never ends up in .git/config nor on the command line.
     git_auth() {
         if [ -n "$TOKEN" ]; then
             GIT_TERMINAL_PROMPT=0 GIT_CONFIG_COUNT=1 \
@@ -260,30 +241,29 @@ if [ "$MODE" = source ]; then
     }
     if in_checkout; then
         SRC_DIR="$here"
-        ok "Usando esta copia: $SRC_DIR"
     elif [ -d "$SRC_DIR/.git" ]; then
-        if git_auth -C "$SRC_DIR" fetch --quiet origin "$REF" && git -C "$SRC_DIR" checkout --quiet FETCH_HEAD; then
-            ok "Actualizado $SRC_DIR ($REF)"
-        else
-            warn "No se pudo actualizar (se sigue con la copia local)."
+        if ! { git_auth -C "$SRC_DIR" fetch --quiet origin "$REF" && git -C "$SRC_DIR" checkout --quiet FETCH_HEAD; }; then
+            warn "Could not update the source; building the local copy."
         fi
-    elif git_auth clone --quiet --depth 1 --branch "$REF" "https://github.com/$REPO.git" "$SRC_DIR"; then
-        ok "Clonado en $SRC_DIR"
     else
-        die "No se pudo clonar https://github.com/$REPO ($REF). Comprueba la conexión (y, si el repositorio es privado, exporta GH_TOKEN)."
+        git_auth clone --quiet --depth 1 --branch "$REF" "https://github.com/$REPO.git" "$SRC_DIR" \
+            || die "Could not clone https://github.com/$REPO ($REF). Check your connection."
     fi
+    ok "Source: $SRC_DIR"
 
-    step "Compilando (la primera vez tarda unos minutos)"
-    (cd "$SRC_DIR" && cargo build --release --locked -p socshark-cli)
+    printf '   Compiling (a few minutes the first time)...\n'
+    (cd "$SRC_DIR" && cargo build --release --locked --quiet -p socshark-cli)
     NEW_BIN="$SRC_DIR/target/release/socshark"
+    ok "Built"
 fi
 
-# --- instalar -----------------------------------------------------------
-step "Instalando"
+# --- install, permission and a quick self-test -------------------------
+step "Installing"
 mkdir -p "$BIN_DIR"
 install -m 755 "$NEW_BIN" "$BIN_DIR/socshark"
-ok "Instalado en $BIN_DIR/socshark"
+ok "$BIN_DIR/socshark"
 
+new_terminal=""
 case ":$PATH:" in
     *":$BIN_DIR:"*) ;;
     *)
@@ -292,45 +272,37 @@ case ":$PATH:" in
             if [ -f "$rc" ] && ! grep -qxF "$line" "$rc"; then echo "$line" >>"$rc"; fi
         done
         export PATH="$BIN_DIR:$PATH"
-        warn "Añadido $BIN_DIR a tu PATH (abre una terminal nueva para que se aplique)."
+        new_terminal=1
         ;;
 esac
 
-# Ver la red en vivo sin sudo: el mismo permiso que tiene dumpcap (Wireshark).
-if [ "$OS" = "Linux" ] && [ -z "${SOCSHARK_NO_SETCAP:-}" ]; then
-    if setcap_bin="$(find_setcap)" && as_root "$setcap_bin" cap_net_raw,cap_net_admin=eip "$BIN_DIR/socshark"; then
-        ok "Permiso de captura concedido: la red en vivo funciona sin sudo"
-    else
-        warn "No se pudo dar el permiso de captura. Para ver la red en vivo, ejecuta una vez:"
-        printf '       sudo setcap cap_net_raw,cap_net_admin=eip "%s"\n' "$BIN_DIR/socshark"
-    fi
-elif [ "$OS" = "Darwin" ]; then
-    warn "macOS: ver la red en vivo necesita sudo (o ChmodBPF, el ayudante de Wireshark)."
-fi
-
-# --- comprobación de punta a punta -----------------------------------------
-step "Comprobación (captura de demostración)"
-demo="$TMP/demo.pcap"
-ok "$("$BIN_DIR/socshark" --version)"
+demo="$TMP/selftest.pcap"
 if "$BIN_DIR/socshark" dev sample-pcap -o "$demo" >/dev/null 2>&1 \
     && "$BIN_DIR/socshark" capture -r "$demo" >/dev/null 2>&1; then
-    ok "Lectura → disección → conversaciones → motor SOC: todo funciona"
+    ok "Self-test passed"
 else
-    die "El binario no analiza bien la captura de demostración: prueba «socshark capture -r captura.pcap» y mira el error."
+    die "socshark is installed but could not analyse a demo capture. Try: socshark capture -r <file.pcap>"
 fi
 
-cat <<DONE
+# Live capture without sudo: the same permission Wireshark's dumpcap gets.
+if ! has_libpcap; then
+    warn "libpcap is missing: opening captures works, live capture does not."
+elif [ "$OS" = "Linux" ] && [ -z "${SOCSHARK_NO_SETCAP:-}" ]; then
+    if setcap_bin="$(find_setcap)" && as_root "$setcap_bin" cap_net_raw,cap_net_admin=eip "$BIN_DIR/socshark"; then
+        ok "Live capture ready (no sudo needed)"
+    else
+        warn "For live capture, run once: sudo setcap cap_net_raw,cap_net_admin=eip \"$BIN_DIR/socshark\""
+    fi
+elif [ "$OS" = "Darwin" ]; then
+    warn "Live capture on macOS needs sudo (or Wireshark's ChmodBPF helper)."
+fi
 
-${C}${B}============================================================${N}
-${B} SOC SHARK está listo.${N} Prueba:
-
-   ${G}socshark gui${N}                      ventana: ver la red en vivo o abrir una captura
-   ${G}socshark gui -r captura.pcapng${N}    ventana con una captura ya abierta
-   ${G}socshark tui -r captura.pcap${N}      interfaz en la terminal
-   ${G}socshark report -r captura.pcap${N}   informe en lenguaje claro (informe.html)
-   ${G}socshark daemon --list${N}            interfaces de red para capturar en vivo
-   ${G}socshark --help${N}                   todo lo demás
-${C}${B}============================================================${N}
-${D} Para actualizar, vuelve a ejecutar este instalador.${N}
-
-DONE
+printf '\n%s  SOC SHARK is ready.%s\n' "$C$B" "$N"
+if [ -n "$new_terminal" ]; then
+    printf '%s  Open a new terminal (it was added to your PATH) and try:%s\n' "$D" "$N"
+else
+    printf '%s  Try:%s\n' "$D" "$N"
+fi
+printf '    %ssocshark gui%s                   window: watch your network live or open a capture\n' "$G" "$N"
+printf '    %ssocshark tui -r capture.pcap%s   terminal interface\n' "$G" "$N"
+printf '    %ssocshark --help%s                everything else\n\n' "$G" "$N"

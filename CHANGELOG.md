@@ -100,6 +100,10 @@ y [SemVer](https://semver.org/lang/es/).
 
 ### Cambiado
 
+- **Instaladores en inglés y sin ruido**: solo muestran lo necesario (unas
+  diez líneas al descargar el binario); ni la salida del compilador ni la
+  tabla del análisis de prueba, que queda en una línea («Self-test
+  passed»), y tres comandos para empezar en vez de diez.
 - **`install.ps1`**: banner «SOC SHARK» en letras de bloque; se puede usar
   en una línea con `irm … | iex`; lee el token de `GH_TOKEN` y lo pasa en
   una cabecera, sin guardarlo nunca en `.git/config`; rama o etiqueta
