@@ -32,14 +32,12 @@ A modern, friendly alternative to Wireshark for SOC / Blue Team analysts — and
 ### Windows · PowerShell
 
 ```powershell
-$env:GH_TOKEN = "ghp_your_token"   # only while the repository is private
 irm https://raw.githubusercontent.com/Ruby570bocadito/soc-shark/main/install.ps1 -Headers @{ Authorization = "token $env:GH_TOKEN" } | iex
 ```
 
 ### Linux / macOS · bash
 
 ```bash
-export GH_TOKEN=ghp_your_token     # only while the repository is private
 curl -fsSL -H "Authorization: token $GH_TOKEN" https://raw.githubusercontent.com/Ruby570bocadito/soc-shark/main/install.sh | bash
 ```
 
