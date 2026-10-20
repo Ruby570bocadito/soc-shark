@@ -1,0 +1,223 @@
+name: Release
+
+# Publica una versión con binarios para Windows, Linux y macOS.
+#
+# - Botón «Run workflow» (pestaña Actions → Release): publica la versión que
+#   dice el Cargo.toml y crea su etiqueta vX.Y.Z sobre el commit elegido.
+# - O subiendo una etiqueta vX.Y.Z que coincida con el Cargo.toml.
+#
+# Los archivos tienen nombre fijo (sin versión) para que los instaladores
+# descarguen siempre de .../releases/latest/download/<archivo>.
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  prepare:
+    name: versión
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      tag: ${{ steps.v.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: v
+        name: Versión del Cargo.toml y etiqueta
+        run: |
+          version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
+          tag="v$version"
+          if [ -z "$version" ]; then
+            echo "::error::No se encontró la versión en [workspace.package] de Cargo.toml."
+            exit 1
+          fi
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            if [ "$GITHUB_REF_NAME" != "$tag" ]; then
+              echo "::error::La etiqueta $GITHUB_REF_NAME no coincide con la versión del Cargo.toml ($version)."
+              exit 1
+            fi
+          elif git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "::error::La etiqueta $tag ya existe: sube la versión en Cargo.toml (y su sección en CHANGELOG.md) antes de publicar."
+            exit 1
+          fi
+          if ! grep -q "^## \[$version\]" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md no tiene la sección «## [$version]»."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  linux:
+    name: Linux (x86_64 + ARM64)
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Tests
+        run: cargo test --workspace --locked
+
+      # zig enlaza contra glibc 2.17: el binario funciona en cualquier
+      # distribución de los últimos diez años, y ARM64 sin compilador cruzado.
+      - name: Instalar cargo-zigbuild
+        run: |
+          python3 -m venv "$RUNNER_TEMP/zig"
+          "$RUNNER_TEMP/zig/bin/pip" install --quiet cargo-zigbuild
+          echo "$RUNNER_TEMP/zig/bin" >> "$GITHUB_PATH"
+
+      - name: Compilar
+        run: |
+          cargo zigbuild --release --locked -p socshark-cli --target x86_64-unknown-linux-gnu.2.17
+          cargo zigbuild --release --locked -p socshark-cli --target aarch64-unknown-linux-gnu.2.17
+
+      - name: Empaquetar
+        run: |
+          ./target/x86_64-unknown-linux-gnu/release/socshark --version
+          mkdir dist
+          for t in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
+            tar -czf "dist/socshark-$t.tar.gz" -C "target/$t/release" socshark
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-linux
+          path: dist/*
+
+  windows:
+    name: Windows (x86_64)
+    needs: prepare
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # CRT estático: no hace falta el redistribuible de Visual C++.
+      - name: Compilar
+        env:
+          RUSTFLAGS: -C target-feature=+crt-static
+        run: cargo build --release --locked -p socshark-cli --target x86_64-pc-windows-msvc
+
+      - name: Empaquetar
+        shell: pwsh
+        run: |
+          ./target/x86_64-pc-windows-msvc/release/socshark.exe --version
+          New-Item -ItemType Directory dist | Out-Null
+          Compress-Archive -Path target/x86_64-pc-windows-msvc/release/socshark.exe -DestinationPath dist/socshark-x86_64-pc-windows-msvc.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-windows
+          path: dist/*
+
+  macos:
+    name: macOS (universal)
+    needs: prepare
+    runs-on: macos-latest
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Compilar (Apple Silicon e Intel)
+        run: |
+          cargo build --release --locked -p socshark-cli --target aarch64-apple-darwin
+          cargo build --release --locked -p socshark-cli --target x86_64-apple-darwin
+
+      - name: Binario universal y paquete
+        run: |
+          mkdir -p dist universal
+          lipo -create -output universal/socshark \
+            target/aarch64-apple-darwin/release/socshark \
+            target/x86_64-apple-darwin/release/socshark
+          ./universal/socshark --version
+          tar -czf dist/socshark-universal-apple-darwin.tar.gz -C universal socshark
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-macos
+          path: dist/*
+
+  publish:
+    name: publicar
+    needs: [prepare, linux, windows, macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+
+      - name: Sumas SHA-256 y notas
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          REPO: ${{ github.repository }}
+        run: |
+          (cd dist && sha256sum socshark-* > SHA256SUMS && cat SHA256SUMS)
+          raw="https://raw.githubusercontent.com/$REPO/main"
+          {
+            echo "## Install · Instalar"
+            echo
+            echo "**Windows** (PowerShell)"
+            echo '```powershell'
+            echo "irm $raw/install.ps1 | iex"
+            echo '```'
+            echo "**Linux / macOS**"
+            echo '```bash'
+            echo "curl -fsSL $raw/install.sh | bash"
+            echo '```'
+            echo "Or download the file for your system below and check it with \`SHA256SUMS\`."
+            echo "· O descarga el archivo de tu sistema aquí abajo y compruébalo con \`SHA256SUMS\`."
+            echo
+            echo "## Cambios"
+            echo
+            awk -v v="$VERSION" '
+              index($0, "## [" v "]") == 1 { on = 1; next }
+              on && /^## \[/ { exit }
+              on { print }
+            ' CHANGELOG.md
+          } > notes.md
+          cat notes.md
+
+      - name: Crear la etiqueta y el release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          gh release create "$TAG" dist/* \
+            --target "$GITHUB_SHA" \
+            --title "SOC SHARK $VERSION" \
+            --notes-file notes.md
