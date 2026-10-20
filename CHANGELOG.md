@@ -5,17 +5,28 @@ y [SemVer](https://semver.org/lang/es/).
 
 ## [Sin publicar]
 
-## [0.7.0] — 2026-10-19
+## [0.7.0] — 2026-10-20
 
 ### Añadido
 
-- **Instalación en una línea en Linux** (`install.sh`, también macOS):
-  `curl -fsSL … | bash`. Instala lo que falte (git, compilador de C,
-  libpcap, `setcap`) con apt, dnf, yum, pacman, zypper o apk, Rust con
-  rustup, compila, instala en `~/.local/bin` y da al binario el permiso de
-  captura (`cap_net_raw,cap_net_admin`): **la red en vivo funciona sin
-  sudo**. Desde una copia del repositorio usa esa copia; se puede volver a
-  ejecutar para actualizar.
+- **Binarios ya compilados en cada release** (`.github/workflows/release.yml`):
+  un botón («Run workflow» en Actions → Release) pasa los tests, compila
+  `socshark` para Windows x86_64, Linux x86_64 y ARM64 (glibc 2.17: cualquier
+  distribución de los últimos diez años) y macOS universal, crea la etiqueta
+  `vX.Y.Z` de la versión del `Cargo.toml` y publica el release con
+  `SHA256SUMS` y las notas de este CHANGELOG. También se lanza al subir una
+  etiqueta.
+- **Instalación en una línea que no compila**: `install.ps1` e `install.sh`
+  descargan el binario del último release, comprueban su SHA-256 y lo
+  instalan en segundos, sin Rust ni Build Tools. Si no hay binario para el
+  sistema, o no arranca, lo compilan desde el código como antes.
+  `SOCSHARK_VERSION` elige versión y `SOCSHARK_FROM_SOURCE=1` fuerza
+  compilar.
+- **Instalador para Linux** (`install.sh`, también macOS): `curl -fsSL … |
+  bash`. Instala en `~/.local/bin`, añade libpcap si falta (apt, dnf, yum,
+  pacman, zypper o apk) y da al binario el permiso de captura
+  (`cap_net_raw,cap_net_admin`): **la red en vivo funciona sin sudo**. Desde
+  una copia del repositorio compila esa copia.
 - **Ventana propia en Linux**: `socshark gui` se abre en modo aplicación con
   Chrome, Chromium, Edge o Brave si están instalados (como en Windows); si
   no, en el navegador por defecto.
@@ -89,6 +100,10 @@ y [SemVer](https://semver.org/lang/es/).
 
 ### Cambiado
 
+- **Instaladores en inglés y sin ruido**: solo muestran lo necesario (unas
+  diez líneas al descargar el binario); ni la salida del compilador ni la
+  tabla del análisis de prueba, que queda en una línea («Self-test
+  passed»), y tres comandos para empezar en vez de diez.
 - **`install.ps1`**: banner «SOC SHARK» en letras de bloque; se puede usar
   en una línea con `irm … | iex`; lee el token de `GH_TOKEN` y lo pasa en
   una cabecera, sin guardarlo nunca en `.git/config`; rama o etiqueta
