@@ -182,8 +182,11 @@ mod backend {
 
         pub const LIB_NAME: &str = "libpcap";
         pub const INSTALL_HINT: &str = "instala la biblioteca de captura (Debian/Ubuntu: `apt install libpcap0.8`; Fedora: `dnf install libpcap`; macOS ya la trae el sistema)";
+        #[cfg(target_os = "linux")]
+        pub const PERM_HINT: &str = "da el permiso una sola vez con `sudo setcap cap_net_raw,cap_net_admin=eip \"$(command -v socshark)\"` (install.sh ya lo hace) o ejecuta con sudo";
+        #[cfg(not(target_os = "linux"))]
         pub const PERM_HINT: &str =
-            "ejecuta como root o concede CAP_NET_RAW (setcap cap_net_raw+ep)";
+            "ejecuta con sudo (o instala ChmodBPF, el ayudante de Wireshark, para capturar sin sudo)";
 
         /// Debian/Ubuntu (`so.0.8`), Fedora/Arch (`so.1`), genérico con
         /// `-dev` instalado y macOS (`libpcap` resuelve `libpcap.dylib`).

@@ -1236,8 +1236,49 @@ fn open_window(url: &str) {
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
+        // Chrome y compañía se niegan a arrancar como root (sudo): entonces,
+        // el navegador por defecto.
+        if !running_as_root() {
+            let app = format!("--app={url}");
+            for exe in [
+                "google-chrome",
+                "google-chrome-stable",
+                "chromium",
+                "chromium-browser",
+                "microsoft-edge",
+                "brave-browser",
+            ] {
+                if in_path(exe)
+                    && Command::new(exe)
+                        .args([app.as_str(), "--window-size=1440,900"])
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .spawn()
+                        .is_ok()
+                {
+                    return;
+                }
+            }
+        }
         let _ = Command::new("xdg-open").arg(url).spawn();
     }
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn in_path(exe: &str) -> bool {
+    std::env::var_os("PATH")
+        .is_some_and(|p| std::env::split_paths(&p).any(|dir| dir.join(exe).is_file()))
+}
+
+/// UID efectivo 0, leído de `/proc` (sin FFI).
+#[cfg(all(unix, not(target_os = "macos")))]
+fn running_as_root() -> bool {
+    std::fs::read_to_string("/proc/self/status").is_ok_and(|s| {
+        s.lines()
+            .find_map(|l| l.strip_prefix("Uid:"))
+            .and_then(|ids| ids.split_whitespace().nth(1))
+            == Some("0")
+    })
 }
 
 /// `socshark gui`: analiza (si se indicó) la captura, sirve la interfaz y
@@ -1277,6 +1318,15 @@ mod tests {
     use super::*;
     use socshark_testgen::{sample_pcap_packets, write_pcap};
     use std::io::{Read, Write};
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn busca_navegadores_en_el_path() {
+        assert!(in_path("sh"));
+        assert!(!in_path("socshark-navegador-que-no-existe"));
+        // Leer el UID no falla (sea root o no).
+        let _ = running_as_root();
+    }
 
     fn server_with(packets: &[(u64, Vec<u8>)], name: &str) -> (Arc<Server>, PathBuf) {
         let path = std::env::temp_dir().join(format!(

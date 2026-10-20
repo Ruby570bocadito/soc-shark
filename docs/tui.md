@@ -13,11 +13,14 @@ socshark tui -r captura.pcap                  # toda la captura (ruido incluido,
 socshark tui -r captura.pcap -f "flow.risk >= 30"   # arranca ya filtrada
 ```
 
-En Fase 1/2 la TUI trabaja en **modo offline**: analiza el pcap con el
-mismo pipeline que `socshark capture` y muestra el resultado. Cuando exista
-el daemon de captura en vivo (fase siguiente), la TUI consumirá su JSONL
-sin cambiar ni una línea del modelo: los [`EnrichedFlow`](data-model.md)
-son la frontera estable entre núcleo e interfaces.
+![La TUI con la captura de demostración](img/tui.png)
+
+La TUI trabaja sobre **capturas guardadas** (pcap o pcapng): las analiza con
+el mismo pipeline que `socshark capture` y muestra el resultado. Para ver la
+red **en vivo** están la ventana (`socshark gui` → *En vivo*) y el daemon
+(`socshark daemon`); que la TUI consuma el JSONL del daemon no cambiaría ni
+una línea del modelo: los [`EnrichedFlow`](data-model.md) son la frontera
+estable entre núcleo e interfaces.
 
 ## Atajos
 

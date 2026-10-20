@@ -5,8 +5,25 @@ y [SemVer](https://semver.org/lang/es/).
 
 ## [Sin publicar]
 
+## [0.7.0] — 2026-10-19
+
 ### Añadido
 
+- **Instalación en una línea en Linux** (`install.sh`, también macOS):
+  `curl -fsSL … | bash`. Instala lo que falte (git, compilador de C,
+  libpcap, `setcap`) con apt, dnf, yum, pacman, zypper o apk, Rust con
+  rustup, compila, instala en `~/.local/bin` y da al binario el permiso de
+  captura (`cap_net_raw,cap_net_admin`): **la red en vivo funciona sin
+  sudo**. Desde una copia del repositorio usa esa copia; se puede volver a
+  ejecutar para actualizar.
+- **Ventana propia en Linux**: `socshark gui` se abre en modo aplicación con
+  Chrome, Chromium, Edge o Brave si están instalados (como en Windows); si
+  no, en el navegador por defecto.
+- **README en inglés (por defecto) y en español** (`README.es.md`), con la
+  instalación en una línea bien visible, un **vídeo de demostración**
+  (`docs/media/demo.webp` y `demo.mp4`) y una captura real de la **TUI**.
+- CI: revisa los instaladores (`shellcheck install.sh`, sintaxis de
+  `install.ps1` y que siga en ASCII sin BOM).
 - **GUI** (`socshark gui [-r captura.pcap]`, ADR-013, [docs/gui.md](docs/gui.md)):
   ventana estilo Wireshark pensada para que cualquier persona entienda su
   red. Historias (alertas agrupadas: un escaneo es una historia) con «qué
@@ -72,6 +89,15 @@ y [SemVer](https://semver.org/lang/es/).
 
 ### Cambiado
 
+- **`install.ps1`**: banner «SOC SHARK» en letras de bloque; se puede usar
+  en una línea con `irm … | iex`; lee el token de `GH_TOKEN` y lo pasa en
+  una cabecera, sin guardarlo nunca en `.git/config`; rama o etiqueta
+  configurable (`SOCSHARK_REF`); compila solo el binario y con `--locked`.
+  El archivo queda en ASCII puro y sin BOM (con BOM, `irm | iex` falla).
+- Ayuda de la CLI más clara: ejemplos empezando por la ventana, la TUI y el
+  informe; sin referencias internas a fases; `-r` acepta pcap y pcapng.
+- Sin permiso de captura, el error dice el comando exacto para darlo
+  (`sudo setcap …`) en Linux, y qué hacer en macOS.
 - **Logo e interfaz nuevos**: logo de una aleta de tiburón cortando una ola
   (barra, bienvenida, icono de la pestaña e informe). Bienvenida con las dos
   formas de empezar y lo que hace el programa; pestañas de vista con
@@ -83,6 +109,8 @@ y [SemVer](https://semver.org/lang/es/).
 
 ### Corregido
 
+- `install.ps1`: el banner no mostraba el nombre (se leía «ScSHat»).
+- `docs/tui.md` decía que el daemon en vivo aún no existía.
 - README: la insignia de CI salía rota porque apuntaba a otro repositorio
   (`soc-shark/soc-shark`); también el `repository` de `Cargo.toml`.
 - Iconos de gravedad (✕ ! ✓) descentrados en la leyenda del mapa y, según
