@@ -48,6 +48,22 @@ revisa los instaladores: `shellcheck install.sh` y que `install.ps1` se
 analice sin errores y siga en **ASCII puro, sin BOM** (con BOM, `irm | iex`
 deja de funcionar). Un PR no se revisa si la CI falla.
 
+## Publicar una versión
+
+1. Sube la versión en `[workspace.package]` de `Cargo.toml` y pasa lo de
+   `## [Sin publicar]` del CHANGELOG a una sección `## [X.Y.Z] — fecha`.
+2. Fusiona en `main` con la CI en verde.
+3. En GitHub: **Actions → Release → Run workflow** (rama `main`).
+
+El workflow (`.github/workflows/release.yml`) comprueba que la etiqueta
+`vX.Y.Z` no exista y que el CHANGELOG tenga su sección, pasa los tests,
+compila `socshark` para Windows x86_64, Linux x86_64 y ARM64 (con
+`cargo zigbuild` contra glibc 2.17) y macOS universal, y publica el release
+con los binarios, `SHA256SUMS` y las notas de esa sección. Los archivos
+tienen nombre fijo (`socshark-<plataforma>.zip|tar.gz`): los instaladores
+descargan siempre de `releases/latest/download/`, así que no renombres
+ninguno sin cambiar también `install.sh` e `install.ps1`.
+
 ## Añadir un disector nuevo
 
 1. Implementa el parser en `crates/socshark-dissectors/src/`

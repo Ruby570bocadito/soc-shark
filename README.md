@@ -10,7 +10,7 @@ A modern, friendly alternative to Wireshark for SOC / Blue Team analysts — and
 **English** · [Español](README.es.md)
 
 [![CI](https://github.com/Ruby570bocadito/soc-shark/actions/workflows/ci.yml/badge.svg)](https://github.com/Ruby570bocadito/soc-shark/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-0.7.0-0e7490)
+[![Release](https://img.shields.io/github/v/release/Ruby570bocadito/soc-shark?color=0e7490&label=release)](https://github.com/Ruby570bocadito/soc-shark/releases/latest)
 ![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20Linux%20%7C%20macOS-1fb5cc)
 ![Rust](https://img.shields.io/badge/rust-1.75%2B-orange)
 ![License](https://img.shields.io/badge/license-MIT-green)
@@ -25,20 +25,22 @@ A modern, friendly alternative to Wireshark for SOC / Blue Team analysts — and
 
 ## ⚡ Install in one line
 
-> Builds from source, installs everything it needs (Git, Rust, the C linker and,
-> on Linux, libpcap), puts `socshark` on your `PATH` and checks it with a demo
-> capture. Run it again any time to update.
+> Downloads the ready-to-run binary for your system from the
+> [latest release](https://github.com/Ruby570bocadito/soc-shark/releases/latest),
+> checks its SHA-256, puts `socshark` on your `PATH` and tests it with a demo
+> capture. **No compiler needed: it takes seconds.** Run it again any time to
+> update.
 
 ### Windows · PowerShell
 
 ```powershell
-irm https://raw.githubusercontent.com/Ruby570bocadito/soc-shark/main/install.ps1 -Headers @{ Authorization = "token $env:GH_TOKEN" } | iex
+irm https://raw.githubusercontent.com/Ruby570bocadito/soc-shark/main/install.ps1 | iex
 ```
 
 ### Linux / macOS · bash
 
 ```bash
-curl -fsSL -H "Authorization: token $GH_TOKEN" https://raw.githubusercontent.com/Ruby570bocadito/soc-shark/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Ruby570bocadito/soc-shark/main/install.sh | bash
 ```
 
 Then open the app:
@@ -48,30 +50,32 @@ socshark gui
 ```
 
 <details>
-<summary>About the token, live capture permissions and what each installer does</summary>
+<summary>What each installer does, live capture permissions and options</summary>
 
-- **Token**: while the repository is private, create a
-  [GitHub token](https://github.com/settings/tokens) with read access to the
-  repository (fine-grained: *Contents → Read-only*). The installers use it only
-  for that download: it is never written to `.git/config`. When the repository
-  is public, drop the token line and the `-Headers …` / `-H …` part.
-- **Windows** ([`install.ps1`](install.ps1)): installs Git, the Visual Studio C++
-  Build Tools (the linker Rust needs) and Rust with winget/rustup if missing,
-  builds in release mode, installs `socshark.exe` into
+- **Windows** ([`install.ps1`](install.ps1)): installs `socshark.exe` into
   `%USERPROFILE%\.socshark\bin` and adds it to your user `PATH`. For **live
   capture** install [Npcap](https://npcap.com) (already there if you have
   Wireshark) with *WinPcap API-compatible Mode* ticked.
-- **Linux** ([`install.sh`](install.sh)): installs `git`, a C compiler,
-  `libpcap` and `setcap` with apt, dnf, yum, pacman, zypper or apk, then Rust
-  with rustup, builds, installs into `~/.local/bin` and grants the binary the
-  capture permission (`cap_net_raw,cap_net_admin`, the same one Wireshark's
-  `dumpcap` gets), so **live capture works without sudo**.
-- **macOS**: same script; live capture needs `sudo` (or Wireshark's ChmodBPF).
-- Options (environment variables): `SOCSHARK_REF` (branch or tag, e.g.
-  `v0.7.0`), `SOCSHARK_DIR` (source folder), `SOCSHARK_BIN` (Linux install
-  folder), `SOCSHARK_NO_SETCAP=1`.
+- **Linux** ([`install.sh`](install.sh)): installs into `~/.local/bin`, adds
+  `libpcap` if it is missing and grants the binary the capture permission
+  (`cap_net_raw,cap_net_admin`, the same one Wireshark's `dumpcap` gets), so
+  **live capture works without sudo**. The binary runs on any distribution
+  with glibc 2.17 or newer (x86_64 and ARM64).
+- **macOS**: same script, one universal binary (Apple Silicon and Intel); live
+  capture needs `sudo` (or Wireshark's ChmodBPF).
+- **No binary for your system, or it fails to start?** The installer builds
+  from source instead, installing what that needs (Git, Rust, a C linker; on
+  Windows, the Visual Studio C++ Build Tools).
+- Options (environment variables): `SOCSHARK_VERSION` (e.g. `0.7.0`; default:
+  the latest), `SOCSHARK_FROM_SOURCE=1` (build instead of downloading),
+  `SOCSHARK_BIN` (Linux/macOS install folder), `SOCSHARK_NO_SETCAP=1`.
 
 </details>
+
+**Prefer to download it yourself?** Every
+[release](https://github.com/Ruby570bocadito/soc-shark/releases/latest) has
+`socshark` for Windows (`.zip`), Linux x86_64 and ARM64, and macOS (`.tar.gz`),
+plus `SHA256SUMS` to check them: unpack it and run `socshark gui`.
 
 ## Why SOC SHARK
 
@@ -164,7 +168,7 @@ time.
 ```bash
 git clone https://github.com/Ruby570bocadito/soc-shark.git
 cd soc-shark
-./install.sh                     # or: cargo build --release
+./install.sh                     # builds this copy and installs it; or: cargo build --release
 ./target/release/socshark gui -r examples/demo.pcap
 ```
 
