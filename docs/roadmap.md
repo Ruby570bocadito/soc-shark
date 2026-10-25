@@ -4,6 +4,10 @@ Cinco fases, cada una con criterios de aceptación verificables. La regla del
 proyecto: **una fase no se da por cerrada si su criterio falla**, aunque el
 código exista. El estado se mantiene en este documento y en el README.
 
+> **Lo que viene después de la 0.7.0** (README, i18n, protocolos, detecciones,
+> GUI, rendimiento, empaquetado y el camino a la 1.0) está en el
+> [roadmap de expansión](../ROADMAP.md).
+
 ## Fase 0 — Fundaciones ✅ (completada)
 
 Estructura del workspace, modelo de datos `EnrichedFlow` completo (con

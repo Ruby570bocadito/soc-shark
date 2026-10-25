@@ -187,6 +187,8 @@ it with `sudo`.
 | Transparent TLS 1.3 decryption (uprobes on `SSL_read/SSL_write`) | 🔵 Planned |
 | Sandboxed WASM plugins · CyberChef-style decoder · GeoIP/ASN · TheHive | 🔵 Planned — [roadmap.md](docs/roadmap.md) |
 
+What comes next (English UI, more protocols and detections, scale, desktop app, road to 1.0): see the **[expansion roadmap](ROADMAP.md)** (Spanish).
+
 Quality: 200+ unit and integration tests, deterministic fuzzing in CI,
 `clippy -D warnings` and `rustfmt` with no exceptions, panic-free parsers
 (malformed or hostile packets yield `None`, never a crash) and a minimal set

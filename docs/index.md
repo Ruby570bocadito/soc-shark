@@ -35,4 +35,5 @@ en [decisions.md](decisions.md) (ADR-007).
 | [soc-mitre-mapping.md](soc-mitre-mapping.md) | Cada detección mapeada a MITRE ATT&CK, con su estado |
 | [siem-export.md](siem-export.md) | Contrato de export a SIEM (ECS y Wazuh) campo a campo |
 | [roadmap.md](roadmap.md) | Fases 0-4, criterios de aceptación y dependencias entre fases |
+| [../ROADMAP.md](../ROADMAP.md) | Roadmap de expansión 0.8 → 2.0: líneas de trabajo, prioridades y criterios de la 1.0 |
 | [decisions.md](decisions.md) | Registro de decisiones de arquitectura (ADRs) |

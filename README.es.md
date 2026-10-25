@@ -187,6 +187,8 @@ ejecútalo con `sudo`.
 | Descifrado transparente de TLS 1.3 (uprobes en `SSL_read/SSL_write`) | 🔵 Previsto |
 | Plugins WASM aislados · decodificador tipo CyberChef · GeoIP/ASN · TheHive | 🔵 Previsto — [roadmap.md](docs/roadmap.md) |
 
+Lo que viene después (interfaz en inglés, más protocolos y detecciones, escala, app de escritorio, camino a la 1.0): ver el **[roadmap de expansión](ROADMAP.md)**.
+
 Calidad: más de 200 tests unitarios y de integración, fuzzing determinista en
 CI, `clippy -D warnings` y `rustfmt` sin excepciones, disectores sin `panic`
 (un paquete malformado u hostil produce `None`, nunca un cierre) y las
