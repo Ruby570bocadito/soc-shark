@@ -214,9 +214,67 @@ pub struct IntervalStats {
     pub mean_micros: u64,
     /// Desviación estándar poblacional de los intervalos, en microsegundos.
     pub std_micros: u64,
+    /// Mediana de los intervalos, en microsegundos (0 = no calculada, p. ej.
+    /// en un JSONL de una versión anterior).
+    #[serde(default)]
+    pub median_micros: u64,
+    /// Desviación absoluta mediana (MAD) respecto a la mediana, en µs.
+    #[serde(default)]
+    pub mad_micros: u64,
+    /// Intervalos dentro de la banda [`JITTER_BAND`] × mediana, en tantos
+    /// por mil: un beacon con jitter uniforme cae casi entero dentro; el
+    /// tráfico humano tiene cola larga fuera.
+    #[serde(default)]
+    pub in_band_permille: u16,
 }
 
+/// Banda relativa a la mediana que cuenta como «dentro del periodo» en la
+/// detección de beaconing con jitter: tolera un beacon perdido (intervalo
+/// doble) pero no la cola pesada del tráfico interactivo.
+pub const JITTER_BAND: (f64, f64) = (0.4, 2.0);
+
 impl IntervalStats {
+    /// Estadística de una serie de intervalos (µs); `None` si está vacía.
+    /// Es el único sitio donde se calcula, para que la regularidad dentro
+    /// de un flujo y entre conexiones se midan igual.
+    pub fn from_deltas(deltas: &[u64]) -> Option<Self> {
+        if deltas.is_empty() {
+            return None;
+        }
+        let n = deltas.len() as f64;
+        let mean = deltas.iter().map(|&d| d as f64).sum::<f64>() / n;
+        let var = deltas
+            .iter()
+            .map(|&d| {
+                let x = d as f64 - mean;
+                x * x
+            })
+            .sum::<f64>()
+            / n;
+        let mut xs: Vec<f64> = deltas.iter().map(|&d| d as f64).collect();
+        let median = median_of(&mut xs);
+        let mut dev: Vec<f64> = xs.iter().map(|x| (x - median).abs()).collect();
+        let mad = median_of(&mut dev);
+        let (lo, hi) = JITTER_BAND;
+        let in_band = xs
+            .iter()
+            .filter(|&&x| x >= lo * median && x <= hi * median)
+            .count();
+        Some(Self {
+            intervals: deltas.len() as u32,
+            mean_micros: mean.round() as u64,
+            std_micros: var.sqrt().round() as u64,
+            median_micros: median.round() as u64,
+            mad_micros: mad.round() as u64,
+            in_band_permille: (1000 * in_band / deltas.len()) as u16,
+        })
+    }
+
+    /// MAD/mediana (`None` si no hay mediana calculada).
+    pub fn mad_ratio(&self) -> Option<f64> {
+        (self.median_micros > 0).then(|| self.mad_micros as f64 / self.median_micros as f64)
+    }
+
     /// Coeficiente de variación (std/mean): 0.0 = reloj perfecto, valores
     /// ≥ ~0.3 = tráfico humano/cola TCP, no beacon programado.
     pub fn cv(&self) -> f64 {
@@ -224,6 +282,17 @@ impl IntervalStats {
             return f64::INFINITY;
         }
         self.std_micros as f64 / self.mean_micros as f64
+    }
+}
+
+/// Mediana de `v` (lo ordena in situ); `v` no vacío.
+fn median_of(v: &mut [f64]) -> f64 {
+    v.sort_by(|a, b| a.total_cmp(b));
+    let m = v.len() / 2;
+    if v.len().is_multiple_of(2) {
+        (v[m - 1] + v[m]) / 2.0
+    } else {
+        v[m]
     }
 }
 

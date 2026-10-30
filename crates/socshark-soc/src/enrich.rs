@@ -4,6 +4,7 @@ use socshark_core::config::PipelineConfig;
 use socshark_core::{EnrichedFlow, L7Protocol};
 
 use crate::beacon::FlowStartTracker;
+use crate::dns_volume::DnsVolumeTracker;
 use crate::intel::ThreatIntelDb;
 use crate::noise;
 use crate::passive_dns::PassiveDnsDb;
@@ -23,6 +24,9 @@ pub struct SocContext {
     /// Inicios de flujo por servicio: beaconing lento que el timeout de
     /// inactividad parte en flujos sueltos (ver [`crate::beacon`]).
     pub flow_starts: FlowStartTracker,
+    /// Subdominios únicos por (cliente, dominio registrable): túnel DNS por
+    /// volumen (ver [`crate::dns_volume`]).
+    pub dns_volume: DnsVolumeTracker,
 }
 
 /// Enriquece todos los flujos: DNS pasivo, ruido, riesgo y resumen humano.
@@ -40,6 +44,7 @@ pub fn enrich_all(ctx: &mut SocContext, flows: &mut [EnrichedFlow], cfg: &Pipeli
         }
         ctx.scan_tracker.observe(flow);
         ctx.flow_starts.observe(flow);
+        ctx.dns_volume.observe(flow, cfg);
     }
 
     // Pasada 2: enriquecer cada flujo con el contexto completo.
@@ -82,10 +87,18 @@ pub fn enrich_all(ctx: &mut SocContext, flows: &mut [EnrichedFlow], cfg: &Pipeli
 
         let scan = ctx.scan_tracker.signals(flow);
         risk::assess_with_intel(flow, scan, cfg, ctx.intel.as_ref());
-        // R5 entre flujos: solo si el propio flujo no alertó ya beacon.
+        // R1 por volumen: subdominios únicos por (cliente, dominio).
+        if let Some(sig) = ctx.dns_volume.signal(flow, cfg) {
+            risk::assess_dns_volume(flow, &sig);
+        }
+        // R5 entre flujos: solo si el propio flujo no alertó ya beacon. La
+        // prueba estricta va primero; la de jitter solo si aquella no pasa.
         if !flow.alerts.iter().any(|a| a.id == "BEACONING") {
-            if let Some(stats) = ctx.flow_starts.stats(flow) {
-                risk::assess_interflow_beacon(flow, &stats, cfg);
+            if let Some(deltas) = ctx.flow_starts.intervals(flow) {
+                let stats = crate::beacon::stats_of(&deltas);
+                if !risk::assess_interflow_beacon(flow, &stats, cfg) {
+                    risk::assess_interflow_jitter_beacon(flow, &deltas, cfg);
+                }
             }
         }
         flow.human_summary = summarize::summarize(flow);
@@ -246,6 +259,184 @@ mod tests {
             assert!(!f.alerts.iter().any(|a| a.id == "PORT-SCAN"));
             assert_eq!(f.alerts[0].id, "REPEATED-ATTEMPTS");
             assert_eq!(f.alerts[0].severity, socshark_core::Severity::Low);
+        }
+    }
+
+    // ------------------------------------------- hoja de ruta 0.8: evasión
+
+    /// Paquetes por disector + agregador (timeout de inactividad `idle`):
+    /// los flujos exportados, ordenados por inicio, aún sin enriquecer.
+    fn flujos_de(packets: Vec<(u64, Vec<u8>)>, idle: u64) -> Vec<EnrichedFlow> {
+        use socshark_core::{LinkType, RawPacket};
+        use socshark_dissectors::DissectorPipeline;
+        use socshark_flow::FlowAggregator;
+
+        let pipe = DissectorPipeline::new();
+        let mut agg = FlowAggregator::new(100_000, idle, false);
+        for (ts, data) in packets {
+            let pkt = RawPacket {
+                ts_micros: ts,
+                orig_len: data.len() as u32,
+                data,
+            };
+            if let Some(dp) = pipe.dissect(&pkt, LinkType::Ethernet) {
+                agg.on_packet(pkt.ts_micros, pkt.data.len(), &dp);
+            }
+        }
+        let mut flows = agg.finish();
+        flows.sort_by_key(|f| f.first_seen_micros);
+        flows
+    }
+
+    fn por_el_motor(packets: Vec<(u64, Vec<u8>)>) -> Vec<EnrichedFlow> {
+        let mut flows = flujos_de(packets, 120);
+        enrich_all(
+            &mut SocContext::default(),
+            &mut flows,
+            &PipelineConfig::default(),
+        );
+        flows
+    }
+
+    fn alertas<'a>(flows: &'a [EnrichedFlow], id: &str) -> Vec<&'a socshark_core::Alert> {
+        flows
+            .iter()
+            .flat_map(|f| f.alerts.iter())
+            .filter(|a| a.id == id)
+            .collect()
+    }
+
+    #[test]
+    fn tunel_dns_de_baja_entropia_alerta_por_volumen() {
+        use socshark_testgen::evasion::*;
+        // Ningún nombre suelto parece un túnel...
+        assert!(risk::dns_tunnel_suspect("a0001.t.evil.com", &PipelineConfig::default()).is_none());
+        // ...pero 200 subdominios únicos de evil.com en 7 min sí.
+        let flows = por_el_motor(dns_low_entropy_tunnel_packets());
+        assert_eq!(flows.len(), 200);
+        let a = alertas(&flows, "DNS-TUNNELING");
+        assert_eq!(a.len(), 200, "todas las consultas del túnel");
+        assert!(
+            a[0].detail
+                .contains("50 subdominios únicos de evil.com en 10 min"),
+            "{}",
+            a[0].detail
+        );
+        assert_eq!(a[0].mitre.as_deref(), Some("T1071.004"));
+        assert_eq!(a[0].severity, socshark_core::Severity::High);
+        assert!(flows.iter().all(|f| f.risk_score >= 45));
+        let e = crate::explain::explain(&flows[0]);
+        assert!(
+            e.alerts[0]
+                .story
+                .contains("50 nombres distintos de evil.com"),
+            "{}",
+            e.alerts[0].story
+        );
+    }
+
+    #[test]
+    fn navegacion_consultas_repetidas_y_ptr_no_son_tunel() {
+        let flows = por_el_motor(socshark_testgen::evasion::dns_benign_packets());
+        assert_eq!(flows.len(), 230);
+        assert!(alertas(&flows, "DNS-TUNNELING").is_empty());
+    }
+
+    #[test]
+    fn volumen_dns_entre_lotes_del_daemon() {
+        let cfg = PipelineConfig::default(); // umbral 50 únicos
+        let flows = flujos_de(
+            socshark_testgen::evasion::dns_low_entropy_tunnel_packets(),
+            120,
+        );
+        let mut ctx = SocContext::default();
+        let mut alertados = Vec::new();
+        for lote in flows.chunks(20) {
+            let mut lote = lote.to_vec();
+            enrich_all(&mut ctx, &mut lote, &cfg);
+            alertados.push(alertas(&lote, "DNS-TUNNELING").len());
+        }
+        // Lotes 1-2 (40 únicos) nada; el 3.º cruza el umbral en su 10.ª
+        // consulta (pasada 1 antes que la 2: alerta el lote entero).
+        assert_eq!(alertados[..3], [0, 0, 20]);
+        assert!(alertados[3..].iter().all(|&n| n == 20));
+        assert!(ctx.dns_volume.len() == 1);
+    }
+
+    #[test]
+    fn beacon_con_jitter_entre_conexiones_alerta_bajo() {
+        use socshark_testgen::evasion::jittered_beacon_packets;
+        // Varias semillas: la detección no depende de una tirada afortunada.
+        for seed in 0..30 {
+            let flows = por_el_motor(jittered_beacon_packets(seed));
+            let c2: Vec<&EnrichedFlow> = flows
+                .iter()
+                .filter(|f| f.dst_ip.to_string() == "198.51.100.23")
+                .collect();
+            assert_eq!(c2.len(), 21);
+            // La prueba estricta (CV ≤ 0.15) no pasa con ±40%...
+            let a: Vec<_> = c2
+                .iter()
+                .flat_map(|f| f.alerts.iter())
+                .filter(|a| a.id == "BEACONING")
+                .collect();
+            assert_eq!(a.len(), 21, "semilla {seed}: una alerta por flujo");
+            // ...la de jitter sí, con severidad baja y +10.
+            assert_eq!(a[0].severity, socshark_core::Severity::Low, "{seed}");
+            assert!(a[0].detail.contains("jitter ~"), "{}", a[0].detail);
+            assert!(a[0].detail.contains("entre conexiones"), "{}", a[0].detail);
+            assert_eq!(a[0].mitre.as_deref(), Some("T1071"));
+        }
+    }
+
+    #[test]
+    fn beacon_con_jitter_dentro_de_un_flujo_udp() {
+        let flows = por_el_motor(socshark_testgen::evasion::jittered_udp_beacon_packets(42));
+        assert_eq!(flows.len(), 1);
+        let a = alertas(&flows, "BEACONING");
+        assert_eq!(a.len(), 1);
+        assert_eq!(a[0].severity, socshark_core::Severity::Low);
+        // Con los intervalos del agregador va por mediana + MAD, no por CV.
+        assert!(a[0].detail.contains("(mediana)"), "{}", a[0].detail);
+        let e = crate::explain::explain(&flows[0]);
+        assert!(
+            e.alerts[0].story.contains("variaciones al azar"),
+            "{}",
+            e.alerts[0].story
+        );
+        assert_eq!(flows[0].risk_score, 10);
+    }
+
+    #[test]
+    fn conexiones_interactivas_de_cola_pesada_no_son_beacon() {
+        let flows = por_el_motor(socshark_testgen::evasion::interactive_sessions_packets());
+        assert_eq!(flows.len(), 21);
+        assert!(alertas(&flows, "BEACONING").is_empty());
+    }
+
+    #[test]
+    fn beacon_regular_gana_a_la_variante_con_jitter() {
+        // 20 intervalos de 60 s exactos (±0%): pasan las dos pruebas y solo
+        // debe salir la estricta (media, +20), una vez por flujo.
+        let mut flows: Vec<EnrichedFlow> = socshark_testgen::evasion::jittered_times(1, 60, 0, 20)
+            .into_iter()
+            .enumerate()
+            .map(|(i, t)| {
+                let mut f = flujo_basico(6, 41000 + i as u16, 443);
+                f.first_seen_micros = t;
+                f
+            })
+            .collect();
+        enrich_all(
+            &mut SocContext::default(),
+            &mut flows,
+            &PipelineConfig::default(),
+        );
+        for f in &flows {
+            let b: Vec<_> = f.alerts.iter().filter(|a| a.id == "BEACONING").collect();
+            assert_eq!(b.len(), 1);
+            assert_eq!(b[0].severity, socshark_core::Severity::Medium);
+            assert_eq!(f.risk_score, 20);
         }
     }
 }

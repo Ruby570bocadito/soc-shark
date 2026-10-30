@@ -73,9 +73,10 @@ impl FlowStartTracker {
         }
     }
 
-    /// Estadística de intervalos entre inicios de flujo del servicio de
-    /// `flow` (`None` con menos de 3 inicios).
-    pub fn stats(&self, flow: &EnrichedFlow) -> Option<IntervalStats> {
+    /// Intervalos crudos (µs) entre inicios de flujo del servicio de `flow`,
+    /// en orden temporal (`None` con menos de 3 inicios). Los usa la prueba
+    /// tolerante a jitter, que necesita mediana y MAD, no solo media/CV.
+    pub fn intervals(&self, flow: &EnrichedFlow) -> Option<Vec<u64>> {
         if !eligible(flow) {
             return None;
         }
@@ -83,22 +84,13 @@ impl FlowStartTracker {
         if ts.len() < 3 {
             return None;
         }
-        let deltas: Vec<u64> = ts.windows(2).map(|w| w[1] - w[0]).collect();
-        let n = deltas.len() as f64;
-        let mean = deltas.iter().sum::<u64>() as f64 / n;
-        let var = deltas
-            .iter()
-            .map(|&d| {
-                let x = d as f64 - mean;
-                x * x
-            })
-            .sum::<f64>()
-            / n;
-        Some(IntervalStats {
-            intervals: deltas.len() as u32,
-            mean_micros: mean.round() as u64,
-            std_micros: var.sqrt().round() as u64,
-        })
+        Some(ts.windows(2).map(|w| w[1] - w[0]).collect())
+    }
+
+    /// Estadística de intervalos entre inicios de flujo del servicio de
+    /// `flow` (`None` con menos de 3 inicios).
+    pub fn stats(&self, flow: &EnrichedFlow) -> Option<IntervalStats> {
+        self.intervals(flow).map(|d| stats_of(&d))
     }
 
     /// Servicios recordados (para métricas y tests).
@@ -109,6 +101,11 @@ impl FlowStartTracker {
     pub fn is_empty(&self) -> bool {
         self.starts.is_empty()
     }
+}
+
+/// Estadística de una serie no vacía (ver [`IntervalStats::from_deltas`]).
+pub fn stats_of(deltas: &[u64]) -> IntervalStats {
+    IntervalStats::from_deltas(deltas).unwrap_or_default()
 }
 
 #[cfg(test)]

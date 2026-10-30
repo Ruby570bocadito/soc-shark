@@ -5,6 +5,7 @@
 //! - [`passive_dns`]: caché dominio↔IP construida con las respuestas DNS.
 //! - [`risk`]: mini-IDS heurístico + puntuación de riesgo (0-100).
 //! - [`beacon`]: beaconing entre flujos (inicios de conexión regulares).
+//! - [`dns_volume`]: túnel DNS por volumen de subdominios únicos.
 //! - [`summarize`]: resumen técnico de una línea por flujo.
 //! - [`explain`]: traducción a lenguaje humano (semáforo, frases, qué hacer
 //!   e historias agrupadas) para la GUI y cualquier persona.
@@ -19,6 +20,7 @@
 
 pub mod beacon;
 pub mod carve;
+pub mod dns_volume;
 pub mod domain;
 pub mod enrich;
 pub mod explain;
