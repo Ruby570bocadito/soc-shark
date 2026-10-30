@@ -245,6 +245,25 @@ pub enum DevCmd {
         #[arg(long, default_value_t = 2_000)]
         report_every: usize,
     },
+    /// Benchmark reproducible: captura sintética grande → pipeline offline
+    /// completo (disección + agregación + carving + SOC). Mide paquetes/s.
+    Bench {
+        /// Paquetes aproximados de la captura sintética.
+        #[arg(long, default_value_t = 1_000_000)]
+        packets: usize,
+        /// Número de flujos (TCP HTTP/TLS, DNS y UDP mezclados).
+        #[arg(long, default_value_t = 20_000)]
+        flows: usize,
+        /// Semilla: la misma semilla genera exactamente la misma captura.
+        #[arg(long, default_value_t = 0x50C5)]
+        seed: u64,
+        /// Hilos de disección (como en `capture --workers`).
+        #[arg(long, default_value_t = 1)]
+        workers: usize,
+        /// Resultado como JSON en stdout (para CI y comparativas).
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[cfg(test)]

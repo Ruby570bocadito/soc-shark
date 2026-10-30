@@ -1294,7 +1294,47 @@ fn handle(stream: TcpStream, server: &Arc<Server>) {
         Some(resp) => resp,
         None => return,
     };
-    write_response(write_half, &resp).ok();
+    if write_response(&write_half, &resp).is_ok() && resp.status >= 400 {
+        linger_close(&write_half);
+    }
+}
+
+/// Tiempo máximo que se sigue leyendo (y descartando) tras un rechazo.
+const LINGER_TIME: Duration = Duration::from_secs(1);
+/// Bytes máximos que se descartan tras un rechazo. Generoso a propósito:
+/// si el cliente sigue mandando después del tope, el cierre vuelve a ser un
+/// RST y (en Windows) se pierde la respuesta; con 1 MiB, un POST de 2 MiB
+/// ya la perdía. Lo que acota el abuso es [`LINGER_TIME`]: descartar en
+/// un búfer fijo no reserva memoria.
+const LINGER_BYTES: usize = 16 * 1024 * 1024;
+
+/// Cierre "con espera" tras responder a una petición rechazada sin leer su
+/// cuerpo (403, 413, 421, 431...). Si se cierra el socket con datos sin
+/// leer, el sistema (Windows sobre todo) manda un RST y el cliente pierde
+/// la respuesta que ya estaba en camino: ve "connection reset" en vez del
+/// error. Así que se cierra la escritura (FIN: la respuesta llega entera)
+/// y se descarta lo que siga llegando hasta que el cliente cierre, pase
+/// [`LINGER_TIME`] o se descarten [`LINGER_BYTES`], lo primero que ocurra.
+/// El coste por conexión queda acotado (1 s, 16 MiB) y el número de
+/// conexiones ya lo limita [`MAX_CONNS`].
+fn linger_close(stream: &TcpStream) {
+    use std::io::Read;
+    if stream.shutdown(std::net::Shutdown::Write).is_err() {
+        return;
+    }
+    let deadline = std::time::Instant::now() + LINGER_TIME;
+    let mut buf = [0u8; 16 * 1024];
+    let mut drained = 0usize;
+    while drained < LINGER_BYTES {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() || stream.set_read_timeout(Some(left)).is_err() {
+            break;
+        }
+        match (&*stream).read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => drained += n,
+        }
+    }
 }
 
 /// Lee y despacha una petición; `None` si el cliente se fue sin más.
@@ -2099,6 +2139,47 @@ mod tests {
             None
         );
         assert!(!s.uploading.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn el_rechazo_llega_entero_aunque_quede_cuerpo_sin_leer() {
+        // Host ajeno + cuerpo grande ya enviado en parte: el servidor no lo
+        // lee, pero el cliente debe recibir el 421 y no un RST.
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let s = Arc::new(Server::new(port, PipelineConfig::default()));
+        std::thread::spawn(move || serve(listener, s));
+        for _ in 0..3 {
+            let mut c = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            c.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+            c.set_write_timeout(Some(Duration::from_secs(10))).unwrap();
+            write!(
+                c,
+                "POST /api/open HTTP/1.1\r\nHost: evil:{port}\r\nContent-Length: {}\r\n\r\n",
+                10 * 1024 * 1024
+            )
+            .unwrap();
+            // El envío puede cortarse cuando el servidor deja de leer: da
+            // igual, lo que importa es la respuesta.
+            let chunk = vec![b'a'; 64 * 1024];
+            for _ in 0..32 {
+                if c.write_all(&chunk).is_err() {
+                    break;
+                }
+            }
+            let mut resp = Vec::new();
+            let mut buf = [0u8; 4096];
+            loop {
+                match c.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => resp.extend_from_slice(&buf[..n]),
+                    Err(e) => panic!("lectura fallida ({e}) tras {} bytes", resp.len()),
+                }
+            }
+            let resp = String::from_utf8_lossy(&resp);
+            assert!(resp.starts_with("HTTP/1.1 421 "), "{resp}");
+            assert!(resp.contains("host no permitido"), "{resp}");
+        }
     }
 
     #[test]

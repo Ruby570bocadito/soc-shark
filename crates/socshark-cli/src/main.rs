@@ -1,6 +1,7 @@
 //! Punto de entrada del binario `socshark`.
 
 use clap::Parser;
+use socshark_cli::bench::{self, BenchOptions};
 use socshark_cli::cli::{Cli, Cmd, DevCmd, Scenario};
 use socshark_cli::daemon::{self, DaemonOptions};
 use socshark_cli::follow;
@@ -283,6 +284,46 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     "[+] Fuzz OK: {} tramas · {} diseccionadas · {} exportadas · {} evaluaciones DSL",
                     stats.frames, stats.parsed, stats.exported, stats.dsl_evals
                 );
+                Ok(())
+            }
+            DevCmd::Bench {
+                packets,
+                flows,
+                seed,
+                workers,
+                json,
+            } => {
+                eprintln!(
+                    "[*] Benchmark: ~{packets} paquetes, {flows} flujos, semilla {seed:#x}, {workers} hilo(s)"
+                );
+                let r = bench::run_bench(&BenchOptions {
+                    packets,
+                    flows,
+                    seed,
+                    workers,
+                })?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&r)?);
+                } else {
+                    println!(
+                        "paquetes: {} ({:.1} MB) · flujos: {} · alertas: {} · archivos tallados: {}",
+                        r.packets,
+                        r.bytes as f64 / 1e6,
+                        r.flows,
+                        r.alerts,
+                        r.carved_files
+                    );
+                    println!(
+                        "tiempo: {:.2} s (generación aparte: {:.2} s) · {:.0} paquetes/s · {:.0} Mbit/s",
+                        r.wall_secs, r.gen_secs, r.packets_per_sec, r.mbit_per_sec
+                    );
+                    if let Some(rss) = r.peak_rss_bytes {
+                        println!(
+                            "pico de memoria residente: {:.0} MiB",
+                            rss as f64 / 1048576.0
+                        );
+                    }
+                }
                 Ok(())
             }
         },

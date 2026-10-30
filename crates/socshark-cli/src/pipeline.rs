@@ -12,8 +12,10 @@ use socshark_flow::{FlowAggregator, PipelineStats, ReassembledStream};
 use socshark_soc::{enrich_all, SocContext};
 
 /// Paquetes por lote cuando el pool concurrente está activo (compromiso
-/// entre paralelismo y latencia; ver ADR-010).
-const POOL_CHUNK: usize = 256;
+/// entre paralelismo y latencia; ver ADR-010). Con 256 el reparto entre
+/// hilos costaba más que la propia disección: `dev bench` con 4 workers
+/// pasó de ~140k a ~218k paquetes/s al subirlo a 4096.
+const POOL_CHUNK: usize = 4096;
 
 /// Resultado completo de una ejecución de `socshark capture`.
 pub struct CaptureOutput {
