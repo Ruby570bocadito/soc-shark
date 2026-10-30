@@ -61,6 +61,7 @@ regla suma a `risk_score` (tope 100) y emite alerta al superar su umbral.
 | ID | Regla | Señal | Riesgo | Estado |
 |---|---|---|---|---|
 | `DNS-TUNNELING` (T1071.004) | subdominio (etiquetas a la izquierda del dominio registrable) largo **y** con entropía de Shannon alta | subdominios codificados (base32/hex) de exfiltración o C2 | +45 | **implementado** |
+| `DNS-TUNNELING` (volumen, T1071.004) | un cliente consulta ≥ 50 subdominios únicos de un mismo dominio registrable en 10 min — tracker *entre flujos* | túneles de baja entropía (etiquetas cortas o alfabetos reducidos) que la regla por consulta no ve | +45 (no se suma dos veces) | **implementado (0.8)** |
 | `PORT-SCAN` | un origen prueba ≥ 10 puertos distintos de un host sin establecer conexión — tracker *entre flujos* | escaneo vertical (`nmap -sS`/`-sT`): cada sonda es un flujo distinto, invisible por flujo aislado | +30 | **implementado** |
 | `NETWORK-SWEEP` | un origen prueba el mismo puerto en ≥ 20 hosts sin establecer conexión | barrido horizontal (gusanos, búsqueda de SMB/RDP abiertos) | +30 (una vez con `PORT-SCAN`) | **implementado** |
 | `REPEATED-ATTEMPTS` | ≥ 4 intentos fallidos al mismo host:puerto sin llegar a escaneo | servicio caído, C2 muerto o sondeo insistente (severidad baja) | +10 | **implementado** |
@@ -88,6 +89,27 @@ se acercan a los umbrales; medido sobre el subdominio (`www`,
 de alta entropía. Los umbrales de longitud y entropía son configurables en
 `PipelineConfig` (`dns_entropy_threshold`, `dns_tunnel_min_len`) para
 afinar por entorno sin tocar código.
+
+**Túnel DNS por volumen (0.8).** Un túnel que codifica con poca entropía o
+en etiquetas cortas (`a0001.t.evil.com`, `a0002.t.evil.com`...) esquiva la
+regla por consulta, pero no su volumen: para mover datos necesita muchos
+subdominios *distintos* del mismo dominio. `DnsVolumeTracker`
+(`socshark-soc::dns_volume`) cuenta, por (cliente, dominio registrable), los
+subdominios únicos en una ventana deslizante y alerta `DNS-TUNNELING` con
+detalle «N subdominios únicos de X en 10 min». Umbrales en `PipelineConfig`:
+`dns_volume_threshold` (50), `dns_volume_window_secs` (600),
+`dns_volume_min_subdomain_len` (6, sin puntos). No cuentan: PTR y todo
+`.arpa`, mDNS (`.local`), consultas DNSBL (IPv4 invertida o nibbles IPv6
+delante de la zona) ni subdominios cortos (`www`, `api`, `img1`). Una
+navegación normal resuelve muchos nombres pero repartidos entre muchos
+dominios y repitiendo los mismos. Estado acotado: 8 192 claves con desalojo
+de la mitad más antigua; por clave solo hashes de 64 bits, y se deja de
+contar al llegar al umbral. Funciona igual offline que en el daemon (el
+contexto persiste entre lotes). Límites conocidos: un resolutor local
+(Pi-hole, DC) agrega las consultas de todos sus clientes, y algunos
+servicios legítimos hacen "DNS como API" (reputación de antivirus,
+`*.googlevideo.com` en sesiones largas): conviene subir el umbral o
+revisar el dominio antes de bloquear.
 
 ## Passive DNS (implementado)
 
@@ -218,8 +240,27 @@ puerto, transporte) y aplica los mismos umbrales a los intervalos entre
 conexiones: alerta `BEACONING` (T1071) con detalle «…entre conexiones».
 Excluye DNS y ruido; acotado a 65 536 claves × 33 inicios.
 
-El beaconing con jitter aleatorizado (CV deliberadamente alto) queda como
-evolutivo documentado.
+**Beaconing con jitter aleatorio (0.8).** Un implante con `jitter` (Cobalt
+Strike, Sliver...) sortea el CV ≤ 0.15: ±40% uniforme da CV ≈ 0.23. Cuando la
+prueba estricta no pasa, se aplica sobre la misma serie una prueba tolerante
+a jitter y, si pasa, se emite `BEACONING` (T1071) con **severidad baja y
++10** (la estricta: media y +20) y detalle «…con jitter ~X%…». Nunca salen
+las dos.
+
+- Entre conexiones (`FlowStartTracker` guarda los inicios crudos):
+  ≥ `beacon_jitter_min_intervals` (12) intervalos, mediana en
+  [`beacon_min_interval_secs`, `beacon_max_interval_secs`], MAD/mediana ≤
+  `beacon_jitter_max_mad_ratio` (0.35; uniforme ±50% da ≈ 0.25) y ≥ 90% de
+  los intervalos en [0.4, 2]×mediana. El tráfico humano es de cola pesada
+  (MAD alto) y el de ráfagas deja muchos intervalos fuera de banda; un
+  beacon perdido (intervalo doble) se tolera.
+- Dentro de un flujo solo hay media y desviación (`IntervalStats`), así que
+  se usa CV ≤ `beacon_jitter_max_cv` (0.30, cubre ±50% uniforme) con los
+  mismos ≥ 12 intervalos y ventana de periodo.
+
+El ruido de fondo (NTP...) sigue excluido. Falsos positivos esperables: polls
+legítimos de aplicaciones con jitter propio (clientes de chat, agentes de
+actualización); por eso la severidad es baja.
 
 ## Export a SIEM (Fase 4 — implementado ECS y Wazuh; TheHive pendiente)
 

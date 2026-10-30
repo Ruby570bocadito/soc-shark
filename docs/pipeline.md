@@ -75,7 +75,7 @@ con prefijo de longitud.
 
 **Paralelismo (Fase 2, implementado).** Pool de N workers
 (`socshark capture --workers N`) con despacho **por lotes y entrega
-ordenada** (ADR-010): lotes de 256 paquetes se reparten round-robin entre
+ordenada** (ADR-010): lotes de 4096 paquetes se reparten round-robin entre
 workers y vuelven al agregador en el orden de envío, así que el resultado
 es idéntico al secuencial (verificado E2E). El payload pasa de slice
 prestado a `Cow`: cero copias en secuencial, una copia solo con
@@ -111,6 +111,34 @@ por segmento y admite como mucho 8 192 segmentos por dirección. La exportación
   riesgo > 50") o SQLite para la versión ligera. En memoria: estructura
   ordenada por `last_seen` para la TUI virtualizada. El JSONL actual es la
   forma ya operativa de este mismo contrato de datos.
+
+## Rendimiento
+
+`socshark dev bench` mide el pipeline offline completo (lectura → disección
+→ agregación → carving → SOC) sobre una captura sintética determinista:
+5/10 de flujos HTTP con cuerpo (los talla el carving), 2/10 TLS con
+ClientHello, 2/10 DNS y 1/10 UDP genérico, entrelazados en oleadas de 1 000
+flujos. La misma semilla genera exactamente los mismos bytes; la generación
+no entra en el tiempo medido.
+
+```bash
+cargo build --release
+./target/release/socshark dev bench                      # ~1M paquetes, 20k flujos
+./target/release/socshark dev bench --workers 4          # pool de disección
+./target/release/socshark dev bench --packets 500000 --flows 10000 --seed 7 --json
+```
+
+Informa paquetes/s, Mbit/s (suma de bytes de trama), flujos, alertas,
+archivos tallados, tiempo y pico de memoria residente (Linux y Windows).
+Referencia (Windows, 22 hilos, release, por defecto: 1M paquetes, 685 MB):
+~1,8 s, ~550 000 paquetes/s (~3 Gbit/s) con `--workers 1` y ~545 MiB de
+pico (sobre todo el presupuesto de reensamblado de 256 MiB, que con 1M
+paquetes se agota: 4 500 de 10 000 respuestas HTTP llegan a tallarse). Con
+`--workers 4` no mejora: la disección es una fracción pequeña del tiempo
+(el carving y el reensamblado pesan más) y el pool añade copia y sincronía.
+El job `bench` del CI lo ejecuta en release con `--packets 500000 --json`,
+sube el JSON como artefacto y falla si baja de un umbral conservador
+(documentado en `.github/workflows/ci.yml`).
 
 ## Flujo de datos de extremo a extremo (ejemplo de la demo)
 

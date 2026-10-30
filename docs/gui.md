@@ -281,6 +281,11 @@ ruta HTTP o un nombre de archivo pueden ser maliciosos. Por eso:
   Endurecimiento en curso: el cuerpo solo se lee tras validar `Host` y
   token (sin token no se acepta ni un byte de subida), número máximo de
   conexiones simultáneas, y anidamiento de filtros limitado a 128 niveles.
+  Un rechazo (403, 413, 421, 431...) se cierra «con espera»: se envía la
+  respuesta, se cierra la escritura y se descarta lo que siga llegando
+  (como mucho 1 s o 16 MiB) antes de soltar el socket; así el cliente
+  recibe el error en vez de un *connection reset* (Windows), sin poder
+  retener el hilo más de ese segundo.
 - **Privilegios**: en Linux, si `install.sh` aplicó `setcap`, el proceso de
   la ventana tiene `CAP_NET_RAW`/`CAP_NET_ADMIN` (es el mismo binario que
   captura); ver el modelo real en [security.md](security.md).

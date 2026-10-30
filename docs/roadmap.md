@@ -27,7 +27,7 @@ todos los fallos reproducidos:
 - el pool de disección, que no paralelizaba;
 - endurecimiento de instaladores y CI.
 
-Los tests pasaron de 209 a 281.
+Los tests pasaron de 209 a 281 (304 tras el primer bloque de la 0.8).
 
 ---
 
@@ -63,7 +63,7 @@ una captura ajena.
 - [ ] Probar los instaladores en limpio: Windows 11 con PowerShell 5.1,
       Ubuntu, Fedora y macOS (actualizar con la GUI abierta debe fallar con
       mensaje claro)
-- [ ] Pasar `shellcheck install.sh` (en local no estaba disponible)
+- [x] Pasar `shellcheck install.sh` (0.10.0, sin avisos)
 - [ ] Release 0.7.1 desde el flujo de Actions
 
 **Criterio:** CI verde en los tres sistemas. Las reproducciones de la
@@ -75,25 +75,33 @@ auditoría (`chunked_overflow.pcap`, 100 conexiones hostiles, filtro con
 Objetivo: que lo que dice la herramienta sea correcto y verificable frente a
 la realidad.
 
-- [ ] **Fuzzing guiado por cobertura**: `cargo-fuzz` con objetivos por
-      parser (DNS, IPv4/6, TCP, TLS, pcapng, *carving*, DSL, HTTP de la GUI)
-      y un job nocturno en CI con el corpus persistido
+- [x] **Fuzzing guiado por cobertura**: `cargo-fuzz` con 10 objetivos
+      (DNS, IPv4/6, TCP, UDP, TLS, disección completa, pcap/pcapng,
+      *carving*, DSL) y job nocturno en CI con el corpus persistido
+      (`fuzz/`, `.github/workflows/fuzz.yml`). Su primera ejecución destapó
+      que el lector pcap reservaba la longitud declarada antes de leer (un
+      archivo de 40 bytes costaba 256 MiB): corregido. *Pendiente: el lector
+      HTTP de la GUI (es privado) y 24 h de ejecución sin hallazgos.*
 - [ ] **Corpus de capturas reales** (sin datos personales: capturas públicas
       de Wireshark, Malware-Traffic-Analysis, CICIDS) con resultados
       esperados en *golden files*. Cada regla del mini-IDS se mide en
       verdaderos y falsos positivos
-- [ ] **Túnel DNS por volumen**: muchos subdominios únicos por dominio base
-      (contador entre flujos, acotado). Hoy solo se mira la entropía por
-      consulta
-- [ ] **Beaconing con jitter aleatorizado** (CV alto): detección por
-      periodograma o histograma de intervalos
+- [x] **Túnel DNS por volumen**: ≥ 50 subdominios únicos de un dominio
+      base por cliente en 10 min (`DnsVolumeTracker`, acotado; excluye PTR,
+      mDNS y listas DNSBL)
+- [x] **Beaconing con jitter aleatorizado** (hasta ±50%): mediana + MAD y
+      fracción de intervalos en [0.4, 2] × mediana, dentro de un flujo y
+      entre conexiones; severidad baja (+10) y la regla estricta gana
 - [ ] **Wazuh verificado**: `local_rules.xml` probado contra un manager de
       laboratorio en Docker y test de contrato del JSON de salida
-- [ ] Validación de ECS contra el esquema oficial de Elastic en CI
-- [ ] `refuse_overwrite` también para enlaces duros (identificador de archivo
-      por sistema)
-- [ ] La GUI, al rechazar sin leer el cuerpo, debe responder 403/413 antes
-      de cerrar; hoy en Windows el cliente puede recibir un *reset*
+- [x] Validación de ECS contra el esquema oficial de Elastic (v8.11) en CI.
+      Encontró `flow.id` y `tls.ja4`, que no existen en ECS: ahora van en
+      `socshark.*`
+- [x] `refuse_overwrite` también para enlaces duros (dev+inode en unix,
+      volumen+índice de archivo en Windows)
+- [x] La GUI entrega la respuesta de rechazo completa antes de cerrar
+      (cierre diferido acotado a 1 s): en Windows el cliente recibía un
+      *reset*
 
 **Criterio:** el corpus real no da falsos positivos High; cada regla tiene
 al menos un verdadero positivo real; 24 h de fuzzing guiado sin hallazgos.
@@ -102,8 +110,17 @@ al menos un verdadero positivo real; 24 h de fuzzing guiado sin hallazgos.
 
 Objetivo: cerrar el criterio pendiente de la Fase 2.
 
-- [ ] Banco de rendimiento reproducible (`socshark dev bench` sobre una
-      captura grande sintética) en CI, con umbral de regresión
+- [x] Banco de rendimiento reproducible (`socshark dev bench`) con job de
+      CI y umbral de regresión. Primeras cifras (Windows, release): ~245k
+      paquetes/s (~1,3 Gbit/s) offline con 500k paquetes
+- [ ] **El *carving* domina el tiempo** (~3,4 s de ~4,4 s en una medida
+      por etapas): optimizarlo antes que el pool
+- [ ] `--workers N` sigue sin ganar a 1 hilo: lotes de 4096 (antes 256) lo
+      mejoraron de ~140k a ~218k paquetes/s, pero la copia `into_owned` y la
+      parte secuencial pesan más. Paralelizar el agregador por hash de flujo
+      o eliminar la copia
+- [ ] El presupuesto global de reensamblado (256 MiB) se agota con 1M
+      paquetes: hacerlo configurable y liberar los streams ya tallados
 - [ ] **≥ 200 Mbps sostenidos** en vivo en un portátil de referencia
       (Windows + Npcap y Linux), sin pérdidas del kernel
 - [ ] TUI y GUI fluidas con 10 000 flujos (lista virtualizada, perfilado

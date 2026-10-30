@@ -117,13 +117,34 @@ Reglas para el contribuidor:
   (`--iterations 500000`) con tu disector en el camino: es la puerta de
   entrada de tramas hostiles.
 
-**cargo-fuzz (objetivo de contribución).** El fuzzer determinista muta a
-ciega; libFuzzer guía por cobertura. Si quieres añadirlo:
+### Fuzzing guiado por cobertura (cargo-fuzz)
 
-1. `cargo install cargo-fuzz` y `rustup install nightly`.
-2. Crea `fuzz/` con `cargo fuzz init` y objetivos por componente
-   (`fuzz_parse_dns`, `fuzz_parse_ipv4/6`, `fuzz_parse_tcp/udp`,
-   `fuzz_parse_ethernet`, `fuzz_pcap`, `fuzz_filter`), usando como seeds
-   las tramas de `socshark-testgen` (`sample_pcap_packets`).
-3. No lo integres en el CI estable: es un paso nocturno separado o una
-   tarea programada; el fuzzer determinista sigue siendo el gate obligatorio.
+El fuzzer determinista muta a ciega; libFuzzer guía por cobertura. Los
+objetivos viven en `fuzz/` (fuera del workspace, necesitan nightly): `dns`,
+`ipv4`, `ipv6`, `tcp`, `udp`, `tls` (ClientHello + JA4 + captura por
+segmentos), `dissect` (trama completa), `pcap` (pcap/pcapng desde memoria),
+`carve` (carving HTTP sobre un stream reensamblado) y `filter` (parser y
+evaluador del DSL). La tabla completa está en `fuzz/README.md`.
+
+```bash
+rustup toolchain install nightly --profile minimal
+cargo install cargo-fuzz --locked --version 0.13.2
+
+# Corpus inicial desde los escenarios de socshark-testgen (Rust estable)
+cargo run --manifest-path fuzz/seeds/Cargo.toml -- fuzz/corpus
+
+cargo +nightly fuzz run dns -- -max_total_time=300
+# Un fallo deja la entrada en fuzz/artifacts/dns/; se reproduce con:
+cargo +nightly fuzz run dns fuzz/artifacts/dns/<archivo>
+```
+
+El workflow `.github/workflows/fuzz.yml` ejecuta cada objetivo 5 minutos
+cada noche (y a demanda con `workflow_dispatch`), conserva el corpus
+minimizado en la caché de Actions y sube como artefacto las entradas que
+fallan. No es un gate de PR: el fuzzer determinista sigue siendo el gate
+obligatorio. Al añadir un parser nuevo, añade su objetivo en
+`fuzz/fuzz_targets/`, su `[[bin]]` en `fuzz/Cargo.toml`, sus semillas en
+`fuzz/seeds/src/main.rs` y su nombre en la matriz del workflow.
+
+En Windows (MSVC) el binario instrumentado necesita
+`clang_rt.asan_dynamic-x86_64.dll` (de Visual Studio) en el `PATH`.
