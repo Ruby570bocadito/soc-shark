@@ -71,6 +71,42 @@ jobs:
       - name: Tests unitarios y de integración
         run: cargo test --workspace --locked
 
+  # Benchmark reproducible del pipeline offline (`socshark dev bench`): misma
+  # semilla = misma captura sintética. Umbral conservador: en local (release,
+  # --workers 1, --packets 500000) se midieron ~300 000 paquetes/s; se exige
+  # ~27 % de eso (80 000) para absorber runners más lentos y ruidosos sin
+  # dejar pasar una regresión de órdenes de magnitud.
+  bench:
+    name: bench (rendimiento)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Instalar toolchain estable
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+
+      - name: Caché de dependencias
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - name: Build release
+        run: cargo build --release --locked
+
+      - name: socshark dev bench
+        run: ./target/release/socshark dev bench --packets 500000 --json > bench.json
+
+      - name: Subir resultado
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: bench-json
+          path: bench.json
+
+      - name: Umbral mínimo (80 000 paquetes/s)
+        run: |
+          cat bench.json
+          jq -e '.packets_per_sec >= 80000 and .parsed_packets == .packets' bench.json
+
   # Versión mínima de Rust soportada (MSRV). Debe coincidir con
   # `rust-version` de Cargo.toml y con la insignia del README. 1.88 es lo que
   # exige el Cargo.lock actual (darling 0.24 / instability 0.3.14 piden 1.88;
@@ -91,6 +127,34 @@ jobs:
 
       - name: cargo check (Cargo.lock bloqueado)
         run: cargo check --workspace --locked
+
+  # Salida ECS validada contra la definición oficial de campos de Elastic
+  # (versión fijada). Sin SOCSHARK_ECS_FLAT el test se omite en el job
+  # `test`; aquí se ejecuta de verdad.
+  ecs:
+    name: esquema ECS (8.11.0)
+    runs-on: ubuntu-latest
+    env:
+      ECS_VERSION: v8.11.0
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Instalar toolchain estable
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+
+      - name: Caché de dependencias
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - name: Descargar ecs_flat.yml
+        run: >
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location
+          --output "$RUNNER_TEMP/ecs_flat.yml"
+          "https://raw.githubusercontent.com/elastic/ecs/$ECS_VERSION/generated/ecs/ecs_flat.yml"
+
+      - name: Validar to_ecs contra el esquema
+        run: SOCSHARK_ECS_FLAT="$RUNNER_TEMP/ecs_flat.yml" cargo test -p socshark-soc --test ecs_schema -- --nocapture
 
   installers:
     name: instaladores (install.sh + install.ps1)

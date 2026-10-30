@@ -56,15 +56,23 @@ pub fn is_broken_pipe(err: &anyhow::Error) -> bool {
 /// (la captura, las listas de intel): `File::create` la truncaría y se
 /// perdería la evidencia original. Solo se comprueba si la salida ya
 /// existe; `-` (stdout) siempre es válido.
+///
+/// Se compara la identidad del archivo (dispositivo + inodo en unix,
+/// número de serie del volumen + índice de archivo en Windows), que
+/// detecta también enlaces duros; la ruta canónica queda como respaldo
+/// si no se puede obtener la identidad.
 pub fn refuse_overwrite(output: &Path, inputs: &[&Path]) -> Result<()> {
     if output.as_os_str() == "-" || !output.exists() {
         return Ok(());
     }
-    let Ok(out) = std::fs::canonicalize(output) else {
-        return Ok(());
-    };
+    let out_id = file_identity(output);
+    let out_canon = std::fs::canonicalize(output).ok();
     for input in inputs {
-        if std::fs::canonicalize(input).is_ok_and(|i| i == out) {
+        let same_id = out_id.is_some() && file_identity(input) == out_id;
+        let same_path = out_canon
+            .as_ref()
+            .is_some_and(|o| std::fs::canonicalize(input).is_ok_and(|i| &i == o));
+        if same_id || same_path {
             bail!(
                 "la salida {} es el archivo de entrada {}: se sobrescribiría la evidencia original",
                 output.display(),
@@ -73,6 +81,68 @@ pub fn refuse_overwrite(output: &Path, inputs: &[&Path]) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Identidad física de un archivo: `(dispositivo, inodo)`. Dos rutas con
+/// la misma identidad son el mismo archivo (enlace duro incluido).
+#[cfg(unix)]
+fn file_identity(path: &Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    let m = std::fs::metadata(path).ok()?;
+    Some((m.dev(), m.ino()))
+}
+
+/// Windows: `(número de serie del volumen, índice de archivo)` vía
+/// `GetFileInformationByHandle` (el `file_index` de std no es estable).
+#[cfg(windows)]
+fn file_identity(path: &Path) -> Option<(u64, u64)> {
+    use std::ffi::c_void;
+    use std::os::windows::io::AsRawHandle;
+
+    #[repr(C)]
+    struct FileTime {
+        low: u32,
+        high: u32,
+    }
+
+    /// `BY_HANDLE_FILE_INFORMATION`.
+    #[repr(C)]
+    struct ByHandleFileInformation {
+        attributes: u32,
+        creation: FileTime,
+        last_access: FileTime,
+        last_write: FileTime,
+        volume_serial: u32,
+        size_high: u32,
+        size_low: u32,
+        links: u32,
+        index_high: u32,
+        index_low: u32,
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetFileInformationByHandle(file: *mut c_void, info: *mut ByHandleFileInformation)
+            -> i32;
+    }
+
+    // Abrir para lectura: las entradas se leen de todos modos y la salida
+    // ya existe. Si falla (permisos), queda el respaldo por ruta canónica.
+    let file = std::fs::File::open(path).ok()?;
+    // SAFETY: estructura POD inicializada a ceros; el handle es válido
+    // mientras `file` viva.
+    let mut info: ByHandleFileInformation = unsafe { std::mem::zeroed() };
+    let ok = unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) };
+    if ok == 0 {
+        return None;
+    }
+    let index = (u64::from(info.index_high) << 32) | u64::from(info.index_low);
+    Some((u64::from(info.volume_serial), index))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn file_identity(_path: &Path) -> Option<(u64, u64)> {
+    None
 }
 
 /// Escribe los flujos como JSONL (un `EnrichedFlow` por línea).
@@ -233,6 +303,25 @@ mod tests {
         let other = dir.join(format!("socshark-refuse-{}.jsonl", std::process::id()));
         assert!(refuse_overwrite(&other, &[&input]).is_ok());
         assert!(refuse_overwrite(Path::new("-"), &[&input]).is_ok());
+        std::fs::remove_file(&input).ok();
+    }
+
+    #[test]
+    fn no_sobrescribe_la_entrada_por_enlace_duro() {
+        let dir = std::env::temp_dir();
+        let pid = std::process::id();
+        let input = dir.join(format!("socshark-hardlink-{pid}.pcap"));
+        let link = dir.join(format!("socshark-hardlink-{pid}.jsonl"));
+        std::fs::remove_file(&link).ok();
+        std::fs::write(&input, b"x").unwrap();
+        std::fs::hard_link(&input, &link).unwrap();
+        // Rutas canónicas distintas, mismo archivo: hay que negarse.
+        assert!(refuse_overwrite(&link, &[&input]).is_err());
+        // Un archivo distinto con el mismo contenido no es la entrada.
+        std::fs::remove_file(&link).unwrap();
+        std::fs::write(&link, b"x").unwrap();
+        assert!(refuse_overwrite(&link, &[&input]).is_ok());
+        std::fs::remove_file(&link).ok();
         std::fs::remove_file(&input).ok();
     }
 

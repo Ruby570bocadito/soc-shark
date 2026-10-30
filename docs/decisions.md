@@ -250,7 +250,7 @@ timestamps de first/last seen y el reensamblado dependen del orden de
 llegada. Un pool ingenuo que entregue en orden de finalización alteraría
 los flujos (y las alertas) de forma no determinista entre ejecuciones.
 
-**Decisión.** Paralelismo **por lotes**: el lector acumula lotes de 256
+**Decisión.** Paralelismo **por lotes**: el lector acumula lotes de 4096 (256 en origen; ver la nota de rendimiento en `pipeline.md`)
 paquetes, los reparte round-robin entre N workers y vuelca los resultados
 al agregador estrictamente en el orden de envío, almacenando en búfer los
 lotes adelantados. El paralelismo se da *dentro* del lote; el orden global

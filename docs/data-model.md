@@ -69,7 +69,7 @@ reciben datos inmutables.
 | `threat_intel` | `Vec<String>` | Etiquetas de las listas offline que coinciden con el destino: `FEODO-C2` (C2 de Feodo) o `TOR-EXIT` (salida de Tor). Vacío sin listas cargadas o sin coincidencia. | Threat intel (F4) |
 | `ja4_fingerprint` | `Option<String>` | Huella JA4 del ClientHello TLS del cliente (spec FoxIO; SHA-256 propio, ADR-011). P. ej. `t13d0208h2_777cda164f4b_af51ac0c444f`. | Agregador (F3) |
 | `tls_sni` | `Option<String>` | Nombre de servidor que el cliente declara en el SNI del ClientHello; alimenta `resolved_domain` si no hubo DNS observable. | Agregador (F3) |
-| `interval_stats` | `Option<IntervalStats>` | Media/desviación de los intervalos entre paquetes del iniciador (ventana de 32 intervalos); base de `BEACONING` y consultable vía `flow.interval_mean_secs` / `flow.interval_cv`. | Agregador (F3) |
+| `interval_stats` | `Option<IntervalStats>` | Media, desviación, mediana, MAD y fracción dentro de [0.4, 2] × mediana de los intervalos entre paquetes del iniciador (ventana de 32 intervalos); base de `BEACONING` (estricto por CV, con jitter por mediana + MAD) y consultable vía `flow.interval_mean_secs` / `flow.interval_cv`. | Agregador (F3) |
 
 ### Capa semántica (la cara visible del analista)
 

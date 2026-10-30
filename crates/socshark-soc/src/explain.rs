@@ -596,9 +596,22 @@ fn explain_alert(
                 .and_then(|d| d.queries.first())
                 .map(|q| q.name.clone())
                 .unwrap_or_default();
-            (
-                "Posible fuga de datos escondida en DNS".into(),
-                format!(
+            // Variante por volumen: el detalle empieza por el número de
+            // subdominios únicos ("N subdominios únicos de ...").
+            let volume = alert
+                .detail
+                .split_once(" subdominios únicos")
+                .and_then(|(n, _)| n.parse::<u32>().ok());
+            let story = match volume {
+                Some(n) => format!(
+                    "{} preguntó por {n} nombres distintos de {} en pocos minutos (por ejemplo \
+                     «{}»). Un uso normal repite los mismos nombres; tantos distintos de un \
+                     mismo dominio es la forma de sacar datos de la red trocito a trocito.",
+                    capitalize(&src),
+                    base_domain(&qname),
+                    shorten(&qname, 40)
+                ),
+                None => format!(
                     "{} preguntó por un nombre de {} caracteres que parece aleatorio («{}»). \
                      Los programas maliciosos esconden datos dentro de estos nombres para \
                      sacarlos de la red sin que se note.",
@@ -606,6 +619,10 @@ fn explain_alert(
                     qname.chars().count(),
                     shorten(&qname, 40)
                 ),
+            };
+            (
+                "Posible fuga de datos escondida en DNS".into(),
+                story,
                 format!(
                     "Averigua qué programa {} hace estas consultas y bloquea el dominio {}.",
                     de(&src),
@@ -667,10 +684,17 @@ fn explain_alert(
         ),
         "BEACONING" => {
             let (secs, times) = beacon_period(flow, alert);
+            // Variante con jitter: el ritmo varía al azar, pero alrededor de
+            // un periodo fijo (así se disfrazan los implantes tipo Cobalt Strike).
+            let ritmo = if alert.detail.contains("jitter ~") {
+                "con pequeñas variaciones al azar pero alrededor del mismo ritmo"
+            } else {
+                "siempre al mismo ritmo"
+            };
             (
                 "Comunicación sospechosamente regular".into(),
                 format!(
-                    "{} contacta con {dst} cada {secs:.0} segundos, siempre al mismo ritmo ({times} \
+                    "{} contacta con {dst} cada {secs:.0} segundos, {ritmo} ({times} \
                      veces). Las personas no navegan así; los programas que «llaman a casa» \
                      (como el malware controlado a distancia) sí.",
                     capitalize(&src)

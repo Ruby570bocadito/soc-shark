@@ -4,6 +4,7 @@
 //! integración puedan ejecutar el pipeline completo sin `std::process` (más
 //! rápido, más depurable, mismas rutas de código).
 
+pub mod bench;
 pub mod cli;
 pub mod daemon;
 pub mod follow;

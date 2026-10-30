@@ -7,6 +7,9 @@
 //! Reglas Fase 1:
 //! - `R1` Posible túnel DNS: subdominio largo, codificado y de entropía
 //!   alta (ver [`dns_tunnel_suspect`]) → T1071.004 (C2 sobre DNS).
+//!   Variante por volumen ([`assess_dns_volume`]): un cliente consulta
+//!   demasiados subdominios únicos de un mismo dominio en poco tiempo
+//!   (túneles de baja entropía; ver [`crate::dns_volume`]).
 //! - `R2` Escaneo sobre intentos de conexión fallidos entre flujos:
 //!   vertical (muchos puertos de un host, `PORT-SCAN`) y horizontal (un
 //!   puerto en muchos hosts, `NETWORK-SWEEP`) → T1046. Si no llega a
@@ -27,6 +30,13 @@
 //!   Variante entre flujos ([`assess_interflow_beacon`]): misma prueba
 //!   sobre los intervalos entre inicios de conexión al mismo servicio, para
 //!   beacons lentos que el timeout de inactividad parte en flujos sueltos.
+//!
+//!   Variante con jitter (severidad baja, +10): si la prueba estricta no
+//!   pasa, una prueba tolerante a jitter aleatorio uniforme (Cobalt Strike
+//!   `jitter` 30-50%) sobre la misma serie: mediana + MAD sobre los
+//!   intervalos crudos entre conexiones ([`jittered_beacon`]) y CV ≤ 0.30
+//!   dentro del flujo (allí solo hay media y desviación). Nunca se emiten
+//!   las dos: la estricta gana.
 //!
 //! Reglas Fase 4:
 //! - `R6` Encubrimiento de archivos transferidos por HTTP (magic ≠ extensión
@@ -155,6 +165,127 @@ pub fn dns_tunnel_suspect(qname: &str, cfg: &PipelineConfig) -> Option<DnsTunnel
         }
     }
     None
+}
+
+/// Fracción mínima de intervalos dentro de la banda [0.4, 2.0] × mediana
+/// en la prueba con jitter: tolera algún beacon perdido (intervalo doble)
+/// o reintento, pero no la cola pesada del tráfico humano/en ráfagas.
+/// (La banda es [`socshark_core::flow::JITTER_BAND`].)
+const JITTER_MIN_IN_BAND_PERMILLE: u16 = 900;
+/// Riesgo de la variante con jitter: la mitad que la estricta (+20), porque
+/// la prueba es más permisiva y caza más polls legítimos de aplicaciones.
+const JITTER_SCORE: u32 = 10;
+
+/// Evidencia de un beacon con jitter aleatorio.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct JitterBeacon {
+    /// Periodo estimado (mediana de los intervalos), en segundos.
+    pub period_secs: f64,
+    /// Jitter estimado (semiamplitud relativa, %): para jitter uniforme
+    /// ±J la MAD vale J/2, así que J ≈ 2·MAD/mediana.
+    pub jitter_pct: f64,
+    /// Intervalos evaluados.
+    pub intervals: u32,
+}
+
+/// Prueba de beacon tolerante a jitter sobre intervalos crudos (µs).
+///
+/// Estadísticos robustos en lugar de media/CV: jitter uniforme ±50%
+/// alrededor de un periodo deja todos los intervalos en [0.5, 1.5] ×
+/// periodo (MAD/mediana ≈ 0.25), mientras que el tráfico humano o en
+/// ráfagas es de cola pesada (MAD/mediana alto o muchos intervalos lejos de
+/// la mediana). Ver [`jitter_check`].
+pub fn jittered_beacon(deltas: &[u64], cfg: &PipelineConfig) -> Option<JitterBeacon> {
+    jitter_check(&socshark_core::IntervalStats::from_deltas(deltas)?, cfg)
+}
+
+/// La prueba con jitter sobre la estadística ya calculada (dentro de un
+/// flujo o entre conexiones). Exige TODAS:
+/// - ≥ `beacon_jitter_min_intervals` (12) intervalos;
+/// - mediana dentro de [`beacon_min_interval_secs`, `beacon_max_interval_secs`];
+/// - MAD/mediana ≤ `beacon_jitter_max_mad_ratio` (0.35);
+/// - ≥ 90% de los intervalos en [0.4, 2.0] × mediana (sin cola larga).
+///
+/// `None` también si la estadística no trae mediana (JSONL antiguo).
+pub fn jitter_check(
+    stats: &socshark_core::IntervalStats,
+    cfg: &PipelineConfig,
+) -> Option<JitterBeacon> {
+    if stats.intervals < cfg.beacon_jitter_min_intervals {
+        return None;
+    }
+    let mad_ratio = stats.mad_ratio()?;
+    let median_secs = stats.median_micros as f64 / 1_000_000.0;
+    if median_secs < cfg.beacon_min_interval_secs as f64
+        || median_secs > cfg.beacon_max_interval_secs as f64
+        || mad_ratio > cfg.beacon_jitter_max_mad_ratio
+        || stats.in_band_permille < JITTER_MIN_IN_BAND_PERMILLE
+    {
+        return None;
+    }
+    Some(JitterBeacon {
+        period_secs: median_secs,
+        jitter_pct: 200.0 * mad_ratio,
+        intervals: stats.intervals,
+    })
+}
+
+/// Alerta `BEACONING` de la variante con jitter (severidad baja).
+fn jitter_alert(detail: String) -> Alert {
+    Alert {
+        id: "BEACONING".into(),
+        name: "Comunicación periódica con jitter (beacon)".into(),
+        severity: Severity::Low,
+        detail,
+        mitre: Some("T1071".into()),
+    }
+}
+
+/// R5 con jitter entre flujos: los intervalos crudos entre inicios de
+/// conexión ([`crate::beacon::FlowStartTracker::intervals`]) pasan
+/// [`jittered_beacon`] (+10). Llamar solo si la prueba estricta no alertó.
+/// Devuelve si alertó.
+pub fn assess_interflow_jitter_beacon(
+    flow: &mut EnrichedFlow,
+    deltas: &[u64],
+    cfg: &PipelineConfig,
+) -> bool {
+    let Some(j) = jittered_beacon(deltas, cfg) else {
+        return false;
+    };
+    flow.risk_score = (u32::from(flow.risk_score) + JITTER_SCORE).min(100) as u8;
+    flow.alerts.push(jitter_alert(format!(
+        "intervalo medio {:.1}s (mediana) con jitter ~{:.0}% en {} intervalos entre conexiones",
+        j.period_secs, j.jitter_pct, j.intervals
+    )));
+    true
+}
+
+/// R1 por volumen: el (cliente, dominio) del flujo DNS alcanzó el umbral de
+/// subdominios únicos en la ventana ([`crate::dns_volume`]). Misma alerta,
+/// técnica y riesgo que R1 (+45, alta), con detalle propio; si la consulta
+/// ya alertó por entropía no se duplica. Devuelve si alertó.
+pub fn assess_dns_volume(
+    flow: &mut EnrichedFlow,
+    sig: &crate::dns_volume::DnsVolumeSignal,
+) -> bool {
+    if flow.alerts.iter().any(|a| a.id == "DNS-TUNNELING") {
+        return false;
+    }
+    flow.risk_score = (u32::from(flow.risk_score) + 45).min(100) as u8;
+    flow.alerts.push(Alert {
+        id: "DNS-TUNNELING".into(),
+        name: "Posible túnel DNS".into(),
+        severity: Severity::High,
+        detail: format!(
+            "{} subdominios únicos de {} en {} min: volumen propio de un túnel aunque cada nombre parezca inocuo",
+            sig.unique_subdomains,
+            sig.base_domain,
+            sig.window_secs.div_ceil(60)
+        ),
+        mitre: Some(MITRE_DNS_TUNNEL.into()),
+    });
+    true
 }
 
 /// R5 entre flujos: si los inicios de conexión al servicio de `flow`
@@ -340,6 +471,31 @@ pub fn assess_with_intel(
                     ),
                     mitre: Some("T1071".into()),
                 });
+            } else if let Some(j) = jitter_check(stats, cfg) {
+                // Variante con jitter dentro del flujo: mediana + MAD sobre
+                // los intervalos del iniciador, igual que entre conexiones.
+                score += JITTER_SCORE;
+                flow.alerts.push(jitter_alert(format!(
+                    "intervalo medio {:.1}s (mediana) con jitter ~{:.0}% en {} intervalos",
+                    j.period_secs, j.jitter_pct, j.intervals
+                )));
+            } else if stats.median_micros == 0
+                && stats.intervals >= cfg.beacon_jitter_min_intervals
+                && mean_secs >= cfg.beacon_min_interval_secs as f64
+                && mean_secs <= cfg.beacon_max_interval_secs as f64
+                && stats.cv() <= cfg.beacon_jitter_max_cv
+            {
+                // Sin mediana (flujo de un JSONL anterior): solo hay media y
+                // desviación; se acepta un CV algo mayor (uniforme ±J da
+                // CV = J/√3) y se estima J ≈ √3·CV.
+                score += JITTER_SCORE;
+                flow.alerts.push(jitter_alert(format!(
+                    "intervalo medio {:.1}s con jitter ~{:.0}% en {} intervalos (CV {:.2})",
+                    mean_secs,
+                    100.0 * 3f64.sqrt() * stats.cv(),
+                    stats.intervals,
+                    stats.cv()
+                )));
             }
         }
     }
@@ -625,6 +781,7 @@ mod tests {
             intervals: 9,
             mean_micros: 30_000_000,
             std_micros: 200_000, // ±0.67%: jitter de reloj realista
+            ..Default::default()
         });
         assess(&mut f, ScanSignals::default(), &cfg);
         let alert = f
@@ -647,6 +804,7 @@ mod tests {
             intervals: 12,
             mean_micros: 12_000_000,
             std_micros: 9_000_000, // CV 0.75
+            ..Default::default()
         });
         assess(&mut humano, ScanSignals::default(), &cfg);
         assert!(!humano.alerts.iter().any(|a| a.id == "BEACONING"));
@@ -658,6 +816,7 @@ mod tests {
             intervals: 20,
             mean_micros: 1_024_000_000, // poll NTP típico (17 min): fuera de ventana
             std_micros: 1_000,
+            ..Default::default()
         });
         assess(&mut ntp, ScanSignals::default(), &cfg);
         assert!(!ntp.alerts.iter().any(|a| a.id == "BEACONING"));
@@ -668,6 +827,7 @@ mod tests {
             intervals: 10,
             mean_micros: 50_000, // 50 ms
             std_micros: 100,
+            ..Default::default()
         });
         assess(&mut rapido, ScanSignals::default(), &cfg);
         assert!(!rapido.alerts.iter().any(|a| a.id == "BEACONING"));
@@ -752,6 +912,125 @@ mod tests {
             .alerts
             .iter()
             .any(|a| a.id.starts_with("THREAT-INTEL") || a.id == "TOR-USAGE"));
+    }
+
+    fn deltas(times: &[u64]) -> Vec<u64> {
+        times.windows(2).map(|w| w[1] - w[0]).collect()
+    }
+
+    #[test]
+    fn jitter_uniforme_pasa_y_estima_periodo_y_jitter() {
+        let cfg = PipelineConfig::default();
+        for (pct, seed) in [(30u64, 1u64), (40, 2), (50, 3)] {
+            let d = deltas(&socshark_testgen::evasion::jittered_times(
+                seed, 60, pct, 20,
+            ));
+            let j = jittered_beacon(&d, &cfg).unwrap_or_else(|| panic!("±{pct}%"));
+            assert!((45.0..=75.0).contains(&j.period_secs), "{j:?}");
+            assert!(j.jitter_pct > 10.0 && j.jitter_pct < 70.0, "{j:?}");
+            assert_eq!(j.intervals, 20);
+        }
+    }
+
+    #[test]
+    fn jitter_no_alerta_con_poca_muestra_cola_pesada_ni_rafagas() {
+        let cfg = PipelineConfig::default();
+        // Menos de 12 intervalos.
+        let pocos = deltas(&socshark_testgen::evasion::jittered_times(5, 60, 40, 11));
+        assert!(jittered_beacon(&pocos, &cfg).is_none());
+        // Interactivo de cola pesada (log-normal).
+        let humano: Vec<u64> = socshark_testgen::evasion::INTERACTIVE_GAPS_SECS
+            .iter()
+            .map(|s| s * 1_000_000)
+            .collect();
+        assert!(jittered_beacon(&humano, &cfg).is_none());
+        // Ráfagas: poll cada 10 s mientras hay actividad y pausas largas
+        // (MAD pequeña, pero el 25% de los intervalos fuera de banda).
+        let rafagas: Vec<u64> = (0..20u64)
+            .map(|i| {
+                if i % 4 == 3 {
+                    600_000_000
+                } else {
+                    10_000_000 + i * 100_000
+                }
+            })
+            .collect();
+        assert!(jittered_beacon(&rafagas, &cfg).is_none());
+        // Mediana fuera de ventana (por debajo de 5 s).
+        let rapido = vec![1_000_000u64; 20];
+        assert!(jittered_beacon(&rapido, &cfg).is_none());
+    }
+
+    #[test]
+    fn jitter_dentro_del_flujo_con_mediana_y_mad() {
+        // Intervalos reales del iniciador (como los calcula el agregador):
+        // 60 s ±40% uniforme con una semilla fija → variante con jitter.
+        let cfg = PipelineConfig::default();
+        let mut rng: u64 = 0x5eed;
+        let mut next = || {
+            rng = rng
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (rng >> 33) as f64 / (1u64 << 31) as f64
+        };
+        let beacon: Vec<u64> = (0..20)
+            .map(|_| (60_000_000.0 * (0.6 + 0.8 * next())) as u64)
+            .collect();
+        let mut f = flujo_basico(6, 45200, 8443);
+        f.interval_stats = socshark_core::IntervalStats::from_deltas(&beacon);
+        assess(&mut f, ScanSignals::default(), &cfg);
+        let b: Vec<_> = f.alerts.iter().filter(|a| a.id == "BEACONING").collect();
+        assert_eq!(b.len(), 1, "{:?}", f.alerts);
+        assert_eq!(b[0].severity, Severity::Low);
+        assert!(b[0].detail.contains("(mediana)"), "{}", b[0].detail);
+
+        // Cola pesada con CV moderado: la media/CV sola la confundiría con un
+        // beacon con jitter, pero un 25% de pausas largas la descarta.
+        let mut humano = vec![30_000_000u64; 15];
+        humano.extend([300_000_000u64; 5]);
+        let st = socshark_core::IntervalStats::from_deltas(&humano).unwrap();
+        assert!(st.in_band_permille < 900);
+        let mut h = flujo_basico(6, 45201, 8443);
+        h.interval_stats = Some(st);
+        assess(&mut h, ScanSignals::default(), &cfg);
+        assert!(
+            !h.alerts.iter().any(|a| a.id == "BEACONING"),
+            "{:?}",
+            h.alerts
+        );
+    }
+
+    #[test]
+    fn jitter_dentro_del_flujo_por_cv_y_la_estricta_gana() {
+        let cfg = PipelineConfig::default();
+        let con = |intervals: u32, cv: f64, ruido: bool| {
+            let mut f = flujo_basico(17, 45100, 8443);
+            f.is_background_noise = ruido;
+            f.interval_stats = Some(socshark_core::IntervalStats {
+                intervals,
+                mean_micros: 60_000_000,
+                std_micros: (60_000_000.0 * cv) as u64,
+                ..Default::default()
+            });
+            assess(&mut f, ScanSignals::default(), &cfg);
+            let b: Vec<(Severity, u8)> = f
+                .alerts
+                .iter()
+                .filter(|a| a.id == "BEACONING")
+                .map(|a| (a.severity, f.risk_score))
+                .collect();
+            b
+        };
+        // ±40% uniforme → CV ≈ 0.23: variante con jitter, baja, +10.
+        assert_eq!(con(20, 0.23, false), [(Severity::Low, 10)]);
+        // Regular: solo la estricta (media, +20), sin duplicado.
+        assert_eq!(con(20, 0.05, false), [(Severity::Medium, 20)]);
+        // Pocos intervalos para la variante con jitter.
+        assert!(con(11, 0.23, false).is_empty());
+        // Más disperso que ±50% uniforme.
+        assert!(con(20, 0.45, false).is_empty());
+        // Ruido de fondo (NTP con jitter de poll): excluido.
+        assert!(con(20, 0.23, true).is_empty());
     }
 
     fn qname_dns(name: &str) -> socshark_core::DnsSummary {

@@ -5,6 +5,23 @@ y [SemVer](https://semver.org/lang/es/).
 
 ## [Sin publicar]
 
+### Hoja de ruta 0.8 (primer bloque)
+
+- **Túnel DNS por volumen**: muchos subdominios únicos de un mismo dominio
+  por cliente (dnscat2/iodine con codificaciones de baja entropía).
+- **Beaconing con jitter aleatorio** (hasta ±50%, p. ej. Cobalt Strike):
+  mediana + MAD sobre los intervalos reales, dentro de un flujo y entre
+  conexiones (`IntervalStats` gana `median_micros`, `mad_micros` e
+  `in_band_permille`, compatibles con JSONL anteriores).
+- **Fuzzing guiado por cobertura** (`fuzz/`, job nocturno) y validación del
+  export **ECS contra el esquema oficial** en CI.
+- **`socshark dev bench`**: banco de rendimiento reproducible con job de CI.
+- Corregido: el lector pcap/pcapng reservaba la longitud declarada antes de
+  leer (40 bytes → 256 MiB); ECS emitía `flow.id` y `tls.ja4`, que no
+  existen en el esquema (ahora `socshark.flow_id` y `socshark.tls_ja4`);
+  `refuse_overwrite` detecta enlaces duros; los rechazos de la GUI llegan
+  completos en vez de como *reset*; lotes del pool de 256 a 4096 paquetes.
+
 Auditoría de robustez y seguridad: todos los fallos se reprodujeron con una
 captura o petición fabricada y tienen test de regresión (209 → 281 tests).
 

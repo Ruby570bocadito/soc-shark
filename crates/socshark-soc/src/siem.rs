@@ -197,7 +197,6 @@ pub fn to_ecs(flow: &EnrichedFlow) -> Value {
         "network.direction".into(),
         json!(network_direction(flow.src_ip, flow.dst_ip)),
     );
-    o.insert("flow.id".into(), json!(flow.flow_id.0));
     o.insert("network.community_id".into(), json!(flow.flow_id.0)); // sin hash de tuple: el id canónico hace de correlador
 
     if let Some(mac) = &flow.src_mac {
@@ -261,9 +260,6 @@ pub fn to_ecs(flow: &EnrichedFlow) -> Value {
     if let Some(sni) = &flow.tls_sni {
         o.insert("tls.client.server_name".into(), json!(sni));
     }
-    if let Some(ja4) = &flow.ja4_fingerprint {
-        o.insert("tls.ja4".into(), json!(ja4));
-    }
 
     // Alertas y threat (MITRE ATT&CK).
     if !flow.alerts.is_empty() {
@@ -280,6 +276,12 @@ pub fn to_ecs(flow: &EnrichedFlow) -> Value {
     // campos personalizados: la referencia "socshark.risk_score" corresponde
     // al JSON anidado {"socshark": {"risk_score": ...}}).
     let mut socshark = Map::new();
+    // ECS 8.x no define ni `flow.id` ni la huella JA4: van aquí para que el
+    // evento valide contra el esquema oficial (test `ecs_schema`).
+    socshark.insert("flow_id".into(), json!(flow.flow_id.0));
+    if let Some(ja4) = &flow.ja4_fingerprint {
+        socshark.insert("tls_ja4".into(), json!(ja4));
+    }
     socshark.insert("risk_score".into(), json!(flow.risk_score));
     socshark.insert("background_noise".into(), json!(flow.is_background_noise));
     socshark.insert("human_summary".into(), json!(flow.human_summary));
@@ -482,7 +484,11 @@ mod tests {
             v["tls.client.server_name"],
             json!("store.ejemplo-corporativo.com")
         );
-        assert_eq!(v["tls.ja4"], json!("t13d0208h2_777cda164f4b_af51ac0c444f"));
+        assert_eq!(
+            v["socshark"]["tls_ja4"],
+            json!("t13d0208h2_777cda164f4b_af51ac0c444f")
+        );
+        assert!(v.get("tls.ja4").is_none() && v.get("flow.id").is_none());
         assert_eq!(
             v["event.duration"],
             json!(100_000_000),

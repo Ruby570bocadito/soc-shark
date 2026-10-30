@@ -96,19 +96,28 @@ la superficie, no solo los parsers. El corpus es reproducible: un fallo
 imprime semilla e iteración (`socshark dev fuzz --seed <S> --iterations
 <N+1>` lo reconstruye).
 
-Como siguiente nivel de cobertura, `cargo-fuzz`/libFuzzer (cobertura guiada,
-instrucciones en CONTRIBUTING.md) cubriría los objetivos por componente:
+### Fuzzing guiado por cobertura (0.8)
 
-- `fuzz_parse_dns(payload)`, `fuzz_parse_ipv4(payload)`,
-  `fuzz_parse_tcp(payload)`, `fuzz_parse_udp(payload)`,
-  `fuzz_parse_ethernet(frame)`.
-- `fuzz_pcap(bytes)`: el lector completo con archivos corruptos.
-- `fuzz_filter(input)`: el parser del DSL con entrada arbitraria (un DSL es
-  también superficie de ataque si se le pegan expresiones hostiles desde un
-  SIEM).
+Además, `cargo-fuzz`/libFuzzer (nightly, con AddressSanitizer) cubre cada
+parser por separado guiado por cobertura. Objetivos en `fuzz/fuzz_targets/`:
 
-Corpus inicial: el generador `socshark-testgen` produce tramas válidas que
-sirven de seeds de alta calidad (ya integradas en el fuzzer determinista).
+- `dns`, `ipv4`, `ipv6`, `tcp`, `udp`: los parsers de cabecera con entrada
+  arbitraria (IPv4/IPv6 encadenan TCP/UDP sobre el resto; UDP, DNS).
+- `tls`: `parse_client_hello`, JA4 y el acumulador `ClientHelloCapture`
+  con el ClientHello partido en segmentos de tamaño arbitrario.
+- `dissect`: el pipeline completo sobre una trama, con todos los tipos de
+  enlace soportados.
+- `pcap`: el lector pcap/pcapng desde memoria con archivos corruptos.
+- `carve`: el *carving* HTTP sobre un stream reensamblado sintético.
+- `filter`: lexer, parser y evaluador del DSL con UTF-8 arbitrario (un DSL
+  es también superficie de ataque si se le pegan expresiones hostiles desde
+  un SIEM).
+
+El workflow nocturno `.github/workflows/fuzz.yml` corre cada objetivo
+5 minutos, persiste el corpus minimizado por objetivo en la caché de
+Actions y sube las entradas que fallan como artefacto. El corpus inicial
+lo genera `fuzz/seeds` a partir de `socshark-testgen` (escenario demo, red
+doméstica y escenarios hostiles). Instrucciones en CONTRIBUTING.md.
 
 ### Captura en vivo: superficie adicional
 

@@ -837,21 +837,7 @@ fn interval_stats_of(times_fwd: &[u64]) -> Option<IntervalStats> {
     let mut ts = times_fwd.to_vec();
     ts.sort_unstable();
     let deltas: Vec<u64> = ts.windows(2).map(|w| w[1] - w[0]).collect();
-    let n = deltas.len() as f64;
-    let mean = deltas.iter().sum::<u64>() as f64 / n;
-    let var = deltas
-        .iter()
-        .map(|&d| {
-            let x = d as f64 - mean;
-            x * x
-        })
-        .sum::<f64>()
-        / n;
-    Some(IntervalStats {
-        intervals: deltas.len() as u32,
-        mean_micros: mean.round() as u64,
-        std_micros: var.sqrt().round() as u64,
-    })
+    IntervalStats::from_deltas(&deltas)
 }
 
 #[cfg(test)]

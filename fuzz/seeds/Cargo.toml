@@ -1,0 +1,20 @@
+# Generador del corpus inicial de los objetivos de cargo-fuzz a partir del
+# escenario demo de socshark-testgen. Compila con Rust estable:
+#
+#   cargo run --manifest-path fuzz/seeds/Cargo.toml -- fuzz/corpus
+#
+# Workspace propio: no pertenece ni al raíz ni al de fuzz/.
+[package]
+name = "socshark-fuzz-seeds"
+version = "0.0.0"
+publish = false
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+socshark-core = { path = "../../crates/socshark-core" }
+socshark-dissectors = { path = "../../crates/socshark-dissectors" }
+socshark-flow = { path = "../../crates/socshark-flow" }
+socshark-testgen = { path = "../../crates/socshark-testgen" }
+
+[workspace]

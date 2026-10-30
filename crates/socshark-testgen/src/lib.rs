@@ -12,6 +12,7 @@ use std::io::Write as _;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::path::Path;
 
+pub mod evasion;
 pub mod fuzz;
 pub mod home;
 

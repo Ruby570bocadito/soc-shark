@@ -34,14 +34,14 @@ anidado `{"socshark": {"risk_score": ...}}`).
 | `packets + packets_rev` | `network.packets` | |
 | `duration_micros` | `event.duration` | **nanosegundos** (convención ECS) |
 | `risk_score` | `event.severity` + `socshark.risk_score` | |
-| `flow_id` | `flow.id` + `network.community_id` | el id canónico hace de correlador; sin hash de tuple 5-tuple por ahora |
+| `flow_id` | `socshark.flow_id` + `network.community_id` | el id canónico hace de correlador; sin hash de tuple 5-tuple por ahora |
 | `src_mac` / `dst_mac` | `source.mac` / `destination.mac` | si la captura es Ethernet; formato ECS: mayúsculas separadas por guiones (`AA-BB-CC-DD-EE-FF`) |
 | `src_ip` + `dst_ip` (calculado) | `network.direction` | `internal` (ambos extremos en red privada/local), `outbound` (de interna a externa), `inbound` (de externa a interna), `external` (ninguno interno) |
 | `resolved_domain` | `destination.domain` | |
 | `process_name` / `pid` / `user` | `process.name` / `process.pid` / `user.name` | vacíos hasta la correlación eBPF (Fase 3) |
 | `dns` | `dns.question.*`, `dns.response_code`, `dns.answers[]` | `{name, type, data, ttl}` por respuesta |
 | `tls_sni` | `tls.client.server_name` | campo ECS estándar |
-| `ja4_fingerprint` | `tls.ja4` | extensión práctica (ECS aún no define JA4) |
+| `ja4_fingerprint` | `socshark.tls_ja4` | ECS 8.x no define JA4: va en el espacio propio para validar contra el esquema |
 | `alerts` | `rule.name[]`, `message`, `threat.technique.id[]` | IDs MITRE sin duplicados |
 | `is_background_noise` | `socshark.background_noise` | |
 | `state` | `socshark.flow_state` | `activo`/`inactivo`/`cerrado` |
@@ -54,6 +54,27 @@ Constantes del evento: `event.module = "socshark"`,
 `event.type = ["connection"]`. `event.kind` depende del flujo: `"alert"` si
 tiene al menos una alerta y `"event"` si no (así los paneles de detecciones
 de Elastic filtran por `event.kind: alert` sin reglas propias).
+
+### Validación contra el esquema oficial
+
+El test `crates/socshark-soc/tests/ecs_schema.rs` pasa los escenarios de
+`socshark-testgen` por el pipeline completo (más una variante con todos los
+campos opcionales poblados), genera los eventos con `to_ecs` y comprueba
+cada ruta de campo contra la definición plana oficial de ECS
+(`ecs_flat.yml`): que el campo exista y que el tipo JSON encaje con el tipo
+ECS (`long` → entero, `keyword`/`date` → cadena, `ip` → IP válida,
+`boolean` → booleano, `object` → objeto). Solo `socshark.*` y `labels.*`
+quedan fuera del esquema, de forma explícita. El job `ecs` de CI descarga
+la versión fijada (v8.11.0) y lo ejecuta; en local:
+
+```bash
+curl --proto '=https' -fsSLo ecs_flat.yml \
+  https://raw.githubusercontent.com/elastic/ecs/v8.11.0/generated/ecs/ecs_flat.yml
+SOCSHARK_ECS_FLAT=ecs_flat.yml cargo test -p socshark-soc --test ecs_schema
+```
+
+Sin `SOCSHARK_ECS_FLAT` el test avisa y se omite (así `cargo test` no
+necesita red).
 
 ## Formato Wazuh (`-F wazuh`)
 

@@ -11,6 +11,8 @@ members = [
     "crates/socshark-testgen",
     "crates/socshark-cli",
 ]
+# cargo-fuzz (nightly) y su generador de semillas viven fuera del workspace.
+exclude = ["fuzz"]
 
 [workspace.package]
 version = "0.7.0"
