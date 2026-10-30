@@ -1,182 +1,182 @@
 # Hoja de ruta
 
-Cinco fases, cada una con criterios de aceptación verificables. La regla del
-proyecto: **una fase no se da por cerrada si su criterio falla**, aunque el
-código exista. El estado se mantiene en este documento y en el README.
+La regla del proyecto: **una fase no se da por cerrada si su criterio falla**,
+aunque el código exista. Cada hito tiene criterios de aceptación verificables
+y el estado se mantiene en este documento, en el README y en el CHANGELOG.
 
-## Fase 0 — Fundaciones ✅ (completada)
+## Dónde estamos (0.7.x)
 
-Estructura del workspace, modelo de datos `EnrichedFlow` completo (con
-campos futuros reservados), CI con fmt/clippy/test, documentación base y el
-generador de fixtures `socshark-testgen`.
+| Área | Estado |
+|---|---|
+| Lectura pcap/pcapng, disectores (Ethernet/VLAN/QinQ, SLL, IPv4/IPv6, TCP, UDP, DNS, TLS) | ✅ estable |
+| Flujos, reensamblado TCP, *Follow stream* | ✅ estable |
+| Motor SOC: túnel DNS, escaneos, beaconing, T1036, threat intel offline | ✅ estable |
+| CLI, informe HTML, export ECS/Wazuh | ✅ estable |
+| GUI local y TUI | ✅ estable |
+| Captura en vivo (libpcap/Npcap) | 🟡 funciona; falta medir rendimiento en hardware real |
+| Atribución de proceso por eBPF | 🔴 solo los tipos compartidos |
+| Tauri, plugins WASM, DuckDB | 🔴 sin empezar |
 
-- [x] Workspace multi-crate con grafo de dependencias limpio
-- [x] `EnrichedFlow` y tipos asociados serializables con `serde(default)`
-- [x] Pipeline de CI: `fmt --check`, `clippy -D warnings`, `test`, `build`
+La **auditoría de octubre de 2026** (ver CHANGELOG, «Sin publicar») cerró
+todos los fallos reproducidos:
 
-## Fase 1 — MVP funcional sobre pcap ✅ (completada)
+- caídas por capturas o peticiones manipuladas (*carving* chunked, GUI sin
+  autenticar, filtros anidados);
+- falsos positivos de túnel DNS;
+- fragmentos IPv4 tomados por TCP/UDP;
+- el pool de disección, que no paralelizaba;
+- endurecimiento de instaladores y CI.
 
-Analizar capturas de archivo de extremo a extremo y producir valor SOC real.
+Los tests pasaron de 209 a 281.
 
-- [x] Lector pcap clásico propio (4 magics, validación, límites)
-- [x] Dissectors: Ethernet (+VLAN), IPv4 (checksum), TCP, UDP, DNS
-      (compresión, DNS-over-TCP) + heurística L7 (TLS/HTTP/SSH/NTP/DHCP)
-- [x] Agregador de flujos bidireccionales con expiración y presión de memoria
-- [x] DSL de filtrado con parser por precedencia y 25+ campos
-- [x] Capa SOC: DNS pasivo, ruido de fondo, mini-IDS (túnel DNS, escaneo,
-      telnet, DB expuesta), riesgo 0-100, resúmenes humanos
-- [x] CLI: `capture` (tabla/JSONL/filtro), `dev sample-pcap`, stub `daemon`
-- [x] 70 tests (unitarios + integración) en verde, clippy limpio
+---
 
-## Fase 2 — Captura en vivo + TUI (implementación completa ✅)
+## Historial de fases (resumen)
 
-Objetivo: dejar de ser un lector de archivos y convertirse en herramienta de
-operación en tiempo real.
+- **Fase 0 — Fundaciones** ✅ Workspace multi-crate, `EnrichedFlow`
+  serializable, CI con fmt/clippy/test, generador `socshark-testgen`.
+- **Fase 1 — MVP sobre pcap** ✅ Lector pcap propio, disectores, agregador
+  de flujos, DSL de filtrado, capa SOC con riesgo 0-100, CLI `capture`.
+- **Fase 2 — En vivo + TUI** ✅ Captura en vivo por FFI + `dlopen`
+  (ADR-009), daemon en streaming, pool de disectores (ADR-010), TUI Ratatui,
+  IPv6 completo, reensamblado TCP, fuzzing determinista en CI. *Pendiente:
+  el criterio de rendimiento (ver 0.9).*
+- **Fase 3 — eBPF y detección avanzada** 🟡 JA4 (spec FoxIO, vectores
+  canónicos en CI) y beaconing (R5, también entre conexiones) hechos;
+  `socshark-ebpf-common` listo. *Pendiente: probes, daemon separado y
+  atribución de proceso (ver 0.10).*
+- **Fase 4 — GUI, plugins y export** 🟡 *Carving* HTTP + T1036, threat
+  intel offline, ECS/Wazuh, GUI completa (en vivo, quién es quién, mapa,
+  informe), pcapng. *Pendiente: Tauri, WASM y DuckDB (ver 0.11).*
 
-- [x] Backend de captura en vivo: **libpcap vía FFI propio + `dlopen`**
-      (ADR-009) — sin `libpcap-dev` en tiempo de compilación ni crates
-      nuevos; si la biblioteca falta, error limpio con instrucciones.
-      Soporta snaplen, promiscuo, *immediate mode*, timeout de lectura y
-      **pushdown BPF** al kernel; `socshark daemon` consume el flujo con
-      expiración incremental y exportación JSONL/alertas por cadencia, más
-      `--list` (interfaces), `--duration` y `--max-packets`. Verificado en
-      una interfaz real (loopback de Linux con libpcap 1.10): la primera
-      prueba con libpcap instalada destapó un SIGSEGV en la carga de
-      símbolos y que el timeout de lectura no devolvía el control sin
-      tráfico; ahora el handle va en modo no bloqueante con `poll` propio
-      (tick garantizado, testeado cuando hay privilegios de captura) y
-      Ctrl-C/SIGTERM cierran exportando los flujos vivos.
-      **Windows**: el mismo backend carga el `wpcap.dll` de Npcap
-      (LoadLibrary, layout de Windows, Ctrl+C con `SetConsoleCtrlHandler`
-      y parada inmediata con `pcap_breakloop`); verificado con el
-      `wpcap.dll` de Wine, pendiente de prueba en Windows real.
-      AF_XDP sigue siendo el objetivo de alto rendimiento (Fase 3+).
-- [x] Pipeline en streaming: agregador incremental con `drain_expired`
-      testado; el daemon en vivo lo consume por cadencia (`--flush-secs`).
-- [x] Pool de dissectors concurrente (ADR-010): lotes de 256 paquetes en
-      N hilos (`--workers`), entrega ordenada garantizada — test E2E de
-      igualdad JSONL byte a byte frente al camino secuencial.
-- [x] TUI con Ratatui (modo offline): lista Flow-First con detalle
-      expandible, panel de alertas, línea de filtro con el DSL completo y
-      ruido atenuado (`socshark tui -r captura.pcap`, ver `docs/tui.md`);
-      el modelo de estado se testea sin terminal y se enchufará al JSONL
-      del daemon en vivo sin cambios
-- [x] IPv6 completo: disector con cabeceras de extensión (Hop-by-Hop,
-      Routing, Destinos, Fragment —solo primer fragmento— y AH), claves de
-      flujo sobre `IpAddr`, campo `ip_version`, `ip.version` en el DSL y
-      literales v6 nativos (`2001:db8::1`)
-- [x] Reensamblado TCP por dirección: orden de secuencia con aritmética
-      serial (RFC 9293 §3.3), deduplicación de retransmisiones, huecos
-      marcados (`[N bytes perdidos]`), tope de 1 MiB con marcado `lossy`,
-      más `socshark follow` en texto/hexdump
-- [x] Fuzzing: **determinista en proceso** (`socshark dev fuzz`,
-      splitmix64 propio, corpus mutado del escenario demo, recorre
-      disección + agregador + expiración + SOC + DSL; CI ejecuta 50 000
-      iteraciones por build y un fallo se reproduce con la semilla
-      impresa). En su primera ejecución atrapó y corrigió un panic real
-      (DNS con `QDCOUNT=0`). cargo-fuzz/libFuzzer con cobertura guiada
-      queda como tarea de contribución (ver CONTRIBUTING.md).
+---
 
-Estado 0.7.0: 210 tests verdes (152 en 0.6.0; el resto, de los arreglos, la GUI, el modo en vivo, el quién es quién y pcapng, ver CHANGELOG). El único criterio de fase pendiente de
-verificación sobre hardware real es el rendimiento en vivo (≥ 200 Mbps
-sostenidos y TUI fluida con 10k flujos): el resto del criterio (Follow
-Stream legible, salida determinista con paralelismo) ya está cubierto por
-tests. Follow Stream ya es legible para un flujo HTTP real (test de
-integración con segmentos fuera de orden).
+## 0.7.1 — Parche de seguridad (rama `fix/auditoria-0.7`)
 
-## Fase 3 — eBPF: atribución de proceso
+Objetivo: publicar ya la auditoría, porque varios fallos tumban la app con
+una captura ajena.
 
-Objetivo: la característica diferencial. Diseño completo en
-[ebpf-design.md](ebpf-design.md). Las piezas puras (verificables con el
-toolchain estándar y sin privilegios) están ya implementadas; los probes con
-aya exigen nightly + `bpf-linker` + CAP_BPF y se implementan contra un
-entorno Linux privilegiado.
+- [x] Todos los fallos reproducidos, corregidos y con test de regresión
+- [x] Fuzzer con escenarios hostiles (chunked, fragmentos, TLS partido) y
+      *carving* dentro del recorrido
+- [x] CI en Windows y macOS, MSRV real (1.88), actions fijadas por SHA
+- [ ] Probar los instaladores en limpio: Windows 11 con PowerShell 5.1,
+      Ubuntu, Fedora y macOS (actualizar con la GUI abierta debe fallar con
+      mensaje claro)
+- [ ] Pasar `shellcheck install.sh` (en local no estaba disponible)
+- [ ] Release 0.7.1 desde el flujo de Actions
 
-- [x] Crate `socshark-ebpf-common` con tipos compartidos probe/userspace:
-      `ConnectEvent`, `SocketStateEvent` y `UdpSendEvent` como `#[repr(C)]`,
-      sin dependencias y compilable `no_std` (target `bpfel-unknown-none`);
-      layout y helpers testados
-- [ ] Probes `tcp_v4_connect`, `inet_sock_set_state`, `udp_sendmsg` con aya
-      (pendiente de entorno con CAP_BPF; los eventos que emiten ya están
-      definidos y testeados)
-- [ ] Daemon separado con CAP_NET_RAW/CAP_BPF publicando por gRPC/UDS
-- [ ] Correlación cookie-de-socket → (pid, exe, uid) en el Enricher
-- [ ] Columnas Proceso/Usuario en la TUI + campo en el JSONL
-- [x] Fingerprinting JA4 del handshake TLS (spec FoxIO oficial): parser de
-      ClientHello que reconstruye el mensaje aunque cruce segmentos/registros
-      (acotado a 16 KiB), SHA-256 propio sin dependencias (ADR-011),
-      validación contra los vectores canónicos del spec en CI; huella en
-      `ja4_fingerprint`, SNI en `tls_sni` (y `resolved_domain` desde SNI),
-      campos DSL `tls.ja4` / `tls.sni`. QUIC/DTLS queda para después
-- [x] Detección de beaconing por regularidad de intervalos (T1071):
-      `IntervalStats` por flujo (ventana de 32 intervalos, tolerante a
-      reordenamiento), regla `R5` con umbrales configurables (≥ 6 intervalos,
-      media 5 s-1 h, CV ≤ 0.15, excluye ruido); el beacon demo de 30 s alerta
-      en 3 minutos con periodo estimado exacto (±0%) — dentro del criterio
-      de < 5 min y ±2%
-- [ ] Descifrado TLS por uprobes con opt-in explícito (detrás de flag, con
-      banner legal y auditoría)
+**Criterio:** CI verde en los tres sistemas. Las reproducciones de la
+auditoría (`chunked_overflow.pcap`, 100 conexiones hostiles, filtro con
+7 000 paréntesis) no tumban ni `report` ni `gui`.
 
-Criterios: flujo iniciado por `curl` muestra `process_name=/usr/bin/curl`
-antes de que el primer paquete llegue al dissector (pendiente de entorno
-privilegiado); beaconing simulado con sleep fijo de 30 s se alerta en
-< 5 min con periodo estimado ±2% — **cubierto por el test E2E** del
-escenario demo (alerta a los 3 min, periodo 30.0 s ±0%).
+## 0.8 — Confianza en los datos
 
-## Fase 4 — GUI, plugins y export (piezas puras implementadas ✅)
+Objetivo: que lo que dice la herramienta sea correcto y verificable frente a
+la realidad.
 
-Objetivo: producto para el analista no-cli y ecosistema de comunidad. Las
-piezas verificables sin entorno gráfico ni runtime pesado están ya
-implementadas; Tauri, wasmtime y DuckDB se implementan contra sus
-ecosistemas (son las únicas piezas que justificarían dependencias nuevas).
+- [ ] **Fuzzing guiado por cobertura**: `cargo-fuzz` con objetivos por
+      parser (DNS, IPv4/6, TCP, TLS, pcapng, *carving*, DSL, HTTP de la GUI)
+      y un job nocturno en CI con el corpus persistido
+- [ ] **Corpus de capturas reales** (sin datos personales: capturas públicas
+      de Wireshark, Malware-Traffic-Analysis, CICIDS) con resultados
+      esperados en *golden files*. Cada regla del mini-IDS se mide en
+      verdaderos y falsos positivos
+- [ ] **Túnel DNS por volumen**: muchos subdominios únicos por dominio base
+      (contador entre flujos, acotado). Hoy solo se mira la entropía por
+      consulta
+- [ ] **Beaconing con jitter aleatorizado** (CV alto): detección por
+      periodograma o histograma de intervalos
+- [ ] **Wazuh verificado**: `local_rules.xml` probado contra un manager de
+      laboratorio en Docker y test de contrato del JSON de salida
+- [ ] Validación de ECS contra el esquema oficial de Elastic en CI
+- [ ] `refuse_overwrite` también para enlaces duros (identificador de archivo
+      por sistema)
+- [ ] La GUI, al rechazar sin leer el cuerpo, debe responder 403/413 antes
+      de cerrar; hoy en Windows el cliente puede recibir un *reset*
 
-- [x] File carving HTTP con SHA-256 + detección T1036 (magic vs nombre y
-      doble extensión ejecutable): Content-Length/chunked, keep-alive,
-      magic bytes propio, regla R6 `FILE-MASQUERADING`; criterio de fase
-      cubierto por test E2E (el ejecutable renombrado a `.jpg` del escenario
-      demo genera la alerta)
-- [x] Threat intel offline (Feodo C2 IP/CIDR v4-v6, Tor Bulk Exit List) →
-      `threat_intel` + regla R7 (`THREAT-INTEL-FEODO` T1071.001,
-      `TOR-USAGE` T1090.003); GeoIP/ASN hacia `dst_geo_asn` queda pendiente
-      de un lector `.mmdb` propio (sin dependencias)
-- [x] Export SIEM: mapeo ECS 8.x completo en lo esencial + salida Wazuh
-      (reglas de ejemplo documentadas en `docs/siem-export.md`); push a
-      TheHive pendiente (exigiría cliente HTTP propio)
-- [x] GUI (`socshark gui`, ADR-013): página local servida por el binario,
-      sin dependencias nuevas. Historias agrupadas con «qué hacer»,
-      conversaciones en lenguaje claro (modo Simple) o técnico (Experto),
-      vista de paquetes con capas explicadas y bytes resaltados, filtro DSL,
-      glosario, abrir/arrastrar capturas. Ver [gui.md](gui.md)
-- [x] GUI en tiempo real y funciones tipo Wireshark: captura en vivo desde
-      la ventana (interfaces con IP y estado, foto cada segundo, parada
-      inmediata), lista global de paquetes virtualizada, «Contenido»
-      (seguir flujo), estadísticas (protocolos, servicios, equipos,
-      actividad en el tiempo), «filtrar por…» con clic derecho, columnas
-      ordenables, paneles ajustables y guardar `.pcap`
-- [x] Quién es quién: nombres por DHCP/mDNS/LLMNR/NetBIOS, fabricante por
-      MAC (registro IEEE), router y este ordenador, apodos persistentes y,
-      en vivo, el programa de cada conexión (Linux/Windows) — ADR-014
-- [x] Mapa de la red (tu red · router · Internet), avisos en vivo con
-      notificación del sistema e informe HTML en lenguaje claro
-      (`socshark report`)
-- [x] Lectura de pcapng (secciones, interfaces, resoluciones de tiempo)
-- [ ] GUI empaquetada (Tauri) con tabla de conversaciones virtualizada, SequenceView de
-      handshakes y StreamInspector con decodificador CyberChef-style
-      (pipelines Base64→XOR→Zlib→JSON)
-- [ ] Runtime de plugins WASM (wasmtime) con la API WIT de
-      [wasm-plugins.md](wasm-plugins.md) + firma Ed25519 + plugins oficiales
-- [ ] Persistencia de sesiones (DuckDB) con consultas analíticas
+**Criterio:** el corpus real no da falsos positivos High; cada regla tiene
+al menos un verdadero positivo real; 24 h de fuzzing guiado sin hallazgos.
 
-Criterios restantes: un plugin HTTP comunitario corre en sandbox con fuel
-limit y enriquece flujos reales (wasmtime); un SIEM Wazuh de laboratorio
-recibe flujos enriquecidos con tags ATT&CK correctos — el contrato de
-export ya está operativo (`docs/siem-export.md`), la verificación en un
-manager real queda pendiente de entorno. El criterio T1036 está **cubierto
-por test E2E**.
+## 0.9 — Rendimiento y operación en vivo
+
+Objetivo: cerrar el criterio pendiente de la Fase 2.
+
+- [ ] Banco de rendimiento reproducible (`socshark dev bench` sobre una
+      captura grande sintética) en CI, con umbral de regresión
+- [ ] **≥ 200 Mbps sostenidos** en vivo en un portátil de referencia
+      (Windows + Npcap y Linux), sin pérdidas del kernel
+- [ ] TUI y GUI fluidas con 10 000 flujos (lista virtualizada, perfilado
+      del JSON)
+- [ ] Captura en vivo probada en hardware real en los tres sistemas. Hoy:
+      Windows solo con el `wpcap.dll` de Wine, y macOS sin probar tras
+      cambiar a rutas absolutas
+- [ ] Rotación de la salida JSONL del daemon y unidad systemd y servicio de
+      Windows de ejemplo
+- [ ] AF_XDP como backend de alto rendimiento en Linux (opcional, detrás de
+      *feature*)
+
+**Criterio:** 200 Mbps durante 10 min con < 0,1 % de pérdidas y memoria
+estable (sin crecer) en las tres plataformas.
+
+## 0.10 — Atribución de proceso y privilegios mínimos (Fase 3)
+
+Objetivo: la característica diferencial y el modelo de privilegios que
+promete `docs/security.md`.
+
+- [ ] **Separar privilegios**: `socshark-capture-helper` mínimo con
+      `cap_net_raw` (sin parsers), y el resto sin capacidades. El instalador
+      deja de dar `setcap` al binario completo
+- [ ] Probes eBPF con aya: `tcp_v4_connect`, `inet_sock_set_state`,
+      `udp_sendmsg`
+- [ ] Correlación de la *cookie* de socket con (pid, exe, uid) en el
+      enriquecedor; columnas Proceso/Usuario en TUI, GUI y JSONL
+- [ ] Atribución en macOS (`proc_pidfdinfo` o `nettop`) para igualar
+      Linux y Windows
+
+**Criterio:** un flujo de `curl` muestra `process_name=/usr/bin/curl` antes
+de que el primer paquete llegue al disector; los parsers corren sin ninguna
+capacidad (comprobado con `getpcaps`).
+
+## 0.11 — Ecosistema (Fase 4)
+
+- [ ] **Plugins WASM** (wasmtime) con la API WIT de
+      [wasm-plugins.md](wasm-plugins.md): límite de *fuel*, firma Ed25519 y
+      dos plugins oficiales (HTTP y SMB)
+- [ ] **Sesiones persistentes** (DuckDB o Parquet) y consultas analíticas
+      entre capturas
+- [ ] GeoIP/ASN offline con un lector `.mmdb` propio → `dst_geo_asn`
+- [ ] Más protocolos: QUIC (JA4 de QUIC), HTTP/2 con SNI/ALPN, SMB2, RDP,
+      Kerberos (para detecciones de movimiento lateral)
+- [ ] Push a TheHive y salida Sigma o Suricata EVE
+
+**Criterio:** un plugin comunitario corre en sandbox y enriquece flujos
+reales; un Wazuh de laboratorio recibe flujos con etiquetas ATT&CK
+correctas.
+
+## 1.0 — Producto
+
+- [ ] GUI empaquetada (Tauri) con instalador firmado; SequenceView de
+      handshakes y decodificador estilo CyberChef
+- [ ] **Interfaz en inglés y español** (hoy solo español) y documentación
+      completa en inglés
+- [ ] Distribución: winget, Homebrew, `.deb`/`.rpm`, actualización
+      automática opcional
+- [ ] **Releases firmados**: firma de los binarios (Authenticode en Windows,
+      notarización en macOS), procedencia SLSA y `SHA256SUMS` firmado (hoy
+      solo garantiza integridad, no autenticidad)
+- [ ] Política de seguridad (`SECURITY.md`) con canal de reporte y SLA
+- [ ] API estable del JSONL y del DSL con versionado semántico
+
+**Criterio:** una persona sin conocimientos técnicos instala la app, abre
+una captura y entiende las tres primeras historias sin ayuda (prueba de
+usabilidad con 5 personas).
+
+---
 
 ## Fuera de alcance (declarado)
 
-- Captura inalámbrica (802.11): requiere stack de radios distinto; quizá
-  como proyecto hermano.
-- Interceptar/bloquear tráfico: soc-shark es solo lectura por diseño.
+- Captura inalámbrica (802.11): requiere otro stack de radios; quizá como
+  proyecto hermano.
+- Interceptar o bloquear tráfico: soc-shark es solo lectura por diseño.
 - Sustituir el SIEM: soc-shark alimenta SIEMs, no los reemplaza.

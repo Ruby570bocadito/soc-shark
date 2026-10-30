@@ -35,10 +35,30 @@ sistema.
 | `socshark-engine` | **ninguna** | parsers, plugins, heurísticas: lo que más falla, menos privilegios |
 | UI (TUI/GUI) | solo lectura del engine | aislada por proceso |
 
-En Fase 1 la separación no existe todavía porque no hay captura en vivo: el
-binario lee archivos y no pide ninguna capacidad. El trait `CaptureSource` y
-la frontera de datos (`EnrichedFlow`) ya están diseñados para que la
-separación sea un cambio de composición, no una reescritura.
+### Modelo real hoy (v0.7)
+
+La separación de arriba es el **objetivo**, todavía no está implementada.
+Hoy hay captura en vivo (ADR-009) pero **un único binario `socshark`** hace
+todo: captura, parsers, heurísticas SOC, TUI y la GUI HTTP local.
+
+- **Linux**: `install.sh` aplica `setcap cap_net_raw,cap_net_admin=ep` al
+  binario instalado (desactivable con `SOCSHARK_NO_SETCAP=1`). Esas
+  capacidades las tiene **el proceso entero**, parsers y servidor de la GUI
+  incluidos, mientras dure. `CAP_NET_RAW` es la que hace falta para abrir la
+  captura; `CAP_NET_ADMIN` solo la piden algunos sistemas para el modo
+  promiscuo/monitor. Se conceden como *effective + permitted*, sin
+  *inheritable*: los programas que lance `socshark` no las heredan.
+- **macOS**: sin capacidades; ver la red en vivo requiere `sudo` (o ChmodBPF).
+- **Windows**: el binario corre como usuario normal; el permiso de captura lo
+  gestiona el driver Npcap.
+
+Quien no quiera que el binario completo tenga esas capacidades puede
+instalar con `SOCSHARK_NO_SETCAP=1` y limitarse a abrir archivos `.pcap`, o
+capturar con otra herramienta (`dumpcap`, `tcpdump`) y analizar el fichero
+después. El trait `CaptureSource` y la frontera de datos (`EnrichedFlow`) ya
+están diseñados para que separar el daemon privilegiado del engine sin
+privilegios sea un cambio de composición, no una reescritura; es trabajo
+futuro (Fase 3).
 
 ## Seguridad frente a los datos: parsers hostiles
 
@@ -51,7 +71,10 @@ verificables con grep y exigidas en revisión):
 2. **Límites anti-explosión.** DNS: máximo 16 preguntas, 64 respuestas, 32
    etiquetas por nombre, 16 saltos de puntero de compresión (mata el bucle
    `0xc00c → 0xc00c`). Pcap: `incl_len` acotado a 256 MiB. Flujos: tabla
-   acotada a `max_flows` con expulsión de los más antiguos.
+   acotada a `max_flows` con expulsión de los más antiguos (que se exportan,
+   no se descartan); reensamblado con presupuesto global de 256 MiB y tope de
+   segmentos por dirección; estado SOC (escaneos, DNS pasivo, equipos)
+   acotado con expulsión de lo menos reciente.
 3. **Recorte defensivo de longitudes mentirosas.** `total_len` IPv4,
    `length` UDP y `data_offset` TCP se *clamp*ean contra el tamaño real
    disponible: un paquete crafted que miente sobre su longitud no consigue
@@ -108,10 +131,11 @@ acotadas:
   `sockaddr` solo para las familias IPv4/IPv6 (desplazamientos fijos por
   plataforma, incluido el `sa_len` de BSD/macOS); cualquier otra familia se
   ignora.
-- **Privilegios de captura.** Solo el backend de captura necesita
-  CAP_NET_RAW (o root, o `setcap cap_net_raw+ep`); el resto del pipeline
-  corre sin privilegios y en Fase 3 se separará en proceso propio
-  (daemon privilegiado + engine sin privilegios). El filtro BPF se compila
+- **Privilegios de captura.** Solo el backend de captura *necesita*
+  CAP_NET_RAW (o root), pero hoy comparte proceso con el resto del pipeline:
+  con `setcap` las capacidades las tiene todo el binario (ver «Modelo real
+  hoy» arriba). En Fase 3 la captura se separará en proceso propio (daemon
+  privilegiado + engine sin privilegios). El filtro BPF se compila
   con `pcap_compile` y baja al kernel: el tráfico filtrado no llega
   siquiera al userspace, reduciendo la superficie expuesta a los parsers.
 
@@ -151,7 +175,11 @@ hostil de la propia captura:
   con BPF. Memoria acotada: 500.000 paquetes / 256 MiB y 20.000
   conversaciones terminadas; lo más antiguo se descarta.
 - **Agotamiento**: cabeceras 16 KiB, cuerpo 512 MiB, lecturas con timeout
-  de 30 s y tramas en memoria acotadas a 256 MiB.
+  de 30 s y tramas en memoria acotadas a 256 MiB. Endurecimiento en curso:
+  el cuerpo de una petición solo se lee después de validar `Host` y el
+  token (una petición no autenticada no puede hacer subir 512 MiB), tope de
+  conexiones concurrentes, y profundidad de anidamiento de los filtros DSL
+  limitada a 128 (una expresión con miles de paréntesis no agota la pila).
 - **Nombres anunciados por la red** (DHCP, mDNS, LLMNR, NetBIOS): los
   parsers acotan longitudes y opciones y limpian los nombres (solo
   caracteres imprimibles, 63 como mucho) antes de usarlos; son
@@ -180,8 +208,10 @@ potente y la más sensible del proyecto. Reglas de diseño que lo acotan:
    stderr que recuerda la legislación aplicable.
 2. **Solo procesos propios**: filtra por PID permitido; nunca intercepta
    procesos de otros usuarios por defecto.
-3. **No persistencia por defecto**: el material descifrado vive en memoria
-   de la sesión salvo `--dump-tls` explícito.
+3. **No persistencia por defecto**: el material descifrado vivirá solo en
+   memoria de la sesión; un volcado a disco requeriría un flag explícito
+   (previsto como `--dump-tls`, **no implementado**: hoy no existe ni el
+   descifrado TLS ni ese flag).
 4. **Auditoría**: cada activación se registra en el log con timestamp y uid
    del operador.
 

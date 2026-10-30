@@ -62,7 +62,7 @@ El tráfico de la propia ventana con soc-shark se excluye automáticamente.
 | Sistema | Qué hace falta |
 |---|---|
 | Windows | [Npcap](https://npcap.com) (el driver de Wireshark) con «WinPcap API-compatible Mode». Si lo instalaste restringido a administradores, abre la consola como administrador |
-| Linux | `sudo socshark gui`, o una vez `sudo setcap cap_net_raw,cap_net_admin=eip $(which socshark)` |
+| Linux | `sudo socshark gui`, o una vez `sudo setcap cap_net_raw,cap_net_admin=ep $(which socshark)` |
 | macOS | `sudo socshark gui`, o permisos de lectura en `/dev/bpf*` (los da el instalador de Wireshark) |
 
 ## Quién es quién
@@ -278,6 +278,12 @@ ruta HTTP o un nombre de archivo pueden ser maliciosos. Por eso:
 - Cabeceras estrictas: CSP `default-src 'none'` (solo los tres archivos
   propios), `X-Frame-Options: DENY`, `nosniff`, `no-store`, `no-referrer`.
 - Límites: cabeceras 16 KiB, captura subida 512 MiB, tiempo de lectura 30 s.
+  Endurecimiento en curso: el cuerpo solo se lee tras validar `Host` y
+  token (sin token no se acepta ni un byte de subida), número máximo de
+  conexiones simultáneas, y anidamiento de filtros limitado a 128 niveles.
+- **Privilegios**: en Linux, si `install.sh` aplicó `setcap`, el proceso de
+  la ventana tiene `CAP_NET_RAW`/`CAP_NET_ADMIN` (es el mismo binario que
+  captura); ver el modelo real en [security.md](security.md).
 - **Apodos**: archivo local (`apodos.json`), claves validadas, apodos
   limpios y acotados. **Informe**: todo escapado y con CSP propia sin
   scripts.

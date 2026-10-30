@@ -9,7 +9,7 @@ SIEM: los `alerts[].mitre` del JSONL llevan exactamente estos IDs.
 
 | ID | Técnica | Detección en soc-shark | Señal concreta | Estado |
 |---|---|---|---|---|
-| **T1048.003** | Exfiltration Over Alternative Protocol: DNS | `DNS-TUNNELING` | qname ≥ 30 caracteres con entropía de Shannon ≥ 3.5 bits (subdominio codificado) | **Implementado (F1)** |
+| **T1071.004** | Application Layer Protocol: DNS | `DNS-TUNNELING` | Subdominio largo y de alta entropía de Shannon: la entropía se calcula solo sobre las etiquetas a la izquierda del dominio registrable (aproximación eTLD+1), así que nombres legítimos largos como `settings-win.data.microsoft.com` no disparan | **Implementado (F1)** |
 | **T1046** | Network Service Discovery / Scanning | `PORT-SCAN` | Escaneo vertical: un origen prueba ≥ 10 puertos distintos de un host sin establecer conexión (sin respuesta, RST/ACK o half-open) — tracker entre flujos | **Implementado (F1, corregido)** |
 | **T1046** | Network Service Discovery / Scanning | `NETWORK-SWEEP` | Barrido horizontal: un origen prueba el mismo puerto en ≥ 20 hosts sin establecer conexión | **Implementado** |
 | — (aviso) | — | `REPEATED-ATTEMPTS` | ≥ 4 intentos fallidos del mismo origen al mismo host:puerto sin llegar a escaneo (servicio caído, C2 muerto, sondeo insistente); severidad baja | **Implementado** |
@@ -50,7 +50,7 @@ SIEM: los `alerts[].mitre` del JSONL llevan exactamente estos IDs.
 - **ATT&CK Navigator**: exportar `flow_id, alert.id, mitre` de una sesión y
   pintar la capa de técnicas observadas durante el incidente.
 - **TheHive/Wazuh**: el campo `mitre` alimenta directamente
-  `tags: attack.t1048.003` convención de Wazuh.
+  `tags: attack.t1071.004` convención de Wazuh.
 - **Métrica de cobertura**: el equipo SOC puede medir qué técnicas de su
   threat model produce señal en su red real con esta tabla como checklist
   de lacrado.

@@ -92,9 +92,12 @@ pool es un detalle de ejecución.
 flujos: clave canónica bidireccional (`FlowKey` con extremos ordenados),
 contadores por dirección, contadores de flags TCP, fusión de preguntas y
 respuestas DNS por flujo, expiración por inactividad (`drain_expired`) y
-expulsión bajo presión de memoria (`max_flows`, se descartan los flujos con
-`last_seen` más antiguo para acotar RAM en capturas largas o ataques de
-agotamiento de tabla). La exportación (`finish()`) produce los
+expulsión bajo presión de memoria (`max_flows`: los flujos con `last_seen` más antiguo salen de la tabla para
+acotar RAM en capturas largas o ataques de agotamiento de tabla, pero se
+encolan y se exportan en el siguiente `drain_expired`/`finish()`, así que un
+atacante no puede «borrar» un flujo C2 inundando la tabla). El reensamblado
+TCP tiene además un presupuesto global (256 MiB), cuenta 64 B de sobrecarga
+por segmento y admite como mucho 8 192 segmentos por dirección. La exportación (`finish()`) produce los
 `EnrichedFlow` ordenados por primer avistamiento.
 
 **Objetivo (Fase 2+).** Dos piezas nuevas sobre esta base:

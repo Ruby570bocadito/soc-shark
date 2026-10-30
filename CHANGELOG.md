@@ -5,6 +5,75 @@ y [SemVer](https://semver.org/lang/es/).
 
 ## [Sin publicar]
 
+Auditoría de robustez y seguridad: todos los fallos se reprodujeron con una
+captura o petición fabricada y tienen test de regresión (209 → 281 tests).
+
+### Seguridad
+
+- **GUI**: el cuerpo de una petición se leía (hasta 512 MiB) antes de
+  comprobar `Host` y token; cualquier proceso local podía tumbar la ventana
+  agotando la memoria. Ahora se autoriza antes de leer, solo `POST /api/open`
+  admite cuerpos grandes (el resto, 64 KiB), una subida a la vez y como
+  mucho 64 conexiones.
+- **GUI**: el archivo temporal de subida tenía nombre predecible (ataque por
+  enlace simbólico en Linux): ahora es aleatorio y se crea con `create_new`
+  (0600).
+- **Filtro DSL**: un filtro con ~2 000 paréntesis desbordaba la pila y
+  abortaba el proceso. Límite de 128 niveles y 4 096 tokens, y cadenas
+  `&&`/`||` en árbol equilibrado.
+- **Terminal**: nombres DNS, SNI y alertas se imprimían con caracteres de
+  control (inyección de secuencias de escape); ahora se escapan, también los
+  de dirección bidi.
+- **Carga de libpcap**: sin búsqueda en la carpeta del programa en Windows
+  (`LOAD_LIBRARY_SEARCH_SYSTEM32`) y rutas absolutas en macOS.
+- **Instaladores**: `setcap` sin el bit heredable (`=ep`), solo descargas
+  HTTPS, el token de git ya no aparece en la línea de órdenes y el PATH de
+  Windows conserva sus `%VARIABLES%`. Actions fijadas por SHA y versiones de
+  `cargo-zigbuild`/`ziglang` fijadas.
+
+### Corregido
+
+- **Pánico** en el *carving* con un chunk HTTP de tamaño `ffffffffffffffff`:
+  tumbaba `gui -r`, `report` y `capture --carve-files`.
+- **Falsos positivos DNS-TUNNELING** con nombres normales
+  (`settings-win.data.microsoft.com`): la entropía se mide ahora sobre el
+  subdominio a la izquierda del dominio registrable. MITRE corregido a
+  **T1071.004**.
+- Fragmentos IPv4 no iniciales y ethertypes que no son IPv4 ya no se
+  interpretan como TCP/UDP; `total_len = 0` (TSO) usa la longitud capturada.
+- DNS con bytes no UTF-8 ya no se descarta entero (evasión de túnel).
+- TLS: JA4 con ClientHello sin extensiones, partido en varios registros o con
+  segmentos fuera de orden/retransmitidos.
+- `--workers N` no paralelizaba nada y se colgaba si un hilo caía.
+- Flujos expulsados por memoria ahora se exportan; presupuesto global de
+  reensamblado; retransmisiones solapadas distintas marcan `lossy`;
+  `dns.qname` acumula todas las consultas (máx. 64).
+- *Carving*: nombre de archivo desalineado tras un 304 (falso T1036),
+  instaladores versionados marcados como doble extensión, búsqueda cuadrática.
+- Ruido UDP por puerto de origen ocultaba C2; DNS pasivo aceptaba registros
+  fuera de la cadena CNAME; estado del daemon sin límite.
+- ECS: `network.direction` calculado, `event.kind: alert`, MAC en formato ECS.
+- Threat intel: comprueba origen y destino, tolera bytes no UTF-8 y rechaza
+  redes más amplias que /8 (v4) o /16 (v6).
+- Códigos de salida: `export` con fallo de escritura, error fatal del daemon y
+  `tui` sin la *feature* ya no salen con 0; `| head` ya no provoca pánico.
+- TUI: el filtro `-f` inicial se puede quitar y la terminal se restaura si
+  algo falla.
+- Se niega a sobrescribir la captura de entrada con `-o`/`--json`.
+
+### Añadido
+
+- Beaconing **entre conexiones** (beacons más lentos que el timeout de
+  inactividad).
+- Disección de Linux *cooked* (SLL/SLL2) y loopback (NULL/LOOP), y QinQ.
+- Fuzzer: escenarios hostiles (chunked, fragmentos, TLS partido) y el
+  *carving* dentro del recorrido.
+- CI en Windows y macOS, permisos mínimos y comprobación de MSRV.
+
+### Cambiado
+
+- **MSRV 1.88** (lo que exige el `Cargo.lock` real; antes decía 1.75).
+
 ## [0.7.0] — 2026-10-20
 
 ### Añadido
@@ -442,6 +511,11 @@ y [SemVer](https://semver.org/lang/es/).
 - CLI `soc-shark`: `read` (tabla SOC/radar, `--json`, `--events`, `--filter`,
   `--export-ecs`, `--export-suricata`, `--iocs`, `--min-risk`),
   `fields`, `live` (guía), `info`.
+  *(Nota posterior: entrada histórica. El subcomando `read` y esos flags ya
+  no existen con ese nombre: hoy el análisis de una captura es
+  `socshark capture -r <pcap>` (con `--json`, `--filter`, `--intel-*`) y la
+  exportación SIEM es `socshark export` (ECS o Wazuh). Ver
+  `socshark --help`.)*
 - Escenario demo reproducible: `tools/gen_demo_pcap.py` + lista de IOCs de
   ejemplo (C2 beaconing + Masquerading + DNS tunneling + Tor IOC).
 - 99 tests unitarios y de integración, incluido el barrido anti-panic
