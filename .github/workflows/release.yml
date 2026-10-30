@@ -13,6 +13,15 @@ on:
   push:
     tags: ["v[0-9]+.[0-9]+.[0-9]+"]
 
+# Mínimo privilegio: todo el workflow solo lee; únicamente el job `publish`
+# (que crea la etiqueta y el release) recibe `contents: write`.
+#
+# Sin caché de Cargo (Swatinem/rust-cache) en los jobs de release: un
+# binario publicado no debe depender de una caché que puede escribir
+# cualquier otra ejecución del repositorio.
+#
+# Acciones de terceros fijadas por SHA de commit completo (el comentario
+# indica la versión).
 permissions:
   contents: read
 
@@ -31,7 +40,7 @@ jobs:
       version: ${{ steps.v.outputs.version }}
       tag: ${{ steps.v.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
 
@@ -65,13 +74,12 @@ jobs:
     needs: prepare
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
+          toolchain: stable
           targets: x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu
-
-      - uses: Swatinem/rust-cache@v2
 
       - name: Tests
         run: cargo test --workspace --locked
@@ -81,7 +89,7 @@ jobs:
       - name: Instalar cargo-zigbuild
         run: |
           python3 -m venv "$RUNNER_TEMP/zig"
-          "$RUNNER_TEMP/zig/bin/pip" install --quiet cargo-zigbuild
+          "$RUNNER_TEMP/zig/bin/pip" install --quiet cargo-zigbuild==0.23.4 ziglang==0.16.0
           echo "$RUNNER_TEMP/zig/bin" >> "$GITHUB_PATH"
 
       - name: Compilar
@@ -97,7 +105,7 @@ jobs:
             tar -czf "dist/socshark-$t.tar.gz" -C "target/$t/release" socshark
           done
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: dist-linux
           path: dist/*
@@ -107,11 +115,11 @@ jobs:
     needs: prepare
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
 
       # CRT estático: no hace falta el redistribuible de Visual C++.
       - name: Compilar
@@ -126,7 +134,7 @@ jobs:
           New-Item -ItemType Directory dist | Out-Null
           Compress-Archive -Path target/x86_64-pc-windows-msvc/release/socshark.exe -DestinationPath dist/socshark-x86_64-pc-windows-msvc.zip
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: dist-windows
           path: dist/*
@@ -138,13 +146,12 @@ jobs:
     env:
       MACOSX_DEPLOYMENT_TARGET: "11.0"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
+          toolchain: stable
           targets: aarch64-apple-darwin, x86_64-apple-darwin
-
-      - uses: Swatinem/rust-cache@v2
 
       - name: Compilar (Apple Silicon e Intel)
         run: |
@@ -160,7 +167,7 @@ jobs:
           ./universal/socshark --version
           tar -czf dist/socshark-universal-apple-darwin.tar.gz -C universal socshark
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: dist-macos
           path: dist/*
@@ -172,9 +179,9 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: dist-*
           path: dist

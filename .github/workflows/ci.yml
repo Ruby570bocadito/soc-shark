@@ -5,23 +5,31 @@ on:
     branches: [main]
   pull_request:
 
+# Mínimo privilegio: el CI solo lee el repositorio.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
+# Las acciones de terceros van fijadas por SHA de commit completo (el
+# comentario indica la versión). dtolnay/rust-toolchain se fija a `master`
+# y la versión de Rust se pasa con `toolchain:`.
 jobs:
   test:
     name: fmt + clippy + test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Instalar toolchain estable
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
+          toolchain: stable
           components: rustfmt, clippy
 
       - name: Caché de dependencias
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Formato (rustfmt)
         run: cargo fmt --all -- --check
@@ -38,11 +46,57 @@ jobs:
       - name: Fuzzing determinista en proceso (parsers + agregador + SOC + DSL)
         run: ./target/release/socshark dev fuzz --iterations 50000 --seed 42 --report-every 0
 
+  # Build + tests en Windows y macOS (fmt y clippy solo en Linux, arriba).
+  test-os:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Instalar toolchain estable
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+
+      - name: Caché de dependencias
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - name: Build
+        run: cargo build --workspace --locked
+
+      - name: Tests unitarios y de integración
+        run: cargo test --workspace --locked
+
+  # Versión mínima de Rust soportada (MSRV). Debe coincidir con
+  # `rust-version` de Cargo.toml y con la insignia del README. 1.88 es lo que
+  # exige el Cargo.lock actual (darling 0.24 / instability 0.3.14 piden 1.88;
+  # clap 4.6 pide 1.85).
+  msrv:
+    name: MSRV (Rust 1.88)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Instalar Rust 1.88
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: "1.88"
+
+      - name: Caché de dependencias
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - name: cargo check (Cargo.lock bloqueado)
+        run: cargo check --workspace --locked
+
   installers:
     name: instaladores (install.sh + install.ps1)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: install.sh (shellcheck)
         run: shellcheck install.sh
