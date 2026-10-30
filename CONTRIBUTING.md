@@ -43,8 +43,9 @@ cargo test --workspace                            # verde obligatorio
 ```
 
 La CI (`.github/workflows/ci.yml`) ejecuta exactamente `fmt --check`,
-`clippy -D warnings`, `test`, `build --release` y el fuzzing determinista, y
-revisa los instaladores: `shellcheck install.sh` y que `install.ps1` se
+`clippy -D warnings`, `test`, `build --release` y el fuzzing determinista
+(Linux), `build` + `test` en Windows y macOS, `cargo check --locked` con la
+MSRV (Rust 1.88, la que exige el `Cargo.lock`), y revisa los instaladores: `shellcheck install.sh` y que `install.ps1` se
 analice sin errores y siga en **ASCII puro, sin BOM** (con BOM, `irm | iex`
 deja de funcionar). Un PR no se revisa si la CI falla.
 

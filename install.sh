@@ -16,24 +16,30 @@
 #  Options (environment variables, all optional):
 #    SOCSHARK_VERSION         version to install, e.g. 0.7.0 (default: latest)
 #    SOCSHARK_FROM_SOURCE=1   build from source instead of downloading
-#    SOCSHARK_DOWNLOAD_URL    another download location (a release mirror)
+#    SOCSHARK_DOWNLOAD_URL    another download location (a release mirror, https:// only)
 #    SOCSHARK_BIN             install folder (default ~/.local/bin)
 #    SOCSHARK_NO_SETCAP=1     do not grant the capture permission
 #    SOCSHARK_REPO            owner/repo     (default Ruby570bocadito/soc-shark)
-#    SOCSHARK_REF             branch or tag to build (default main)
+#    SOCSHARK_REF             branch or tag to build (default: the tag
+#                             v$SOCSHARK_VERSION when a version is pinned, else main)
 #    SOCSHARK_DIR             source folder  (default ~/soc-shark)
 #    GH_TOKEN / GITHUB_TOKEN  token, only to build from a private repository
 # =====================================================================
 set -euo pipefail
 
 REPO="${SOCSHARK_REPO:-Ruby570bocadito/soc-shark}"
-REF="${SOCSHARK_REF:-main}"
 SRC_DIR="${SOCSHARK_DIR:-$HOME/soc-shark}"
 BIN_DIR="${SOCSHARK_BIN:-$HOME/.local/bin}"
 TOKEN="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
 VERSION="${SOCSHARK_VERSION:-}"
 VERSION="${VERSION#v}"
-MIN_RUST="1.75"
+# A pinned version also pins the source fallback to its tag.
+if [ -n "$VERSION" ]; then
+    REF="${SOCSHARK_REF:-v$VERSION}"
+else
+    REF="${SOCSHARK_REF:-main}"
+fi
+MIN_RUST="1.88"
 
 # --- output ---------------------------------------------------------
 if [ -t 1 ]; then
@@ -55,6 +61,15 @@ printf '%s  ╚════██║██║   ██║██║         ╚�
 printf '%s  ███████║╚██████╔╝╚██████╗    ███████║██║  ██║██║  ██║██║  ██║██║  ██╗%s\n' "$C$B" "$N"
 printf '%s  ╚══════╝ ╚═════╝  ╚═════╝    ╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝%s\n' "$C$B" "$N"
 printf '%s  Your network, explained in plain language · Linux and macOS installer%s\n' "$D" "$N"
+
+# A mirror must be HTTPS: the SHA-256 check is only as trustworthy as the
+# channel that delivers SHA256SUMS.
+if [ -n "${SOCSHARK_DOWNLOAD_URL:-}" ]; then
+    case "$SOCSHARK_DOWNLOAD_URL" in
+        https://*) ;;
+        *) die "SOCSHARK_DOWNLOAD_URL must start with https:// (got: $SOCSHARK_DOWNLOAD_URL)." ;;
+    esac
+fi
 
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/socshark-install.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
@@ -107,8 +122,9 @@ download_release() {
         base="https://github.com/$REPO/releases/latest/download"
     fi
     have curl || { WHY="curl is missing"; return 1; }
-    curl -fsL --retry 3 -o "$TMP/$ASSET" "$base/$ASSET" || { WHY="the release${VERSION:+ v$VERSION} has no $ASSET"; return 1; }
-    curl -fsL --retry 3 -o "$TMP/SHA256SUMS" "$base/SHA256SUMS" || { WHY="the release has no SHA256SUMS"; return 1; }
+    local https=(--proto '=https' --proto-redir '=https' --tlsv1.2)
+    curl -fsL "${https[@]}" --retry 3 -o "$TMP/$ASSET" "$base/$ASSET" || { WHY="the release${VERSION:+ v$VERSION} has no $ASSET"; return 1; }
+    curl -fsL "${https[@]}" --retry 3 -o "$TMP/SHA256SUMS" "$base/SHA256SUMS" || { WHY="the release has no SHA256SUMS"; return 1; }
     local want got
     want="$(awk -v f="$ASSET" '$2 == f || $2 == "*" f {print $1}' "$TMP/SHA256SUMS")"
     got="$(sha256_of "$TMP/$ASSET")"
@@ -284,14 +300,18 @@ else
     die "socshark is installed but could not analyse a demo capture. Try: socshark capture -r <file.pcap>"
 fi
 
-# Live capture without sudo: the same permission Wireshark's dumpcap gets.
+# Live capture without sudo. The file capabilities apply to the whole
+# socshark binary (there is no separate capture helper yet; see
+# docs/security.md). CAP_NET_RAW opens the capture socket; CAP_NET_ADMIN is
+# only needed for promiscuous/monitor mode on some setups. Effective and
+# permitted only, never inheritable: programs it starts do not get them.
 if ! has_libpcap; then
     warn "libpcap is missing: opening captures works, live capture does not."
 elif [ "$OS" = "Linux" ] && [ -z "${SOCSHARK_NO_SETCAP:-}" ]; then
-    if setcap_bin="$(find_setcap)" && as_root "$setcap_bin" cap_net_raw,cap_net_admin=eip "$BIN_DIR/socshark"; then
+    if setcap_bin="$(find_setcap)" && as_root "$setcap_bin" cap_net_raw,cap_net_admin=ep "$BIN_DIR/socshark"; then
         ok "Live capture ready (no sudo needed)"
     else
-        warn "For live capture, run once: sudo setcap cap_net_raw,cap_net_admin=eip \"$BIN_DIR/socshark\""
+        warn "For live capture, run once: sudo setcap cap_net_raw,cap_net_admin=ep \"$BIN_DIR/socshark\""
     fi
 elif [ "$OS" = "Darwin" ]; then
     warn "Live capture on macOS needs sudo (or Wireshark's ChmodBPF helper)."

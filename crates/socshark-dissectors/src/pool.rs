@@ -7,11 +7,17 @@
 //! camino secuencial para que timestamps, direcciones y alerts coincidan.
 //!
 //! Estrategia (ADR-010): paralelismo **por lotes con entrega ordenada**.
-//! El hilo principal reparte lotes de `chunk_size` paquetes entre N workers
-//! (round-robin) y alimenta al agregador estrictamente en el orden de
-//! envío, almacenando en búfer los resultados que llegan adelantados. Con
+//! Cada llamada a [`DissectionPool::process`] parte su lote en tantos
+//! sub-lotes como workers y los envía **todos a la vez** (así trabajan los
+//! N hilos en paralelo); después recompone los resultados estrictamente en
+//! el orden de envío, almacenando en búfer los que llegan adelantados. Con
 //! eso, `--workers 4` produce exactamente la misma salida que `--workers 1`
 //! (verificado por test de igualdad de JSONL).
+//!
+//! Robustez: un panic al diseccionar un paquete se captura en el worker
+//! (`catch_unwind`); ese paquete sale como `None` (no interpretable) y el
+//! worker sigue vivo, de modo que `process` nunca espera un resultado que
+//! no va a llegar.
 //!
 //! Para cruzar hilos, el pool entrega [`DissectedPacket`] con lifetime
 //! `'static`: el worker convierte el payload prestado en `Cow::Owned`
@@ -19,6 +25,7 @@
 //! y solo se paga cuando se pide paralelismo.
 
 use std::collections::HashMap;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -35,14 +42,28 @@ type Job = (u64, LinkType, Vec<RawPacket>);
 /// en el mismo orden que el lote de entrada (`None` = no interpretable).
 type JobResult = (u64, Vec<Option<DissectedPacket<'static>>>);
 
+/// Disecciona un lote aislando cada paquete con `catch_unwind`: un panic
+/// produce `None` para ese paquete y el resto sigue. Siempre devuelve un
+/// resultado del mismo tamaño que el lote.
+fn dissect_guarded<F>(packets: Vec<RawPacket>, f: F) -> Vec<Option<DissectedPacket<'static>>>
+where
+    F: Fn(&RawPacket) -> Option<DissectedPacket<'static>>,
+{
+    packets
+        .iter()
+        .map(|raw| catch_unwind(AssertUnwindSafe(|| f(raw))).unwrap_or(None))
+        .collect()
+}
+
 /// Pool de workers que diseccionan lotes de paquetes en paralelo.
 ///
 /// Ciclo de vida: [`DissectionPool::spawn`] arranca los hilos; el método
-/// [`DissectionPool::process`] envía un lote y **bloquea** hasta devolver
-/// sus disecciones en orden; [`Drop`] cierra el canal de trabajos y espera
-/// (`join`) a los workers.
+/// [`DissectionPool::process`] reparte un lote entre los workers y
+/// **bloquea** hasta devolver sus disecciones en orden; [`Drop`] cierra el
+/// canal de trabajos y espera (`join`) a los workers.
 pub struct DissectionPool {
     job_tx: Option<Sender<Job>>,
+    workers: usize,
     res_rx: Receiver<JobResult>,
     handles: Vec<JoinHandle<()>>,
     next_idx: u64,
@@ -82,20 +103,19 @@ impl DissectionPool {
                     // Mutex temporal: solo cubre el `recv`; la disección
                     // corre fuera del lock.
                     let job = {
-                        let rx = job_rx.lock().expect("mutex del pool envenenado");
+                        // Nunca se hace panic con el cerrojo tomado, pero si
+                        // ocurriera, el receptor sigue siendo utilizable.
+                        let rx = job_rx.lock().unwrap_or_else(|e| e.into_inner());
                         rx.recv()
                     };
                     let Ok((idx, link, packets)) = job else {
                         break; // canal cerrado: el hilo termina limpio
                     };
-                    let out = packets
-                        .into_iter()
-                        .map(|raw| {
-                            dissectors
-                                .dissect(&raw, link)
-                                .map(DissectedPacket::into_owned)
-                        })
-                        .collect::<Vec<_>>();
+                    let out = dissect_guarded(packets, |raw| {
+                        dissectors
+                            .dissect(raw, link)
+                            .map(DissectedPacket::into_owned)
+                    });
                     if res_tx.send((idx, out)).is_err() {
                         break; // el principal ya no escucha: terminar
                     }
@@ -107,6 +127,7 @@ impl DissectionPool {
 
         Ok(Self {
             job_tx: Some(job_tx),
+            workers,
             res_rx,
             handles,
             next_idx: 0,
@@ -120,26 +141,58 @@ impl DissectionPool {
         self.chunk_size
     }
 
-    /// Envía un lote y devuelve sus disecciones **en el orden de entrada**,
-    /// bloqueando hasta que el lote esté listo (los resultados adelantados
-    /// de lotes previos se almacenan en búfer para entregarlos en su turno).
+    /// Reparte un lote entre los workers y devuelve sus disecciones **en el
+    /// orden de entrada**, bloqueando hasta que estén todas. El lote se parte
+    /// en hasta N sub-lotes contiguos que se diseccionan en paralelo; los
+    /// resultados adelantados se guardan en búfer hasta su turno.
+    ///
+    /// Siempre devuelve `packets.len()` elementos: si el pool está roto, los
+    /// paquetes afectados salen como `None` (el pipeline los cuenta como no
+    /// diseccionados).
     pub fn process(
         &mut self,
         link: LinkType,
-        packets: Vec<RawPacket>,
+        mut packets: Vec<RawPacket>,
     ) -> Vec<Option<DissectedPacket<'static>>> {
-        let idx = self.next_idx;
-        self.next_idx += 1;
         let n = packets.len();
+        if n == 0 {
+            return Vec::new();
+        }
 
-        if let Some(tx) = self.job_tx.as_ref() {
-            if tx.send((idx, link, packets)).is_err() {
-                // Pool roto (worker en panic): devolver lote vacío; el
-                // pipeline degradará a "paquetes no diseccionados".
-                return (0..n).map(|_| None).collect();
+        // Sub-lotes contiguos de tamaño ceil(n / workers), enviados todos
+        // antes de esperar ninguno.
+        let per = n.div_ceil(self.workers.max(1));
+        let mut sent: Vec<(u64, usize)> = Vec::new();
+        while !packets.is_empty() {
+            let tail = packets.split_off(per.min(packets.len()));
+            let part = std::mem::replace(&mut packets, tail);
+            let len = part.len();
+            let idx = self.next_idx;
+            self.next_idx += 1;
+            let ok = self
+                .job_tx
+                .as_ref()
+                .is_some_and(|tx| tx.send((idx, link, part)).is_ok());
+            if ok {
+                sent.push((idx, len));
+            } else {
+                // Pool roto: el sub-lote no se procesa; resultado vacío.
+                self.pending.insert(idx, (0..len).map(|_| None).collect());
+                sent.push((idx, len));
             }
         }
 
+        let mut out = Vec::with_capacity(n);
+        for (idx, len) in sent {
+            out.extend(self.wait_for(idx, len));
+        }
+        out
+    }
+
+    /// Espera el resultado del sub-lote `idx` (de `len` paquetes), guardando
+    /// en búfer los que lleguen antes. Si todos los workers han muerto,
+    /// devuelve `len` veces `None`.
+    fn wait_for(&mut self, idx: u64, len: usize) -> Vec<Option<DissectedPacket<'static>>> {
         loop {
             if let Some(out) = self.pending.remove(&idx) {
                 return out;
@@ -153,7 +206,7 @@ impl DissectionPool {
                 }
                 Err(_) => {
                     // Todos los workers murieron: sin resultados.
-                    return (0..n).map(|_| None).collect();
+                    return (0..len).map(|_| None).collect();
                 }
             }
         }
@@ -253,6 +306,41 @@ mod tests {
         // Y sigue vivo después de ambos casos extremos.
         let out = pool.process(LinkType::Ethernet, lote(5));
         assert_eq!(out.len(), 5);
+    }
+
+    #[test]
+    fn el_lote_se_reparte_entre_varios_workers() {
+        // Regresión: `process` enviaba el lote entero a un único worker y
+        // esperaba, así que nunca había dos hilos trabajando a la vez.
+        let mut pool = DissectionPool::spawn(4, 64).unwrap();
+        // Se reparte en 4 sub-lotes; el orden debe mantenerse.
+        let out = pool.process(LinkType::Ethernet, lote(64));
+        assert_eq!(out.len(), 64);
+        for (i, dp) in out.iter().enumerate() {
+            let id = dp.as_ref().unwrap().dns.as_ref().unwrap().id;
+            assert_eq!(id, i as u16 + 1);
+        }
+        assert_eq!(pool.next_idx, 4, "4 sub-lotes en vuelo, uno por worker");
+        // Lote menor que el número de workers: sub-lotes de 1.
+        let out = pool.process(LinkType::Ethernet, lote(3));
+        assert_eq!(out.len(), 3);
+        assert_eq!(pool.next_idx, 7);
+    }
+
+    #[test]
+    fn panic_al_diseccionar_da_none_y_no_cuelga() {
+        // Regresión: un panic en un worker dejaba a `process` esperando para
+        // siempre un resultado que nunca llegaba.
+        let out = dissect_guarded(lote(3), |raw| {
+            if raw.ts_micros == 1_001 {
+                panic!("paquete envenenado (esperado en este test)");
+            }
+            DissectorPipeline::new()
+                .dissect(raw, LinkType::Ethernet)
+                .map(DissectedPacket::into_owned)
+        });
+        assert_eq!(out.len(), 3);
+        assert!(out[0].is_some() && out[1].is_none() && out[2].is_some());
     }
 
     #[test]

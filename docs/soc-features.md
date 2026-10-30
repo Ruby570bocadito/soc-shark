@@ -60,7 +60,7 @@ regla suma a `risk_score` (tope 100) y emite alerta al superar su umbral.
 
 | ID | Regla | Señal | Riesgo | Estado |
 |---|---|---|---|---|
-| `DNS-TUNNELING` | qname con longitud ≥ 30 **y** entropía de Shannon ≥ 3.5 | subdominios codificados (base32/hex) de exfiltración o C2 | +45 | **implementado** |
+| `DNS-TUNNELING` (T1071.004) | subdominio (etiquetas a la izquierda del dominio registrable) largo **y** con entropía de Shannon alta | subdominios codificados (base32/hex) de exfiltración o C2 | +45 | **implementado** |
 | `PORT-SCAN` | un origen prueba ≥ 10 puertos distintos de un host sin establecer conexión — tracker *entre flujos* | escaneo vertical (`nmap -sS`/`-sT`): cada sonda es un flujo distinto, invisible por flujo aislado | +30 | **implementado** |
 | `NETWORK-SWEEP` | un origen prueba el mismo puerto en ≥ 20 hosts sin establecer conexión | barrido horizontal (gusanos, búsqueda de SMB/RDP abiertos) | +30 (una vez con `PORT-SCAN`) | **implementado** |
 | `REPEATED-ATTEMPTS` | ≥ 4 intentos fallidos al mismo host:puerto sin llegar a escaneo | servicio caído, C2 muerto o sondeo insistente (severidad baja) | +10 | **implementado** |
@@ -75,10 +75,19 @@ configurables en `PipelineConfig` (`scan_port_threshold`,
 alto porque el descubrimiento de red de Windows (SMB/NetBIOS) toca muchos
 hosts del mismo puerto de forma legítima.
 
-La entropía de Shannon por carácter distingue `www.ejemplo-corporativo.com`
-(≈2.3 bits) de `az3k9t2wq7xm5vb8n...chfdgs` (≈4.9 bits). El umbral y la
-longitud son configurables en `PipelineConfig` (`dns_entropy_threshold`,
-`dns_tunnel_min_len`) para afinar por entorno sin tocar código.
+La heurística no mide el nombre completo sino **solo el subdominio**: las
+etiquetas a la izquierda del dominio registrable (una aproximación de
+eTLD+1: `ejemplo.com`, `ejemplo.co.uk`…). El dominio registrable lo elige
+quien lo compra y no dice nada de lo que viaja en la consulta; lo que un
+túnel codifica va en el subdominio. Medido sobre el nombre entero, incluso
+un nombre normal como `www.ejemplo-corporativo.com` da ≈3.7 bits por
+carácter, y nombres legítimos largos como `settings-win.data.microsoft.com`
+se acercan a los umbrales; medido sobre el subdominio (`www`,
+`settings-win.data`), quedan muy por debajo, mientras que
+`az3k9t2wq7xm5vb8n...chfdgs.ejemplo.com` (base32/hex) sigue siendo largo y
+de alta entropía. Los umbrales de longitud y entropía son configurables en
+`PipelineConfig` (`dns_entropy_threshold`, `dns_tunnel_min_len`) para
+afinar por entorno sin tocar código.
 
 ## Passive DNS (implementado)
 
@@ -138,11 +147,13 @@ SOC) y se cargan como ficheros de texto plano
   Soporta v4 y v6, con normalización de la base del CIDR.
 - **Tor Bulk Exit List**: se extrae la primera IP de cada línea (tolera el
   formato `ExitAddress <ip> <fecha>`).
-- El parser es tolerante por diseño: comentarios, líneas vacías y líneas sin
-  IP interpretable se saltan sin error (las listas públicas cambian de
-  formato con frecuencia).
+- El parser es tolerante por diseño: comentarios, líneas vacías, líneas sin
+  IP interpretable y bytes que no son UTF-8 se saltan sin error (las listas
+  públicas cambian de formato con frecuencia).
+- Redes demasiado amplias (más cortas que /8 en IPv4 o /16 en IPv6, p. ej.
+  `0.0.0.0/0`) se rechazan con un aviso: marcarían media Internet.
 
-Cada flujo cuyo **destino** coincide lleva `threat_intel` lleno con las
+Cada flujo cuyo **origen o destino** coincide lleva `threat_intel` lleno con las
 etiquetas (`FEODO-C2`, `TOR-EXIT`) y la regla **R7** alerta: C2 de Feodo →
 `THREAT-INTEL-FEODO` (alta, T1071.001, +45) y salida de Tor → `TOR-USAGE`
 (media, T1090.003 — proxy multi-salto, +20). DSL: `intel.tag`. La
@@ -200,9 +211,15 @@ cuando se cumplen TODAS (umbrales configurables en `PipelineConfig`):
 El detalle de la alerta incluye el periodo estimado y su jitter
 ("intervalo medio 30.0s con jitter ±0.0% en 7 intervalos"), y los campos
 `flow.interval_mean_secs` / `flow.interval_cv` son consultables en el DSL.
-La correlación por grupos de flujos hacia el mismo (destino, puerto) y el
-beaconing con jitter aleatorizado (CV deliberadamente alto) quedan como
-evolutivos documentados.
+**Beaconing entre conexiones.** Un beacon más lento que el timeout de
+inactividad (p. ej. cada 5 min con el daemon a 120 s) se parte en flujos de un
+paquete. `FlowStartTracker` guarda los inicios de flujo por (origen, destino,
+puerto, transporte) y aplica los mismos umbrales a los intervalos entre
+conexiones: alerta `BEACONING` (T1071) con detalle «…entre conexiones».
+Excluye DNS y ruido; acotado a 65 536 claves × 33 inicios.
+
+El beaconing con jitter aleatorizado (CV deliberadamente alto) queda como
+evolutivo documentado.
 
 ## Export a SIEM (Fase 4 — implementado ECS y Wazuh; TheHive pendiente)
 

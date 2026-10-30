@@ -5,7 +5,8 @@
 //! reglas ↔ técnicas vive en `docs/soc-mitre-mapping.md`.
 //!
 //! Reglas Fase 1:
-//! - `R1` Posible túnel DNS: qname largo + entropía alta → T1048.003.
+//! - `R1` Posible túnel DNS: subdominio largo, codificado y de entropía
+//!   alta (ver [`dns_tunnel_suspect`]) → T1071.004 (C2 sobre DNS).
 //! - `R2` Escaneo sobre intentos de conexión fallidos entre flujos:
 //!   vertical (muchos puertos de un host, `PORT-SCAN`) y horizontal (un
 //!   puerto en muchos hosts, `NETWORK-SWEEP`) → T1046. Si no llega a
@@ -22,6 +23,10 @@
 //!   entre paquetes del iniciador (ver `IntervalStats`) son demasiado
 //!   regulares para tráfico humano y caen en la ventana típica de un
 //!   malware que "llama a casa" con un sleep programado.
+//!
+//!   Variante entre flujos ([`assess_interflow_beacon`]): misma prueba
+//!   sobre los intervalos entre inicios de conexión al mismo servicio, para
+//!   beacons lentos que el timeout de inactividad parte en flujos sueltos.
 //!
 //! Reglas Fase 4:
 //! - `R6` Encubrimiento de archivos transferidos por HTTP (magic ≠ extensión
@@ -61,33 +66,170 @@ pub fn shannon_entropy(s: &str) -> f64 {
         .sum()
 }
 
+/// Técnica MITRE del túnel DNS: Application Layer Protocol: DNS (C2 y
+/// exfiltración encapsulados en consultas DNS).
+pub const MITRE_DNS_TUNNEL: &str = "T1071.004";
+
+/// Longitud mínima de la etiqueta más larga del subdominio para sospechar
+/// de datos codificados (base32/hex/base64 suelen ir en etiquetas de 30-63).
+const TUNNEL_MIN_LABEL: usize = 24;
+/// Etiqueta "muy larga": basta entropía alta aunque no mezcle dígitos
+/// (base64 solo letras).
+const TUNNEL_LONG_LABEL: usize = 32;
+/// Subdominio total largo (varias etiquetas medianas: dnscat2, iodine).
+const TUNNEL_MIN_SUBDOMAIN: usize = 48;
+/// Margen sobre el umbral configurado para los casos sin mezcla
+/// letra/dígito: el texto legible largo ronda 3.5-3.7 bits.
+const TUNNEL_ENTROPY_MARGIN: f64 = 0.5;
+/// Cambios letra↔dígito mínimos en la etiqueta: las codificaciones los
+/// reparten por todo el texto; los nombres humanos agrupan los dígitos
+/// ("balancer-1234567890").
+const TUNNEL_MIN_TRANSITIONS: usize = 4;
+
+/// Evidencias de un qname sospechoso de túnel DNS.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DnsTunnelEvidence {
+    /// Caracteres del subdominio (sin el dominio registrable ni los puntos).
+    pub subdomain_len: usize,
+    /// Longitud de la etiqueta más larga del subdominio.
+    pub label_len: usize,
+    /// Entropía de la parte evaluada (etiqueta o subdominio completo).
+    pub entropy: f64,
+    /// Umbral efectivo que se superó.
+    pub threshold: f64,
+}
+
+/// Cambios entre letra y dígito a lo largo de la etiqueta.
+fn letter_digit_transitions(s: &str) -> usize {
+    let b = s.as_bytes();
+    b.windows(2)
+        .filter(|w| {
+            (w[0].is_ascii_alphabetic() && w[1].is_ascii_digit())
+                || (w[0].is_ascii_digit() && w[1].is_ascii_alphabetic())
+        })
+        .count()
+}
+
+/// ¿Parece el qname un túnel DNS? La entropía se mide solo sobre la parte a
+/// la izquierda del dominio registrable ([`crate::domain`]): el dominio de
+/// la organización (`microsoft.com`, `cloudflare.net`) no aporta nada y
+/// medirlo junto con varias etiquetas legibles cortas disparaba falsos
+/// positivos (`settings-win.data.microsoft.com`).
+///
+/// Dispara si el qname completo alcanza `dns_tunnel_min_len` y además:
+/// - la etiqueta más larga tiene ≥ 24 caracteres, entropía ≥ umbral y
+///   mezcla letras y dígitos repartidos (base32/hex/base64), o
+/// - la etiqueta tiene ≥ 32 caracteres y entropía ≥ umbral + 0.5, o
+/// - el subdominio suma ≥ 48 caracteres con entropía ≥ umbral + 0.5.
+pub fn dns_tunnel_suspect(qname: &str, cfg: &PipelineConfig) -> Option<DnsTunnelEvidence> {
+    if qname.len() < cfg.dns_tunnel_min_len {
+        return None;
+    }
+    let lower = qname.to_ascii_lowercase();
+    let labels = crate::domain::subdomain_labels(&lower);
+    let longest = labels.iter().copied().max_by_key(|l| l.len())?;
+    let subdomain: String = labels.concat();
+    let thr = cfg.dns_entropy_threshold;
+    let high = thr + TUNNEL_ENTROPY_MARGIN;
+    let ev = |entropy: f64, threshold: f64| DnsTunnelEvidence {
+        subdomain_len: subdomain.len(),
+        label_len: longest.len(),
+        entropy,
+        threshold,
+    };
+
+    let h_label = shannon_entropy(longest);
+    if longest.len() >= TUNNEL_MIN_LABEL
+        && h_label >= thr
+        && letter_digit_transitions(longest) >= TUNNEL_MIN_TRANSITIONS
+    {
+        return Some(ev(h_label, thr));
+    }
+    if longest.len() >= TUNNEL_LONG_LABEL && h_label >= high {
+        return Some(ev(h_label, high));
+    }
+    if subdomain.len() >= TUNNEL_MIN_SUBDOMAIN {
+        let h_sub = shannon_entropy(&subdomain);
+        if h_sub >= high {
+            return Some(ev(h_sub, high));
+        }
+    }
+    None
+}
+
+/// R5 entre flujos: si los inicios de conexión al servicio de `flow`
+/// (origen, destino, puerto) son regulares según los mismos umbrales que
+/// R5, añade la alerta `BEACONING` (+20 de riesgo). `stats` viene de
+/// [`crate::beacon::FlowStartTracker::stats`]. Devuelve si alertó.
+pub fn assess_interflow_beacon(
+    flow: &mut EnrichedFlow,
+    stats: &socshark_core::IntervalStats,
+    cfg: &PipelineConfig,
+) -> bool {
+    let mean_secs = stats.mean_micros as f64 / 1_000_000.0;
+    if stats.intervals < cfg.beacon_min_intervals
+        || mean_secs < cfg.beacon_min_interval_secs as f64
+        || mean_secs > cfg.beacon_max_interval_secs as f64
+        || stats.cv() > cfg.beacon_max_cv
+    {
+        return false;
+    }
+    flow.risk_score = (u32::from(flow.risk_score) + 20).min(100) as u8;
+    flow.alerts.push(Alert {
+        id: "BEACONING".into(),
+        name: "Comunicación periódica (beacon)".into(),
+        severity: Severity::Medium,
+        detail: format!(
+            "intervalo medio {:.1}s con jitter ±{:.1}% en {} intervalos entre conexiones",
+            mean_secs,
+            100.0 * stats.cv(),
+            stats.intervals
+        ),
+        mitre: Some("T1071".into()),
+    });
+    true
+}
+
 /// Evalúa todas las reglas sobre un flujo y rellena `risk_score` + `alerts`.
 ///
 /// `scan` son las señales que el [`crate::ScanTracker`] acumuló para el
 /// origen y destino de este flujo; se pasan desde `enrich_all` para que la
 /// regla R2 funcione entre flujos.
 pub fn assess(flow: &mut EnrichedFlow, scan: ScanSignals, cfg: &PipelineConfig) {
+    assess_with_intel(flow, scan, cfg, None);
+}
+
+/// Como [`assess`], pero con la base de threat intel a mano para que R7
+/// nombre el extremo realmente listado (puede ser el origen en una
+/// conexión entrante). Sin base se asume el destino.
+pub fn assess_with_intel(
+    flow: &mut EnrichedFlow,
+    scan: ScanSignals,
+    cfg: &PipelineConfig,
+    intel: Option<&crate::intel::ThreatIntelDb>,
+) {
+    let listed = |flow: &EnrichedFlow, tag: &str| {
+        intel
+            .and_then(|db| db.listed_endpoint(flow.src_ip, flow.dst_ip, tag))
+            .unwrap_or(flow.dst_ip)
+    };
     let mut score: u32 = 0;
 
-    // R1: túnel DNS (exfiltración/C2 por DNS) — MITRE T1048.003.
+    // R1: túnel DNS (C2/exfiltración por DNS) — MITRE T1071.004.
     if flow.l7_protocol == L7Protocol::Dns {
         if let Some(dns) = &flow.dns {
             for q in &dns.queries {
-                let entropy = shannon_entropy(&q.name);
-                if q.name.len() >= cfg.dns_tunnel_min_len && entropy >= cfg.dns_entropy_threshold {
+                if let Some(ev) = dns_tunnel_suspect(&q.name, cfg) {
                     score += 45;
                     flow.alerts.push(Alert {
                         id: "DNS-TUNNELING".into(),
                         name: "Posible túnel DNS".into(),
                         severity: Severity::High,
                         detail: format!(
-                            "qname '{}' ({} caracteres, entropía {:.2} ≥ {:.2})",
-                            q.name,
-                            q.name.len(),
-                            entropy,
-                            cfg.dns_entropy_threshold
+                            "qname '{}': subdominio de {} caracteres codificado (etiqueta de {}, entropía {:.2} ≥ {:.2})",
+                            q.name, ev.subdomain_len, ev.label_len, ev.entropy, ev.threshold
                         ),
-                        mitre: Some("T1048.003".into()),
+                        mitre: Some(MITRE_DNS_TUNNEL.into()),
                     });
                     break; // una alerta por flujo basta
                 }
@@ -250,7 +392,7 @@ pub fn assess(flow: &mut EnrichedFlow, scan: ScanSignals, cfg: &PipelineConfig) 
             severity: Severity::High,
             detail: format!(
                 "{} aparece en la lista Feodo cargada (--intel-feodo)",
-                flow.dst_ip
+                listed(flow, crate::intel::TAG_FEODO)
             ),
             mitre: Some("T1071.001".into()),
         });
@@ -263,7 +405,7 @@ pub fn assess(flow: &mut EnrichedFlow, scan: ScanSignals, cfg: &PipelineConfig) 
             severity: Severity::Medium,
             detail: format!(
                 "{} es un nodo de salida de Tor (lista --intel-tor): posible proxy multi-salto",
-                flow.dst_ip
+                listed(flow, crate::intel::TAG_TOR)
             ),
             mitre: Some("T1090.003".into()),
         });
@@ -303,8 +445,53 @@ mod tests {
         ));
         assess(&mut tunel, ScanSignals::default(), &cfg);
         assert_eq!(tunel.alerts[0].id, "DNS-TUNNELING");
-        assert_eq!(tunel.alerts[0].mitre.as_deref(), Some("T1048.003"));
+        assert_eq!(tunel.alerts[0].mitre.as_deref(), Some("T1071.004"));
         assert!(tunel.risk_score >= 45);
+    }
+
+    #[test]
+    fn nombres_legitimos_largos_no_son_tunel() {
+        // Regresión: los tres primeros daban DNS-TUNNELING (+45) midiendo la
+        // entropía sobre el qname completo.
+        let cfg = PipelineConfig::default();
+        for name in [
+            "settings-win.data.microsoft.com",
+            "self.events.data.microsoft.com",
+            "fonts.googleapis.com.cdn.cloudflare.net",
+            "www.ejemplo-corporativo.com",
+            "my-load-balancer-1234567890.us-west-2.elb.amazonaws.com",
+            "prod-eu-west-1-telemetry-collector.service.signalfx.com",
+            "ec2-52-14-201-33.us-east-2.compute.amazonaws.com",
+            "b.6.5.4.3.2.1.0.0.0.0.0.0.0.0.0.1.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa",
+            "_ldap._tcp.dc._msdcs.corp.example.com",
+        ] {
+            assert!(dns_tunnel_suspect(name, &cfg).is_none(), "{name}");
+            let mut f = flujo_basico(17, 53001, 53);
+            f.l7_protocol = L7Protocol::Dns;
+            f.dns = Some(qname_dns(name));
+            assess(&mut f, ScanSignals::default(), &cfg);
+            assert!(f.alerts.is_empty(), "{name}: {:?}", f.alerts);
+        }
+    }
+
+    #[test]
+    fn tuneles_codificados_si_alertan() {
+        let cfg = PipelineConfig::default();
+        for name in [
+            // base64 en una etiqueta.
+            "aGVsbG8gd29ybGQgdGhpcyBpcyBleGZpbA.evil.com",
+            // base32 (estilo iodine / dnscat).
+            "ieqh746yng7by3a4rogubbbayn3bo47owoo5sb2glshv3mts7z.t.evil.com",
+            "kcymwgn3m7gys7buzsbkmuiv3nrg.evil.com",
+            "paaaaaab1y7jw641rifxipeucfikk6inrwvmg1qxvvhsp38mx9t4filjxg.t.iodine.evil.org",
+            // hex (dnscat2) en dos etiquetas.
+            "1f7cd5bb2e35cbf0f19c557067cbbe80c46d1fb6dfbdb0ae0755281220e0.3fa9c01d.dnscat.evil.com",
+            "0c415ed7e70cad19461922995d84016e.evil.com",
+            // Sufijo de dos niveles: el registrable es evil.co.uk.
+            "uc2eyjivhyeofrxsh5rgcsaaf2hcmp.2kh4kpkg3ysq6ugnucbasu4zuzeeu.evil.co.uk",
+        ] {
+            assert!(dns_tunnel_suspect(name, &cfg).is_some(), "{name}");
+        }
     }
 
     #[test]

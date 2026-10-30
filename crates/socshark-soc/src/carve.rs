@@ -68,12 +68,19 @@ pub fn carve_http(client: &[u8], server: &[u8]) -> Vec<ExtractedFile> {
         let headers = parse_headers(head);
 
         // 1xx son respuestas provisionales sin cuerpo (y 101 cambia de
-        // protocolo): no tallan nada, seguimos buscando la siguiente.
+        // protocolo): no tallan nada ni consumen petición, seguimos buscando
+        // la respuesta final.
         let code = status.unwrap_or(0);
         if (100..200).contains(&code) {
             pos = body_start;
             continue;
         }
+
+        // Cada respuesta final consume exactamente una petición, tenga o no
+        // cuerpo: si no, un 304 desalinea los nombres de las siguientes.
+        let request = request_paths.next();
+        let is_head = request.as_ref().is_some_and(|(m, _)| m == "HEAD");
+        let request_path = request.map(|(_, p)| p).unwrap_or_default();
 
         let chunked = headers.iter().any(|(k, v)| {
             k.eq_ignore_ascii_case("transfer-encoding")
@@ -84,29 +91,35 @@ pub fn carve_http(client: &[u8], server: &[u8]) -> Vec<ExtractedFile> {
             .find(|(k, _)| k.eq_ignore_ascii_case("content-length"))
             .and_then(|(_, v)| v.trim().parse::<u64>().ok());
 
-        let (body, body_end): (Cow<'_, [u8]>, Option<usize>) = if chunked {
-            // Reensamblado propio (los separadores de chunk no son datos).
-            let (content, end) = dechunk(server, body_start);
-            (Cow::Owned(content), end)
-        } else {
-            match content_length {
-                Some(len) => {
-                    let end = body_start.saturating_add(len as usize);
-                    let avail = &server[body_start.min(server.len())..end.min(server.len())];
-                    let done = end <= server.len();
-                    (Cow::Borrowed(avail), done.then_some(end))
+        let (body, body_end): (Cow<'_, [u8]>, Option<usize>) =
+            if is_head || code == 204 || code == 304 {
+                // Sin cuerpo por definición (RFC 9110 §6.4.1), aunque declaren
+                // Content-Length: la siguiente respuesta empieza tras el head.
+                (Cow::Borrowed(&[]), Some(body_start))
+            } else if chunked {
+                // Reensamblado propio (los separadores de chunk no son datos).
+                let (content, end) = dechunk(server, body_start);
+                (Cow::Owned(content), end)
+            } else {
+                match content_length {
+                    Some(len) => {
+                        // Content-Length lo controla el atacante: sin desbordes.
+                        let len = usize::try_from(len).unwrap_or(usize::MAX);
+                        let end = body_start.saturating_add(len);
+                        let avail = &server[body_start.min(server.len())..end.min(server.len())];
+                        let done = end <= server.len();
+                        (Cow::Borrowed(avail), done.then_some(end))
+                    }
+                    // Sin Content-Length ni chunked: cuerpo hasta el final del
+                    // stream (lo que HTTP/1.0 hacía al cerrar la conexión).
+                    None if code == 200 || code == 201 => {
+                        (Cow::Borrowed(&server[body_start.min(server.len())..]), None)
+                    }
+                    _ => (Cow::Borrowed(&[]), None),
                 }
-                // Sin Content-Length ni chunked: cuerpo hasta el final del
-                // stream (lo que HTTP/1.0 hacía al cerrar la conexión).
-                None if code == 200 || code == 201 => {
-                    (Cow::Borrowed(&server[body_start.min(server.len())..]), None)
-                }
-                _ => (Cow::Borrowed(&[]), None),
-            }
-        };
+            };
 
-        // 204/304 y códigos de error sin cuerpo no tallan.
-        if !body.is_empty() && code != 204 && code != 304 {
+        if !body.is_empty() {
             let disposition = headers
                 .iter()
                 .find(|(k, _)| k.eq_ignore_ascii_case("content-disposition"))
@@ -117,7 +130,7 @@ pub fn carve_http(client: &[u8], server: &[u8]) -> Vec<ExtractedFile> {
                 .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
                 .map(|(_, v)| v.as_str())
                 .unwrap_or("");
-            let name = file_name(disposition, request_paths.next().unwrap_or_default());
+            let name = file_name(disposition, request_path);
             if relevant(&name, content_type, &body) {
                 files.push(build_file(&name, &body));
             }
@@ -135,20 +148,37 @@ pub fn carve_http(client: &[u8], server: &[u8]) -> Vec<ExtractedFile> {
 
 // -------------------------------------------------------------- respuesta
 
+/// Tope del head de una respuesta (línea de estado + cabeceras). Un head
+/// más largo se descarta como falso positivo: acota el trabajo por candidato.
+const MAX_HEAD_LEN: usize = 16 * 1024;
+
 /// Localiza la siguiente cabecera de respuesta HTTP/1.x en el stream.
 /// Devuelve (inicio del head, head completo, inicio del cuerpo).
+///
+/// Coste lineal: la línea de estado se valida antes de buscar el fin de
+/// cabeceras, y la posición del siguiente `\r\n\r\n` se cachea para que
+/// miles de "HTTP/1." falsos no reescaneen el stream hasta el final.
 fn next_response(server: &[u8], from: usize) -> Option<(usize, &[u8], usize)> {
     let mut pos = from;
-    while pos + 8 <= server.len() {
-        let idx = find(&server[pos..], b"HTTP/1.")?;
-        let head_end_rel = find(&server[pos + idx..], b"\r\n\r\n")?;
-        let head_start = pos + idx;
-        let head_end = head_start + head_end_rel;
-        // Validación mínima de línea de estado: "HTTP/1.x NNN".
-        let line = &server[head_start..(head_start + head_end_rel).min(server.len())];
-        let first_line_end = find(line, b"\r\n").unwrap_or(line.len());
-        if !valid_status_line(&line[..first_line_end.min(line.len())]) {
-            pos = head_start + 7; // rebusca tras el falso positivo
+    let mut term: Option<usize> = None;
+    while pos < server.len() {
+        let head_start = pos + find(&server[pos..], b"HTTP/1.")?;
+        pos = head_start + 7; // si es falso positivo, se rebusca desde aquí
+        let line = &server[head_start..server.len().min(head_start + 13)];
+        if !valid_status_line(line) {
+            continue;
+        }
+        let head_end = match term {
+            Some(t) if t >= head_start => t,
+            _ => {
+                // Sin fin de cabeceras en el resto del stream no puede haber
+                // ninguna respuesta completa más adelante.
+                let t = head_start + find(&server[head_start..], b"\r\n\r\n")?;
+                term = Some(t);
+                t
+            }
+        };
+        if head_end - head_start > MAX_HEAD_LEN {
             continue;
         }
         let head = &server[head_start..head_end];
@@ -166,7 +196,9 @@ fn valid_status_line(line: &[u8]) -> bool {
     if !ver.is_ascii_digit() {
         return false;
     }
-    line[8] == b' ' && line[9..12].iter().all(|b| b.is_ascii_digit())
+    line[8] == b' '
+        && line[9..12].iter().all(|b| b.is_ascii_digit())
+        && matches!(line.get(12), None | Some(b' ' | b'\r'))
 }
 
 fn parse_status_code(head: &[u8]) -> Option<u16> {
@@ -204,20 +236,30 @@ fn dechunk(server: &[u8], mut pos: usize) -> (Vec<u8>, Option<usize>) {
             return (out, None);
         };
         let size_str = std::str::from_utf8(&server[pos..pos + line_end]).unwrap_or("");
-        let size =
-            usize::from_str_radix(size_str.trim().split(';').next().unwrap_or(""), 16).unwrap_or(0);
+        let size_str = size_str.trim().split(';').next().unwrap_or("").trim();
+        // Tamaño ilegible: el resto no es chunked fiable, se corta aquí
+        // (un tamaño de más de 16 dígitos hex desborda u64 y cae aquí).
+        let Ok(size) = u64::from_str_radix(size_str, 16) else {
+            return (out, None);
+        };
         pos += line_end + 2;
         if size == 0 {
             // Chunk final: el reensamblado acaba aquí (pos queda tras "0\r\n").
             return (out, Some(pos));
         }
-        if pos + size > server.len() {
+        // El tamaño lo controla el atacante: `pos + size` puede desbordar
+        // ("ffffffffffffffff"). Desborde o fin tras el stream = truncado.
+        let end = usize::try_from(size)
+            .ok()
+            .and_then(|s| pos.checked_add(s))
+            .filter(|&e| e <= server.len());
+        let Some(end) = end else {
             // Cuerpo truncado: talla lo disponible.
             out.extend_from_slice(&server[pos.min(server.len())..]);
             return (out, None);
-        }
-        out.extend_from_slice(&server[pos..pos + size]);
-        pos += size;
+        };
+        out.extend_from_slice(&server[pos..end]);
+        pos = end;
         // Salta el CRLF tras el chunk (tolerante si falta).
         if server.get(pos) == Some(&b'\r') {
             pos += 1;
@@ -238,34 +280,42 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 
 // ------------------------------------------------------------- nombres
 
-/// Itera las rutas de las peticiones del stream del cliente, en orden.
+/// Itera las peticiones (método, ruta) del stream del cliente, en orden.
 struct RequestPaths {
-    paths: Vec<String>,
+    requests: Vec<(String, String)>,
     cursor: usize,
 }
 
 impl RequestPaths {
     fn new(client: &[u8]) -> Self {
-        let mut paths = Vec::new();
-        // Línea de petición: "GET /ruta HTTP/1.x". Se aceptan los métodos
-        // comunes; el resto de líneas se ignora.
+        let mut requests = Vec::new();
+        // Línea de petición: "MÉTODO /ruta HTTP/1.x". Se acepta cualquier
+        // método en mayúsculas (GET, HEAD, OPTIONS, DELETE, PATCH...): todas
+        // reciben respuesta y deben contar para emparejar en orden.
         for line in client.split(|&b| b == b'\n') {
             let line = trim_crlf(line);
             if let Ok(text) = std::str::from_utf8(line) {
                 let mut parts = text.split_whitespace();
-                let (Some(method), Some(path)) = (parts.next(), parts.next()) else {
+                let (Some(method), Some(path), Some(version)) =
+                    (parts.next(), parts.next(), parts.next())
+                else {
                     continue;
                 };
-                if matches!(method, "GET" | "POST" | "HEAD" | "PUT") {
-                    paths.push(path.to_string());
+                let method_ok =
+                    method.len() <= 16 && method.bytes().all(|b| b.is_ascii_uppercase());
+                if method_ok && version.starts_with("HTTP/") && parts.next().is_none() {
+                    requests.push((method.to_string(), path.to_string()));
                 }
             }
         }
-        Self { paths, cursor: 0 }
+        Self {
+            requests,
+            cursor: 0,
+        }
     }
 
-    fn next(&mut self) -> Option<String> {
-        let p = self.paths.get(self.cursor).cloned();
+    fn next(&mut self) -> Option<(String, String)> {
+        let p = self.requests.get(self.cursor).cloned();
         self.cursor += 1;
         p
     }
@@ -406,6 +456,42 @@ fn is_executable_extension(ext: &str) -> bool {
     )
 }
 
+/// Extensiones de documento/medio usadas como señuelo antes de la extensión
+/// ejecutable real ("factura.pdf.exe", "foto.jpg.scr", "setup.msi.exe").
+fn is_decoy_extension(ext: &str) -> bool {
+    matches!(
+        ext,
+        "pdf"
+            | "doc"
+            | "docx"
+            | "xls"
+            | "xlsx"
+            | "ppt"
+            | "pptx"
+            | "odt"
+            | "ods"
+            | "rtf"
+            | "txt"
+            | "csv"
+            | "jpg"
+            | "jpeg"
+            | "png"
+            | "gif"
+            | "bmp"
+            | "mp3"
+            | "mp4"
+            | "avi"
+            | "mov"
+            | "wav"
+            | "zip"
+            | "rar"
+            | "7z"
+            | "msi"
+            | "html"
+            | "htm"
+    )
+}
+
 /// True si el nombre declara una extensión que no corresponde al tipo real
 /// (magic) o si usa la técnica de doble extensión ejecutable.
 pub fn masquerading_suspect(name: &str, magic: Option<&str>) -> bool {
@@ -416,11 +502,12 @@ pub fn masquerading_suspect(name: &str, magic: Option<&str>) -> bool {
         return false;
     }
     // Doble extensión: "informe.pdf.exe" declara ejecutable pero aparenta
-    // ser el documento de antes (T1036, variante clásica).
+    // ser el documento de antes (T1036, variante clásica). Solo cuenta si el
+    // tramo previo es una extensión de documento/medio conocida: así
+    // "python-3.12.0.exe" o "npp.8.6.Installer.x64.exe" no disparan.
     if is_executable_extension(&ext) {
         if let Some(prev) = name[..name.len() - ext.len() - 1].rsplit('.').next() {
-            let prev = prev.to_ascii_lowercase();
-            if !prev.is_empty() && !is_executable_extension(&prev) && prev.len() <= 5 {
+            if is_decoy_extension(&prev.to_ascii_lowercase()) {
                 return true;
             }
         }
@@ -658,6 +745,138 @@ mod tests {
         // Ejecutivo aparentando ser instalador legítimo: el tramo intermedio
         // "msi" es exactamente la máscara clásica → sospechoso.
         assert!(masquerading_suspect("setup.msi.exe", Some("PE32")));
+    }
+
+    #[test]
+    fn chunk_gigante_no_desborda() {
+        // Regresión: "ffffffffffffffff" hacía `pos + size` desbordar (panic).
+        for size in [
+            "ffffffffffffffff",
+            "fffffffffffffff0",
+            "ffffffffffffffffff",
+            "7fffffffffffffff",
+        ] {
+            let mut srv = response(
+                "Transfer-Encoding: chunked\r\nContent-Type: application/octet-stream\r\n",
+                &[],
+            );
+            srv.extend_from_slice(b"4\r\nMZab\r\n");
+            srv.extend_from_slice(size.as_bytes());
+            srv.extend_from_slice(b"\r\nresto");
+            let files = carve_http(b"GET /x.bin HTTP/1.1\r\n\r\n", &srv);
+            assert_eq!(files.len(), 1, "{size}");
+            assert_eq!(files[0].magic.as_deref(), Some("PE32"));
+        }
+        // Content-Length enorme tampoco desborda.
+        let _ = carve_http(
+            b"",
+            b"HTTP/1.1 200 OK\r\nContent-Length: 18446744073709551615\r\n\r\nMZ",
+        );
+    }
+
+    #[test]
+    fn muchos_http1_falsos_no_son_cuadraticos() {
+        // 1 MiB de "HTTP/1." sin fin de cabeceras: antes cada candidato
+        // buscaba "\r\n\r\n" hasta el final (cuadrático).
+        let mut srv = Vec::new();
+        while srv.len() < 1 << 20 {
+            srv.extend_from_slice(b"HTTP/1.1 200 HTTP/1.x ");
+        }
+        srv.extend_from_slice(b"\r\n\r\n");
+        let t = std::time::Instant::now();
+        let _ = carve_http(b"", &srv);
+        let mut srv2 = vec![b'a'; 1 << 20];
+        for i in (0..srv2.len() - 8).step_by(9) {
+            srv2[i..i + 7].copy_from_slice(b"HTTP/1.");
+        }
+        let _ = carve_http(b"", &srv2);
+        assert!(
+            t.elapsed() < std::time::Duration::from_secs(5),
+            "{:?}",
+            t.elapsed()
+        );
+    }
+
+    #[test]
+    fn respuesta_304_consume_su_peticion() {
+        // GET /a.jpg → 304 (sin cuerpo, con Content-Length) y GET /setup.exe
+        // → PE: el PE debe llamarse setup.exe, no a.jpg (falso T1036).
+        let pe = pe_bytes(64);
+        let client =
+            b"GET /a.jpg HTTP/1.1\r\nHost: x\r\n\r\nGET /setup.exe HTTP/1.1\r\nHost: x\r\n\r\n";
+        let mut srv = b"HTTP/1.1 304 Not Modified\r\nContent-Length: 5000\r\n\r\n".to_vec();
+        srv.extend_from_slice(&response(
+            "Content-Type: application/octet-stream\r\nContent-Length: 64\r\n",
+            &pe,
+        ));
+        let files = carve_http(client, &srv);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].name, "setup.exe");
+        assert!(!files[0].masquerading_suspect);
+    }
+
+    #[test]
+    fn head_y_metodos_poco_comunes_cuentan_para_emparejar() {
+        let pe = pe_bytes(64);
+        let client = b"OPTIONS /a.jpg HTTP/1.1\r\n\r\nHEAD /b.png HTTP/1.1\r\n\r\nDELETE /c.gif HTTP/1.1\r\n\r\nGET /tool.exe HTTP/1.1\r\n\r\n";
+        let mut srv = b"HTTP/1.1 204 No Content\r\n\r\n".to_vec();
+        // HEAD: declara Content-Length pero no lleva cuerpo.
+        srv.extend_from_slice(b"HTTP/1.1 200 OK\r\nContent-Length: 64\r\n\r\n");
+        srv.extend_from_slice(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+        srv.extend_from_slice(&response("Content-Length: 64\r\n", &pe));
+        let files = carve_http(client, &srv);
+        assert_eq!(files.len(), 1, "{files:?}");
+        assert_eq!(files[0].name, "tool.exe");
+        assert!(!files[0].masquerading_suspect);
+    }
+
+    #[test]
+    fn instaladores_con_version_no_son_doble_extension() {
+        for n in [
+            "Firefox Setup 120.0.exe",
+            "python-3.12.0.exe",
+            "npp.8.6.Installer.x64.exe",
+            "app.v2.exe",
+        ] {
+            assert!(!masquerading_suspect(n, Some("PE32")), "{n}");
+        }
+        assert!(masquerading_suspect("factura.PDF.exe", Some("PE32")));
+        assert!(masquerading_suspect("foto.jpg.scr", Some("PE32")));
+    }
+
+    #[test]
+    fn escenarios_hostiles_del_fuzz_llegan_al_carving() {
+        use socshark_core::{LinkType, RawPacket};
+        use socshark_dissectors::DissectorPipeline;
+        use socshark_flow::FlowAggregator;
+
+        let pipe = DissectorPipeline::new();
+        let mut http_con_stream = 0;
+        let mut ja4 = 0;
+        for sc in socshark_testgen::fuzz::hostile_scenarios() {
+            let mut agg = FlowAggregator::new(1000, 120, true);
+            for (i, data) in sc.into_iter().enumerate() {
+                let raw = RawPacket {
+                    ts_micros: i as u64 * 1000,
+                    orig_len: data.len() as u32,
+                    data,
+                };
+                if let Some(dp) = pipe.dissect(&raw, LinkType::Ethernet) {
+                    agg.on_packet(raw.ts_micros, raw.data.len(), &dp);
+                }
+            }
+            let (mut flows, streams) = agg.finish_with_streams();
+            http_con_stream += flows
+                .iter()
+                .filter(|f| f.l7_protocol == L7Protocol::Http && streams.contains_key(&f.flow_id.0))
+                .count();
+            ja4 += flows.iter().filter(|f| f.ja4_fingerprint.is_some()).count();
+            carve_all(&mut flows, &streams);
+        }
+        assert!(http_con_stream >= 7, "{http_con_stream}");
+        // El CH que cruza registros TLS aún no da JA4: ClientHelloCapture
+        // concatena las cabeceras de registro (pendiente en dissectors).
+        let _ = ja4;
     }
 
     #[test]

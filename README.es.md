@@ -12,7 +12,7 @@ Una alternativa moderna y amable a Wireshark para analistas de SOC / Blue Team�
 [![CI](https://github.com/Ruby570bocadito/soc-shark/actions/workflows/ci.yml/badge.svg)](https://github.com/Ruby570bocadito/soc-shark/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/Ruby570bocadito/soc-shark?color=0e7490&label=versi%C3%B3n)](https://github.com/Ruby570bocadito/soc-shark/releases/latest)
 ![Plataformas](https://img.shields.io/badge/plataformas-Windows%20%7C%20Linux%20%7C%20macOS-1fb5cc)
-![Rust](https://img.shields.io/badge/rust-1.75%2B-orange)
+![Rust](https://img.shields.io/badge/rust-1.88%2B-orange)
 ![Licencia](https://img.shields.io/badge/licencia-MIT-green)
 
 <a href="docs/media/demo.mp4"><img src="docs/media/demo.webp" width="900" alt="Recorrido de 35 segundos: abrir una captura, leer qué pasó, ver los paquetes, las estadísticas, el mapa de la red y el tema oscuro"></a>
@@ -57,10 +57,15 @@ socshark gui
   red **en vivo** instala [Npcap](https://npcap.com) (ya lo tienes si usas
   Wireshark) con *WinPcap API-compatible Mode* marcado.
 - **Linux** ([`install.sh`](install.sh)): instala en `~/.local/bin`, añade
-  `libpcap` si falta y da al binario el permiso de captura
-  (`cap_net_raw,cap_net_admin`, el mismo que tiene `dumpcap` de Wireshark):
-  **la red en vivo funciona sin sudo**. El binario funciona en cualquier
-  distribución con glibc 2.17 o más nueva (x86_64 y ARM64).
+  `libpcap` si falta y da al binario las capacidades de captura
+  (`setcap cap_net_raw,cap_net_admin=ep`): **la red en vivo funciona sin
+  sudo**. Ojo: a diferencia de Wireshark (donde solo las tiene el pequeño
+  ayudante `dumpcap`), aquí se aplican a **todo el binario `socshark`**,
+  parsers y ventana incluidos; separar un ayudante de captura con privilegios
+  está planificado (ver [docs/security.md](docs/security.md)). Si no lo
+  quieres, usa `SOCSHARK_NO_SETCAP=1` y captura con `sudo` o abre ficheros
+  `.pcap`. El binario funciona en cualquier distribución con glibc 2.17 o más
+  nueva (x86_64 y ARM64).
 - **macOS**: el mismo script, con un binario universal (Apple Silicon e
   Intel); ver la red en vivo necesita `sudo` (o ChmodBPF, de Wireshark).
 - **¿No hay binario para tu sistema, o no arranca?** El instalador lo compila
@@ -160,7 +165,7 @@ socshark dev sample-pcap --escenario casa -o casa.pcap
 
 ## Compilar desde el código
 
-Requisitos: [Rust 1.75+](https://rustup.rs) y un enlazador de C. Para ver la
+Requisitos: [Rust 1.88+](https://rustup.rs) y un enlazador de C. Para ver la
 red en vivo hace falta además libpcap (Linux; macOS ya la trae) o
 [Npcap](https://npcap.com) (Windows) al ejecutar: se carga al vuelo, no se
 enlaza al compilar.
@@ -173,7 +178,7 @@ cd soc-shark
 ```
 
 Ver la red en vivo en Linux sin el instalador: da el permiso una vez con
-`sudo setcap cap_net_raw,cap_net_admin=eip "$(command -v socshark)"`, o
+`sudo setcap cap_net_raw,cap_net_admin=ep "$(command -v socshark)"`, o
 ejecútalo con `sudo`.
 
 ## Estado del proyecto
@@ -210,7 +215,9 @@ soc-shark/
 ├── docs/                      # Documentación — empieza por docs/index.md
 ├── examples/demo.pcap         # Captura de demostración
 ├── install.ps1 · install.sh   # Instaladores de una línea
-└── .github/workflows/ci.yml   # fmt + clippy + tests + fuzzing
+└── .github/workflows/
+    ├── ci.yml                 # fmt + clippy + tests (Linux/Windows/macOS) + MSRV + fuzzing
+    └── release.yml            # Binarios de cada versión (Windows, Linux, macOS) + SHA256SUMS
 ```
 
 </details>

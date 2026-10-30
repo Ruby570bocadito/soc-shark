@@ -136,7 +136,7 @@ pub struct Alert {
     pub severity: Severity,
     /// Detalle específico de esta ocurrencia.
     pub detail: String,
-    /// Técnica MITRE ATT&CK asociada, si aplica (p. ej. `T1048.003`).
+    /// Técnica MITRE ATT&CK asociada, si aplica (p. ej. `T1071.004`).
     pub mitre: Option<String>,
 }
 

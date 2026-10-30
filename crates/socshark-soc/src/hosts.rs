@@ -126,13 +126,26 @@ struct Learned {
     mac: Option<[u8; 6]>,
     name: Option<(String, Source)>,
     kind: Option<&'static str>,
+    /// Reloj lógico de la última vez que se tocó (para desalojar).
+    seen: u64,
 }
 
 #[derive(Debug, Default, Clone)]
 struct MacFacts {
     name: Option<(String, Source)>,
     os: Option<&'static str>,
+    seen: u64,
 }
+
+/// Cota de equipos (por IP y por MAC) del cuaderno. Una LAN doméstica o de
+/// oficina tiene decenas o cientos; el tope protege al daemon de semanas de
+/// tráfico o de direcciones falsificadas. Al superarla se olvida la mitad
+/// menos recientemente vista.
+pub const MAX_HOSTS: usize = 4096;
+/// Cota de MACs candidatas a router: al superarla se quedan las más votadas.
+pub const MAX_GATEWAY_CANDIDATES: usize = 256;
+/// Cota de routers anunciados por DHCP.
+const MAX_ROUTERS: usize = 16;
 
 /// Cuaderno de equipos: se alimenta paquete a paquete.
 #[derive(Debug, Default, Clone)]
@@ -143,6 +156,7 @@ pub struct HostBook {
     gateway_votes: HashMap<[u8; 6], u32>,
     /// Routers anunciados por DHCP.
     routers: Vec<IpAddr>,
+    tick: u64,
 }
 
 /// ¿Un nombre de `source` sustituye al actual? (a igual fuente, el último).
@@ -175,7 +189,44 @@ impl HostBook {
     }
 
     fn entry(&mut self, ip: IpAddr) -> &mut Learned {
-        self.by_ip.entry(ip).or_default()
+        if self.by_ip.len() >= MAX_HOSTS && !self.by_ip.contains_key(&ip) {
+            crate::evict_oldest_half(&mut self.by_ip, |l| l.seen);
+        }
+        let tick = self.tick;
+        let e = self.by_ip.entry(ip).or_default();
+        e.seen = tick;
+        e
+    }
+
+    fn mac_entry(&mut self, mac: [u8; 6]) -> &mut MacFacts {
+        if self.by_mac.len() >= MAX_HOSTS && !self.by_mac.contains_key(&mac) {
+            crate::evict_oldest_half(&mut self.by_mac, |f| f.seen);
+        }
+        let tick = self.tick;
+        let e = self.by_mac.entry(mac).or_default();
+        e.seen = tick;
+        e
+    }
+
+    fn vote_gateway(&mut self, mac: [u8; 6]) {
+        if self.gateway_votes.len() >= MAX_GATEWAY_CANDIDATES
+            && !self.gateway_votes.contains_key(&mac)
+        {
+            // Se quedan las más votadas: el router real acumula votos con
+            // cada paquete a Internet y nunca cae en la mitad baja.
+            crate::evict_oldest_half(&mut self.gateway_votes, |v| u64::from(*v));
+        }
+        let v = self.gateway_votes.entry(mac).or_default();
+        *v = v.saturating_add(1);
+    }
+
+    /// Equipos recordados por IP (para métricas y tests).
+    pub fn len(&self) -> usize {
+        self.by_ip.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.by_ip.is_empty()
     }
 
     fn name_ip(&mut self, ip: IpAddr, raw: &str, source: Source) {
@@ -196,16 +247,17 @@ impl HostBook {
         let (Some(src), Some(dst)) = (dp.src_ip(), dp.dst_ip()) else {
             return;
         };
+        self.tick += 1;
         if let Some(eth) = &dp.eth {
             if is_lan_unicast(src) {
                 self.entry(src).mac = Some(eth.src_mac);
             }
             // Lo que llega de Internet o va hacia Internet cruza el router.
             if is_internet_unicast(src) {
-                *self.gateway_votes.entry(eth.src_mac).or_default() += 1;
+                self.vote_gateway(eth.src_mac);
             }
             if is_internet_unicast(dst) {
-                *self.gateway_votes.entry(eth.dst_mac).or_default() += 1;
+                self.vote_gateway(eth.dst_mac);
             }
         }
         // Todos los anuncios de identidad van por UDP.
@@ -229,12 +281,12 @@ impl HostBook {
         let Some(d) = parse_dhcp(payload) else { return };
         if let Some(r) = d.router {
             let r = IpAddr::V4(r);
-            if !self.routers.contains(&r) {
+            if !self.routers.contains(&r) && self.routers.len() < MAX_ROUTERS {
                 self.routers.push(r);
             }
         }
         let Some(mac) = d.client_mac else { return };
-        let facts = self.by_mac.entry(mac).or_default();
+        let facts = self.mac_entry(mac);
         if let Some(name) = d.hostname.filter(|_| d.op == 1) {
             facts.name = Some((name, Source::Dhcp));
         }
@@ -606,6 +658,30 @@ mod tests {
 
         // Internet no recibe nombres locales.
         assert!(dir.get("93.184.216.34".parse().unwrap()).is_none());
+    }
+
+    #[test]
+    fn cuaderno_acotado_en_el_daemon() {
+        // Miles de IPs y MACs distintas (falsificadas) hacia Internet: los
+        // mapas no crecen sin límite y el router real conserva sus votos.
+        let router = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
+        let internet = std::net::Ipv4Addr::new(93, 184, 216, 34);
+        let mut frames = Vec::new();
+        for i in 0..(MAX_HOSTS as u32 + 500) {
+            let b = i.to_be_bytes();
+            let mac = [0x02, 0x00, b[0], b[1], b[2], b[3]];
+            let ip = std::net::Ipv4Addr::from(0x0a00_0000 + i);
+            frames.push(tg::frame_udp(mac, router, ip, internet, 40000, 443, b"x"));
+            // Respuesta de Internet por el router; y un remitente falso de
+            // Internet con MAC aleatoria (candidato a router espurio).
+            frames.push(tg::frame_udp(router, mac, internet, ip, 443, 40000, b"y"));
+            frames.push(tg::frame_udp(mac, router, internet, ip, 443, 40000, b"z"));
+        }
+        let mut book = HostBook::new();
+        feed(&mut book, &frames);
+        assert!(book.len() <= MAX_HOSTS, "{}", book.len());
+        assert!(book.gateway_votes.len() <= MAX_GATEWAY_CANDIDATES);
+        assert_eq!(book.gateway_mac(), Some(router));
     }
 
     #[test]

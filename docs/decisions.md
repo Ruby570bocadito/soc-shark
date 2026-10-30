@@ -24,7 +24,7 @@ escalen con el proyecto. Go descarta GC pauses deterministas y no permite
 eBPF idiomático sin CGo; C/C++ no ofrece seguridad de memoria; Python no
 cubre el objetivo de rendimiento.
 
-**Decisión.** Rust (edition 2021, MSRV 1.75) para todos los crates del
+**Decisión.** Rust (edition 2021, MSRV 1.75 en origen; hoy 1.88, la que exigen las dependencias del Cargo.lock) para todos los crates del
 workspace. Sin `unsafe` en Fase 1; si algún módulo futuro lo requiere
 (ARENA de mmap, FFI de captura), irá aislado en un crate propio con
 `#![deny(unsafe_code)]` en el resto y auditoría explícita en el ADR

@@ -162,6 +162,9 @@ fn load_intel(ctx: &mut SocContext, cfg: &PipelineConfig) -> Result<()> {
                 "no se pudo cargar la lista de threat intel: {e} (revisa --intel-feodo / --intel-tor)"
             )
         })?;
+        for w in &db.warnings {
+            eprintln!("[!] {w}");
+        }
         eprintln!(
             "[*] Threat intel offline: {} entradas (Feodo: {} · Tor: {})",
             db.len(),

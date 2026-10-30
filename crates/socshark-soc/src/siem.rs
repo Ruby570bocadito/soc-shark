@@ -12,6 +12,8 @@
 //! 20 líneas frente a una dependencia de `chrono`/`time` que el proyecto no
 //! necesita para nada más.
 
+use std::net::IpAddr;
+
 use serde_json::{json, Map, Value};
 
 use socshark_core::{Alert, EnrichedFlow, L7Protocol, Severity, Transport};
@@ -99,6 +101,59 @@ fn mitre_ids(alerts: &[Alert]) -> Vec<String> {
 
 // ----------------------------------------------------------------- ECS
 
+/// ¿Dirección "interna" a efectos de `network.direction`? Privadas,
+/// CGNAT, enlace local, loopback, ULA y multicast/broadcast (tráfico que no
+/// sale de la red local).
+fn is_internal(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            let o = v4.octets();
+            v4.is_private()
+                || v4.is_loopback()
+                || v4.is_link_local()
+                || v4.is_multicast()
+                || v4.is_broadcast()
+                || v4.is_unspecified()
+                || (o[0] == 100 && (o[1] & 0xc0) == 64)
+        }
+        IpAddr::V6(v6) => {
+            let s0 = v6.segments()[0];
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                || (s0 & 0xfe00) == 0xfc00
+                || (s0 & 0xffc0) == 0xfe80
+        }
+    }
+}
+
+/// `network.direction` de ECS a partir de origen/destino: `internal`,
+/// `outbound` (interna → Internet), `inbound` (Internet → interna) o
+/// `external` (ninguno de los dos extremos es interno).
+pub fn network_direction(src: IpAddr, dst: IpAddr) -> &'static str {
+    match (is_internal(src), is_internal(dst)) {
+        (true, true) => "internal",
+        (true, false) => "outbound",
+        (false, true) => "inbound",
+        (false, false) => "external",
+    }
+}
+
+/// MAC en el formato de ECS: mayúsculas separadas por guiones
+/// (`AA-BB-CC-DD-EE-FF`). Lo que no parezca una MAC se deja tal cual.
+pub fn ecs_mac(mac: &str) -> String {
+    let parts: Vec<&str> = mac.split([':', '-']).collect();
+    let ok = parts.len() == 6
+        && parts
+            .iter()
+            .all(|p| p.len() == 2 && p.bytes().all(|b| b.is_ascii_hexdigit()));
+    if ok {
+        parts.join("-").to_ascii_uppercase()
+    } else {
+        mac.to_string()
+    }
+}
+
 /// Mapea un flujo a un evento ECS (JSON). Campos estándar donde existen;
 /// `socshark.*` para lo propio (riesgo, ruido, archivos, etiquetas intel).
 pub fn to_ecs(flow: &EnrichedFlow) -> Value {
@@ -109,10 +164,19 @@ pub fn to_ecs(flow: &EnrichedFlow) -> Value {
     );
     o.insert("event.module".into(), json!("socshark"));
     o.insert("event.dataset".into(), json!("network.flows"));
-    o.insert("event.kind".into(), json!("event"));
+    // ECS: "alert" cuando el evento lleva alertas del detector.
+    let kind = if flow.alerts.is_empty() {
+        "event"
+    } else {
+        "alert"
+    };
+    o.insert("event.kind".into(), json!(kind));
     o.insert("event.category".into(), json!(["network"]));
     o.insert("event.type".into(), json!(["connection"]));
-    o.insert("event.duration".into(), json!(flow.duration_micros * 1000)); // ns (ECS)
+    o.insert(
+        "event.duration".into(),
+        json!(flow.duration_micros.saturating_mul(1000)), // ns (ECS)
+    );
     o.insert("event.severity".into(), json!(flow.risk_score));
 
     o.insert("source.ip".into(), json!(flow.src_ip.to_string()));
@@ -129,15 +193,18 @@ pub fn to_ecs(flow: &EnrichedFlow) -> Value {
         "network.packets".into(),
         json!(flow.packets + flow.packets_rev),
     );
-    o.insert("network.direction".into(), json!("outbound"));
+    o.insert(
+        "network.direction".into(),
+        json!(network_direction(flow.src_ip, flow.dst_ip)),
+    );
     o.insert("flow.id".into(), json!(flow.flow_id.0));
     o.insert("network.community_id".into(), json!(flow.flow_id.0)); // sin hash de tuple: el id canónico hace de correlador
 
     if let Some(mac) = &flow.src_mac {
-        o.insert("source.mac".into(), json!(mac));
+        o.insert("source.mac".into(), json!(ecs_mac(mac)));
     }
     if let Some(mac) = &flow.dst_mac {
-        o.insert("destination.mac".into(), json!(mac));
+        o.insert("destination.mac".into(), json!(ecs_mac(mac)));
     }
     if let Some(domain) = &flow.resolved_domain {
         o.insert("destination.domain".into(), json!(domain));
@@ -421,6 +488,36 @@ mod tests {
             json!(100_000_000),
             "ECS usa nanosegundos"
         );
+    }
+
+    #[test]
+    fn ecs_direccion_kind_mac_y_duracion() {
+        let mut f = flujo_demo();
+        let v = to_ecs(&f);
+        assert_eq!(v["network.direction"], json!("outbound"));
+        assert_eq!(v["event.kind"], json!("event"));
+
+        let dir = |s: &str, d: &str| network_direction(s.parse().unwrap(), d.parse().unwrap());
+        assert_eq!(dir("93.184.216.34", "192.168.1.10"), "inbound");
+        assert_eq!(dir("10.0.0.1", "10.0.0.2"), "internal");
+        assert_eq!(dir("192.168.1.10", "224.0.0.251"), "internal");
+        assert_eq!(dir("8.8.8.8", "1.1.1.1"), "external");
+        assert_eq!(dir("fe80::1", "2001:db8::1"), "outbound");
+
+        f.src_mac = Some("aa:bb:cc:0d:0e:0f".into());
+        f.duration_micros = u64::MAX;
+        f.alerts.push(Alert {
+            id: "X".into(),
+            name: "x".into(),
+            severity: Severity::Low,
+            detail: String::new(),
+            mitre: None,
+        });
+        let v = to_ecs(&f);
+        assert_eq!(v["source.mac"], json!("AA-BB-CC-0D-0E-0F"));
+        assert_eq!(v["event.kind"], json!("alert"));
+        assert_eq!(v["event.duration"], json!(u64::MAX), "sin desbordar");
+        assert_eq!(ecs_mac("no-es-mac"), "no-es-mac");
     }
 
     #[test]

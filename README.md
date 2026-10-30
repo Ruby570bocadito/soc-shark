@@ -12,7 +12,7 @@ A modern, friendly alternative to Wireshark for SOC / Blue Team analysts — and
 [![CI](https://github.com/Ruby570bocadito/soc-shark/actions/workflows/ci.yml/badge.svg)](https://github.com/Ruby570bocadito/soc-shark/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/Ruby570bocadito/soc-shark?color=0e7490&label=release)](https://github.com/Ruby570bocadito/soc-shark/releases/latest)
 ![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20Linux%20%7C%20macOS-1fb5cc)
-![Rust](https://img.shields.io/badge/rust-1.75%2B-orange)
+![Rust](https://img.shields.io/badge/rust-1.88%2B-orange)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 <a href="docs/media/demo.mp4"><img src="docs/media/demo.webp" width="900" alt="35-second tour: open a capture, read what happened, inspect packets, statistics, the network map and dark mode"></a>
@@ -57,10 +57,15 @@ socshark gui
   capture** install [Npcap](https://npcap.com) (already there if you have
   Wireshark) with *WinPcap API-compatible Mode* ticked.
 - **Linux** ([`install.sh`](install.sh)): installs into `~/.local/bin`, adds
-  `libpcap` if it is missing and grants the binary the capture permission
-  (`cap_net_raw,cap_net_admin`, the same one Wireshark's `dumpcap` gets), so
-  **live capture works without sudo**. The binary runs on any distribution
-  with glibc 2.17 or newer (x86_64 and ARM64).
+  `libpcap` if it is missing and grants the binary the capture capabilities
+  (`setcap cap_net_raw,cap_net_admin=ep`), so **live capture works without
+  sudo**. Be aware that, unlike Wireshark (where only the small `dumpcap`
+  helper holds them), these capabilities apply to the **whole `socshark`
+  binary**, parsers and GUI included; a separate privileged capture helper is
+  planned (see [docs/security.md](docs/security.md)). If you prefer not to,
+  use `SOCSHARK_NO_SETCAP=1` and capture with `sudo` or open `.pcap` files.
+  The binary runs on any distribution with glibc 2.17 or newer (x86_64 and
+  ARM64).
 - **macOS**: same script, one universal binary (Apple Silicon and Intel); live
   capture needs `sudo` (or Wireshark's ChmodBPF).
 - **No binary for your system, or it fails to start?** The installer builds
@@ -160,7 +165,7 @@ socshark dev sample-pcap --escenario casa -o home.pcap
 
 ## Build from source
 
-Requirements: [Rust 1.75+](https://rustup.rs) and a C linker. Live capture
+Requirements: [Rust 1.88+](https://rustup.rs) and a C linker. Live capture
 also needs libpcap (Linux; built into macOS) or [Npcap](https://npcap.com)
 (Windows) at run time — it is loaded on the fly, nothing to link at build
 time.
@@ -173,7 +178,7 @@ cd soc-shark
 ```
 
 Live capture on Linux without the installer: grant the permission once with
-`sudo setcap cap_net_raw,cap_net_admin=eip "$(command -v socshark)"`, or run
+`sudo setcap cap_net_raw,cap_net_admin=ep "$(command -v socshark)"`, or run
 it with `sudo`.
 
 ## Project status
@@ -210,7 +215,9 @@ soc-shark/
 ├── docs/                      # Documentation (Spanish) — start at docs/index.md
 ├── examples/demo.pcap         # Demo capture
 ├── install.ps1 · install.sh   # One-line installers
-└── .github/workflows/ci.yml   # fmt + clippy + tests + fuzzing
+└── .github/workflows/
+    ├── ci.yml                 # fmt + clippy + tests (Linux/Windows/macOS) + MSRV + fuzzing
+    └── release.yml            # Release binaries (Windows, Linux, macOS) + SHA256SUMS
 ```
 
 </details>

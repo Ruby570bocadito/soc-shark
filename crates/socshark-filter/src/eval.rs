@@ -15,6 +15,7 @@ use std::net::IpAddr;
 use socshark_core::{dns_rcode_str, dns_type_str, EnrichedFlow, Transport};
 
 use crate::ast::{CmpOp, Expr, FieldPath, Value};
+use crate::parser::parse_number;
 
 /// Valor observable de un campo del flujo.
 #[derive(Debug, Clone, PartialEq)]
@@ -240,8 +241,8 @@ fn val_eq(f: &FieldValue, v: &Value) -> bool {
         (FieldValue::Str(a), Value::Str(b)) => a == b,
         (FieldValue::Ip(a), Value::Ip(b)) => a == b,
         (FieldValue::Bool(a), Value::Bool(b)) => a == b,
-        (FieldValue::Num(a), Value::Str(b)) => b.parse::<f64>().map(|b| a == &b).unwrap_or(false),
-        (FieldValue::Str(a), Value::Num(b)) => a.parse::<f64>().map(|a| a == *b).unwrap_or(false),
+        (FieldValue::Num(a), Value::Str(b)) => parse_number(b).map(|b| a == &b).unwrap_or(false),
+        (FieldValue::Str(a), Value::Num(b)) => parse_number(a).map(|a| a == *b).unwrap_or(false),
         (FieldValue::Ip(a), Value::Str(b)) => b.parse::<IpAddr>().map(|b| a == &b).unwrap_or(false),
         (FieldValue::Str(a), Value::Ip(b)) => a.parse::<IpAddr>().map(|a| a == *b).unwrap_or(false),
         (FieldValue::Num(a), Value::Bool(b)) => (*a != 0.0) == *b,
@@ -255,13 +256,13 @@ fn val_eq(f: &FieldValue, v: &Value) -> bool {
 fn val_ord(f: &FieldValue, v: &Value) -> Option<Ordering> {
     let a = match f {
         FieldValue::Num(n) => Some(*n),
-        FieldValue::Str(s) => s.parse::<f64>().ok(),
+        FieldValue::Str(s) => parse_number(s),
         FieldValue::Bool(b) => Some(if *b { 1.0 } else { 0.0 }),
         FieldValue::Ip(_) => None,
     };
     let b = match v {
         Value::Num(n) => Some(*n),
-        Value::Str(s) => s.parse::<f64>().ok(),
+        Value::Str(s) => parse_number(s),
         Value::Bool(b) => Some(if *b { 1.0 } else { 0.0 }),
         Value::Ip(_) => None,
     };
@@ -327,6 +328,18 @@ mod tests {
         assert!(eval(&parse("host == 10.0.0.1").unwrap(), &f));
         assert!(!eval(&parse("!(ip.addr == 8.8.8.8)").unwrap(), &f));
         assert!(eval(&parse("!(ip.addr == 9.9.9.9)").unwrap(), &f));
+        // `!=` es la negación global: `ip.addr != X` equivale a
+        // `!(ip.addr == X)` y también excluye el equipo.
+        assert!(!eval(&parse("ip.addr != 8.8.8.8").unwrap(), &f));
+        assert!(eval(&parse("ip.addr != 9.9.9.9").unwrap(), &f));
+    }
+
+    #[test]
+    fn coercion_de_cadenas_usa_la_gramatica_de_numeros() {
+        // "inf" no es un número del DSL: no se compara como infinito.
+        let f = crate::tests::flujo_tls();
+        assert!(!eval(&parse("flow.risk < \"inf\"").unwrap(), &f));
+        assert!(eval(&parse("flow.risk < \"100\"").unwrap(), &f));
     }
 
     #[test]

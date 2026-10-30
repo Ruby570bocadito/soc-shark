@@ -25,7 +25,9 @@ cmp      = field , op , value        (* forma normal *)
 op       = "==" | "!=" | "<" | "<=" | ">" | ">=" | "contains" ;
 value    = ip | number | boolean | string ;
 ip       = octet , "." , octet , "." , octet , "." , octet ;
-number   = digit , { digit } ;
+number   = digit , { digit } , [ "." , digit , { digit } ] ;
+                                     (* sin signo, exponente ni hex *)
+digit    = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" ;
 string   = '"' , { char } , '"' | "'" , { char } , "'" ;
 field    = ident , { "." , ident } ;
 ```
@@ -39,18 +41,23 @@ field    = ident , { "." , ident } ;
 - Las cadenas admiten escapes `\n`, `\t`, `\\`, `\'`, `\"`.
 - Solo se acepta `campo op valor` (no `valor op campo`): es la convención de
   tcpdump/Wireshark y mantiene la inferencia de tipos trivial.
+- Los números son dígitos con parte decimal opcional (`443`, `0.15`):
+  `-1`, `.5`, `1.`, `1e3`, `0x1bb`, `inf` o `nan` no son números válidos.
+- Anidamiento máximo de 128 niveles (paréntesis y `!` encadenados): una
+  expresión más profunda se rechaza con error en lugar de agotar la pila.
+  Como mucho 4096 tokens por expresión.
 
 ## Campos soportados (Fase 1 + 3)
 
 | Campo | Tipo | Descripción |
 |---|---|---|
 | `ip.src`, `ip.dst` | IP | Extremos según primer paquete |
-| `ip.addr` (`host`) | IP (multi) | Cualquiera de los dos extremos, como en Wireshark. Para excluir un equipo usa `!(ip.addr == X)`: `ip.addr != X` es cierto si *algún* extremo es distinto |
+| `ip.addr` (`host`) | IP (multi) | Cualquiera de los dos extremos, como en Wireshark. `ip.addr != X` es la negación global (ver abajo): equivale a `!(ip.addr == X)` y es cierto solo si *ningún* extremo es X, así que excluye todo flujo en el que participe X |
 | `ip.version` | num | Familia del flujo: `4` o `6` (Fase 2) |
 | `sport`, `dport` (`src.port`, `dst.port`) | num | Puertos individuales |
 | `tcp.port`, `udp.port`, `port` | num (multi) | Ambos puertos; `tcp.port` solo aplica a flujos TCP y `udp.port` a UDP (igual que tcpdump) |
 | `tcp.flags.syn/ack/fin/rst/psh` | bool | True si el flujo vio el flag (en cualquier dirección) |
-| `dns.qname` | cadena (multi) | Todos los nombres consultados en el flujo |
+| `dns.qname` | cadena (multi) | Todos los nombres consultados en el flujo (sin repetidos y con un tope de 64 nombres distintos por flujo; a partir de ahí los nuevos no se guardan) |
 | `dns.qtype` | cadena | Tipo del primer registro (`A`, `AAAA`, `TXT`, `CNAME`, `TYPE66`...) |
 | `dns.rcode` | cadena | `NOERROR`, `NXDOMAIN`, ... (solo respuestas) |
 | `dns.answer` | IP/cadena (multi) | Direcciones o targets de las respuestas |

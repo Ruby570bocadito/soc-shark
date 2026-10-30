@@ -3,6 +3,7 @@
 use socshark_core::config::PipelineConfig;
 use socshark_core::{EnrichedFlow, L7Protocol};
 
+use crate::beacon::FlowStartTracker;
 use crate::intel::ThreatIntelDb;
 use crate::noise;
 use crate::passive_dns::PassiveDnsDb;
@@ -19,6 +20,9 @@ pub struct SocContext {
     pub scan_tracker: ScanTracker,
     /// Threat intel offline (Fase 4): `None` si no se cargó ninguna lista.
     pub intel: Option<ThreatIntelDb>,
+    /// Inicios de flujo por servicio: beaconing lento que el timeout de
+    /// inactividad parte en flujos sueltos (ver [`crate::beacon`]).
+    pub flow_starts: FlowStartTracker,
 }
 
 /// Enriquece todos los flujos: DNS pasivo, ruido, riesgo y resumen humano.
@@ -35,6 +39,7 @@ pub fn enrich_all(ctx: &mut SocContext, flows: &mut [EnrichedFlow], cfg: &Pipeli
             ctx.passive_dns.observe(dns);
         }
         ctx.scan_tracker.observe(flow);
+        ctx.flow_starts.observe(flow);
     }
 
     // Pasada 2: enriquecer cada flujo con el contexto completo.
@@ -64,18 +69,25 @@ pub fn enrich_all(ctx: &mut SocContext, flows: &mut [EnrichedFlow], cfg: &Pipeli
             flow.is_background_noise = noise::is_background_noise(flow);
         }
 
-        // Threat intel offline: etiquetas del destino (Fase 4). Se evalúa
-        // antes del riesgo para que la regla R7 vea las etiquetas.
+        // Threat intel offline (Fase 4): etiquetas de cualquiera de los dos
+        // extremos (un C2 o una salida Tor también pueden iniciar la
+        // conexión). Se evalúa antes del riesgo para que R7 las vea.
         if let Some(db) = &ctx.intel {
             flow.threat_intel = db
-                .check(flow.dst_ip)
+                .check_flow(flow.src_ip, flow.dst_ip)
                 .into_iter()
                 .map(str::to_string)
                 .collect();
         }
 
         let scan = ctx.scan_tracker.signals(flow);
-        risk::assess(flow, scan, cfg);
+        risk::assess_with_intel(flow, scan, cfg, ctx.intel.as_ref());
+        // R5 entre flujos: solo si el propio flujo no alertó ya beacon.
+        if !flow.alerts.iter().any(|a| a.id == "BEACONING") {
+            if let Some(stats) = ctx.flow_starts.stats(flow) {
+                risk::assess_interflow_beacon(flow, &stats, cfg);
+            }
+        }
         flow.human_summary = summarize::summarize(flow);
     }
 }
@@ -171,6 +183,53 @@ mod tests {
         enrich_all(&mut ctx, &mut lote2, &cfg);
         assert_eq!(lote2[0].alerts[0].id, "NETWORK-SWEEP");
         assert_eq!(lote2[0].alerts[0].mitre.as_deref(), Some("T1046"));
+    }
+
+    #[test]
+    fn beacon_lento_partido_en_flujos_alerta_entre_lotes() {
+        // Un implante que llama cada 5 min: con timeout de 120 s cada
+        // llamada es un flujo suelto de un paquete, sin estadística propia.
+        let cfg = PipelineConfig::default();
+        let mut ctx = SocContext::default();
+        let llamada = |i: u64| {
+            let mut f = flujo_basico(6, 40000 + i as u16, 443);
+            f.dst_ip = "203.0.113.50".parse().unwrap();
+            f.first_seen_micros = 1_000_000_000 + i * 300_000_000 + (i % 2) * 2_000_000;
+            f.tcp_flags.syn = 1;
+            f.tcp_flags.ack = 3;
+            f.tcp_flags.psh = 1;
+            f.tcp_flags.fin = 2;
+            f
+        };
+        let mut ultima = Vec::new();
+        for i in 0..8u64 {
+            let mut lote = vec![llamada(i)];
+            enrich_all(&mut ctx, &mut lote, &cfg);
+            ultima = lote;
+        }
+        let a = ultima[0]
+            .alerts
+            .iter()
+            .find(|a| a.id == "BEACONING")
+            .expect("beacon entre flujos");
+        assert!(a.detail.contains("entre conexiones"), "{}", a.detail);
+        assert_eq!(a.mitre.as_deref(), Some("T1071"));
+
+        // Conexiones irregulares al mismo servicio: nada.
+        let mut ctx = SocContext::default();
+        let mut flows: Vec<EnrichedFlow> = [0u64, 7, 90, 95, 400, 1300, 1310, 5000]
+            .iter()
+            .enumerate()
+            .map(|(i, &t)| {
+                let mut f = llamada(i as u64);
+                f.first_seen_micros = t * 1_000_000;
+                f
+            })
+            .collect();
+        enrich_all(&mut ctx, &mut flows, &cfg);
+        assert!(flows
+            .iter()
+            .all(|f| !f.alerts.iter().any(|a| a.id == "BEACONING")));
     }
 
     #[test]

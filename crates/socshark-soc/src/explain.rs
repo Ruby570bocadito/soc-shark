@@ -348,14 +348,35 @@ fn shorten(s: &str, max: usize) -> String {
     format!("{head}…{tail}")
 }
 
-/// Dominio "base" de un nombre (las dos últimas etiquetas): lo que se bloquea.
+/// Periodo (s) y número de llamadas de un beacon. El detalle de la alerta
+/// manda ("intervalo medio X s ... en N intervalos"): la variante entre
+/// flujos no se refleja en `interval_stats`. Si no se puede leer, se usa la
+/// estadística del propio flujo.
+fn beacon_period(flow: &EnrichedFlow, alert: &socshark_core::Alert) -> (f64, u32) {
+    let parsed = (|| {
+        let rest = alert.detail.strip_prefix("intervalo medio ")?;
+        let secs: f64 = rest.split('s').next()?.trim().parse().ok()?;
+        let n: u32 = rest
+            .split(" en ")
+            .nth(1)?
+            .split_whitespace()
+            .next()?
+            .parse()
+            .ok()?;
+        Some((secs, n + 1))
+    })();
+    parsed.unwrap_or_else(|| {
+        flow.interval_stats
+            .as_ref()
+            .map(|s| (s.mean_micros as f64 / 1e6, s.intervals + 1))
+            .unwrap_or((0.0, 0))
+    })
+}
+
+/// Dominio "base" de un nombre (el registrable, eTLD+1 aproximado): lo que
+/// se bloquea. `x.evil.co.uk` → `evil.co.uk`, nunca el sufijo `co.uk`.
 fn base_domain(name: &str) -> String {
-    let labels: Vec<&str> = name.trim_end_matches('.').split('.').collect();
-    if labels.len() <= 2 {
-        name.to_string()
-    } else {
-        labels[labels.len() - 2..].join(".")
-    }
+    crate::domain::registrable_domain(name).to_string()
 }
 
 fn volume(flow: &EnrichedFlow) -> String {
@@ -556,6 +577,17 @@ fn explain_alert(
 ) -> AlertExplanation {
     let src = names.host_name(flow.src_ip);
     let dst = names.host_name(flow.dst_ip);
+    // R7 pone delante del detalle la IP listada: si es el origen (conexión
+    // entrante desde el C2 o la salida Tor), las frases se dan la vuelta.
+    let (listed, local) = match alert.detail.split_whitespace().next() {
+        Some(ip)
+            if ip.parse::<std::net::IpAddr>().ok() == Some(flow.src_ip)
+                && flow.src_ip != flow.dst_ip =>
+        {
+            (src.clone(), dst.clone())
+        }
+        _ => (dst.clone(), src.clone()),
+    };
     let (title, story, action): (String, String, String) = match alert.id.as_str() {
         "DNS-TUNNELING" => {
             let qname = flow
@@ -634,11 +666,7 @@ fn explain_alert(
             "Limita con el cortafuegos quién puede conectarse y revisa sus contraseñas.".into(),
         ),
         "BEACONING" => {
-            let (secs, times) = flow
-                .interval_stats
-                .as_ref()
-                .map(|s| (s.mean_micros as f64 / 1e6, s.intervals + 1))
-                .unwrap_or((0.0, 0));
+            let (secs, times) = beacon_period(flow, alert);
             (
                 "Comunicación sospechosamente regular".into(),
                 format!(
@@ -676,17 +704,17 @@ fn explain_alert(
             "Conexión con un servidor de malware conocido".into(),
             format!(
                 "{} aparece en la lista Feodo Tracker de servidores que controlan malware \
-                 (Emotet, Dridex, TrickBot…), y {src} se comunicó con él.",
-                capitalize(&dst)
+                 (Emotet, Dridex, TrickBot…), y {local} se comunicó con él.",
+                capitalize(&listed)
             ),
-            format!("Desconecta {src} de la red y revísalo con tu equipo de seguridad."),
+            format!("Desconecta {local} de la red y revísalo con tu equipo de seguridad."),
         ),
         "TOR-USAGE" => (
             "Uso de la red Tor".into(),
             format!(
                 "{} es una salida de Tor, una red que oculta quién habla con quién. Puede ser \
                  privacidad legítima o una forma de esconder actividad.",
-                capitalize(&dst)
+                capitalize(&listed)
             ),
             "Comprueba si el uso de Tor está permitido en tu organización.".into(),
         ),
@@ -1166,6 +1194,46 @@ mod tests {
             .action
             .contains("bloquea el dominio evil.example"));
         assert!(e.alerts[0].story.contains("68 caracteres"));
+    }
+
+    #[test]
+    fn beacon_entre_flujos_toma_el_periodo_del_detalle() {
+        let f = flujo_basico(6, 40000, 443);
+        let a = alerta(
+            "BEACONING",
+            Severity::Medium,
+            "intervalo medio 300.0s con jitter ±0.5% en 7 intervalos entre conexiones",
+        );
+        assert_eq!(beacon_period(&f, &a), (300.0, 8));
+        let e = explain_alert(&f, &a, &HostDirectory::default());
+        assert!(e.story.contains("cada 300 segundos"), "{}", e.story);
+    }
+
+    #[test]
+    fn feodo_entrante_nombra_al_origen_como_listado() {
+        let mut f = flujo_basico(6, 4444, 22);
+        f.src_ip = "203.0.113.66".parse().unwrap();
+        let a = alerta(
+            "THREAT-INTEL-FEODO",
+            Severity::High,
+            "203.0.113.66 aparece en la lista Feodo cargada (--intel-feodo)",
+        );
+        let e = explain_alert(&f, &a, &HostDirectory::default());
+        assert!(
+            e.story.starts_with("El servidor 203.0.113.66 aparece"),
+            "{}",
+            e.story
+        );
+        assert!(e.action.contains("10.0.0.99"), "{}", e.action);
+    }
+
+    #[test]
+    fn dominio_a_bloquear_respeta_sufijos_de_dos_niveles() {
+        // Regresión: recomendaba bloquear "co.uk" entero.
+        assert_eq!(base_domain("x.evil.co.uk"), "evil.co.uk");
+        assert_eq!(base_domain("a.b.evil.com.br"), "evil.com.br");
+        assert_eq!(base_domain("a.tun.evil.example"), "evil.example");
+        assert_eq!(base_domain("evil.com"), "evil.com");
     }
 
     #[test]

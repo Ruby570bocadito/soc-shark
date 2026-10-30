@@ -1,14 +1,79 @@
 //! Capa de salida: tabla resumen legible y volcado JSONL.
 
+use std::borrow::Cow;
 use std::fs::File;
-use std::io::{BufWriter, Write};
+use std::io::{self, BufWriter, Write};
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use socshark_core::EnrichedFlow;
 use socshark_soc::summarize::fmt_bytes;
 
 use crate::pipeline::CaptureOutput;
+
+/// Neutraliza texto derivado de paquetes (qnames, SNI, nombres de host,
+/// detalles de alertas...) antes de llevarlo al terminal.
+///
+/// Quien genera el tráfico controla esas cadenas: un `\x1b` permitiría
+/// inyectar secuencias de escape (cambiar el título, borrar la pantalla,
+/// ocultar líneas) y los controles bidi de Unicode (`U+202E`...) reordenar
+/// visualmente el texto. Se sustituyen por su forma escapada (`\x1b`,
+/// `\u{202e}`). El JSON no lo necesita: serde ya escapa.
+pub fn sanitize_terminal(s: &str) -> Cow<'_, str> {
+    fn dangerous(c: char) -> bool {
+        c.is_control()
+            || matches!(
+                c,
+                '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
+            )
+    }
+    if !s.chars().any(dangerous) {
+        return Cow::Borrowed(s);
+    }
+    let mut out = String::with_capacity(s.len() + 8);
+    for c in s.chars() {
+        if !dangerous(c) {
+            out.push(c);
+        } else if (c as u32) <= 0xff {
+            out.push_str(&format!("\\x{:02x}", c as u32));
+        } else {
+            out.push_str(&format!("\\u{{{:x}}}", c as u32));
+        }
+    }
+    Cow::Owned(out)
+}
+
+/// `true` si el error (o alguna de sus causas) es una tubería rota: el
+/// lector de stdout se fue (`| head -1`). No es un fallo del análisis.
+pub fn is_broken_pipe(err: &anyhow::Error) -> bool {
+    err.chain().any(|e| {
+        e.downcast_ref::<io::Error>()
+            .is_some_and(|e| e.kind() == io::ErrorKind::BrokenPipe)
+    })
+}
+
+/// Se niega a escribir una salida que es uno de los archivos de entrada
+/// (la captura, las listas de intel): `File::create` la truncaría y se
+/// perdería la evidencia original. Solo se comprueba si la salida ya
+/// existe; `-` (stdout) siempre es válido.
+pub fn refuse_overwrite(output: &Path, inputs: &[&Path]) -> Result<()> {
+    if output.as_os_str() == "-" || !output.exists() {
+        return Ok(());
+    }
+    let Ok(out) = std::fs::canonicalize(output) else {
+        return Ok(());
+    };
+    for input in inputs {
+        if std::fs::canonicalize(input).is_ok_and(|i| i == out) {
+            bail!(
+                "la salida {} es el archivo de entrada {}: se sobrescribiría la evidencia original",
+                output.display(),
+                input.display()
+            );
+        }
+    }
+    Ok(())
+}
 
 /// Escribe los flujos como JSONL (un `EnrichedFlow` por línea).
 ///
@@ -18,57 +83,75 @@ use crate::pipeline::CaptureOutput;
 pub fn write_jsonl(path: &Path, flows: &[EnrichedFlow]) -> Result<()> {
     let file = File::create(path)?;
     let mut w = BufWriter::new(file);
-    for flow in flows {
-        serde_json::to_writer(&mut w, flow)?;
-        w.write_all(b"\n")?;
-    }
-    w.flush()?;
+    write_jsonl_to(&mut w, flows)?;
     Ok(())
 }
 
-/// Imprime la tabla resumen de los `top` flujos más voluminosos y la sección
-/// de alertas SOC ordenada por riesgo.
-pub fn print_summary(out: &CaptureOutput, top: usize) {
+/// JSONL a cualquier destino (stdout incluido) con vaciado final.
+pub fn write_jsonl_to(w: &mut impl Write, flows: &[EnrichedFlow]) -> io::Result<()> {
+    for flow in flows {
+        serde_json::to_writer(&mut *w, flow)?;
+        w.write_all(b"\n")?;
+    }
+    w.flush()
+}
+
+/// Imprime la tabla resumen en stdout (ver [`write_summary`]).
+pub fn print_summary(out: &CaptureOutput, top: usize) -> io::Result<()> {
+    let mut stdout = io::stdout().lock();
+    write_summary(&mut stdout, out, top)?;
+    stdout.flush()
+}
+
+/// Escribe la tabla resumen de los `top` flujos más voluminosos y la
+/// sección de alertas SOC ordenada por riesgo. Devuelve el error de
+/// escritura (p. ej. tubería rota) en vez de entrar en pánico como
+/// `println!`.
+pub fn write_summary(w: &mut impl Write, out: &CaptureOutput, top: usize) -> io::Result<()> {
     let mut sorted: Vec<&EnrichedFlow> = out.flows.iter().collect();
     sorted.sort_by_key(|f| std::cmp::Reverse(f.bytes + f.bytes_rev));
 
-    println!();
-    println!(
+    writeln!(w)?;
+    writeln!(
+        w,
         "═══ soc-shark · {} flujos ({}) ═══",
         out.flows.len(),
-        out.pcap_path.display()
-    );
-    println!(
+        sanitize_terminal(&out.pcap_path.display().to_string())
+    )?;
+    writeln!(
+        w,
         "{:<60} {:<5} {:>7} {:>10} {:>7}  ALERTAS",
         "FLUJO", "L7", "PAQ", "BYTES", "RIESGO"
-    );
+    )?;
     for flow in sorted.iter().take(top) {
-        println!(
+        writeln!(
+            w,
             "{:<60} {:<5} {:>7} {:>10} {:>7}  {}",
-            truncate(&flow.flow_id.0, 60),
+            truncate(&sanitize_terminal(&flow.flow_id.0), 60),
             flow.l7_protocol.as_str(),
             flow.packets + flow.packets_rev,
             fmt_bytes(flow.bytes + flow.bytes_rev),
             flow.risk_score,
-            alerts_cell(flow),
-        );
+            sanitize_terminal(&alerts_cell(flow)),
+        )?;
     }
     if sorted.len() > top {
-        println!(
+        writeln!(
+            w,
             "… y {} flujos más (usa --json para el volcado completo)",
             sorted.len() - top
-        );
+        )?;
     }
 
     let mut alerted: Vec<&EnrichedFlow> =
         out.flows.iter().filter(|f| !f.alerts.is_empty()).collect();
     alerted.sort_by_key(|f| std::cmp::Reverse(f.risk_score));
     if !alerted.is_empty() {
-        println!();
-        println!("─── Alertas SOC ───");
+        writeln!(w)?;
+        writeln!(w, "─── Alertas SOC ───")?;
         for flow in alerted {
             for alert in &flow.alerts {
-                println!(
+                let line = format!(
                     "▸ ({}) {} · {} · {}{}",
                     alert.severity.as_str(),
                     alert.name,
@@ -80,13 +163,14 @@ pub fn print_summary(out: &CaptureOutput, top: usize) {
                         .map(|m| format!(" · MITRE {m}"))
                         .unwrap_or_default()
                 );
+                writeln!(w, "{}", sanitize_terminal(&line))?;
             }
         }
     }
 
-    println!();
-    println!("Estadísticas: {}", out.stats.summary());
-    println!("DNS pasivo: {} entradas", out.passive_dns_entries);
+    writeln!(w)?;
+    writeln!(w, "Estadísticas: {}", out.stats.summary())?;
+    writeln!(w, "DNS pasivo: {} entradas", out.passive_dns_entries)
 }
 
 fn alerts_cell(flow: &EnrichedFlow) -> String {
@@ -111,5 +195,52 @@ fn truncate(s: &str, max: usize) -> String {
             "{}…",
             s.chars().take(max.saturating_sub(1)).collect::<String>()
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn neutraliza_escapes_y_bidi() {
+        assert!(matches!(
+            sanitize_terminal("evil.example"),
+            Cow::Borrowed("evil.example")
+        ));
+        assert_eq!(
+            sanitize_terminal("a\x1b]0;pwned\x07b"),
+            "a\\x1b]0;pwned\\x07b"
+        );
+        assert_eq!(sanitize_terminal("x\ny\r"), "x\\x0ay\\x0d");
+        assert_eq!(sanitize_terminal("\u{9b}31m"), "\\x9b31m");
+        assert_eq!(sanitize_terminal("gpj.\u{202E}exe"), "gpj.\\u{202e}exe");
+        assert_eq!(sanitize_terminal("\u{2066}\u{200F}"), "\\u{2066}\\u{200f}");
+        // Texto no latino legítimo intacto.
+        assert_eq!(sanitize_terminal("ñandú.例え"), "ñandú.例え");
+    }
+
+    #[test]
+    fn no_sobrescribe_la_entrada() {
+        let dir = std::env::temp_dir();
+        let input = dir.join(format!("socshark-refuse-{}.pcap", std::process::id()));
+        std::fs::write(&input, b"x").unwrap();
+        // Misma ruta, o la misma por otro camino (`dir/./archivo`).
+        assert!(refuse_overwrite(&input, &[&input]).is_err());
+        let alias = dir.join(".").join(input.file_name().unwrap());
+        assert!(refuse_overwrite(&alias, &[Path::new("otra"), &input]).is_err());
+        // Salidas distintas, inexistentes o stdout: bien.
+        let other = dir.join(format!("socshark-refuse-{}.jsonl", std::process::id()));
+        assert!(refuse_overwrite(&other, &[&input]).is_ok());
+        assert!(refuse_overwrite(Path::new("-"), &[&input]).is_ok());
+        std::fs::remove_file(&input).ok();
+    }
+
+    #[test]
+    fn tuberia_rota_se_reconoce_en_la_cadena() {
+        let e = anyhow::Error::new(io::Error::from(io::ErrorKind::BrokenPipe))
+            .context("error escribiendo JSONL");
+        assert!(is_broken_pipe(&e));
+        assert!(!is_broken_pipe(&anyhow::anyhow!("otro")));
     }
 }

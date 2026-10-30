@@ -15,22 +15,26 @@
 #  Options (environment variables, all optional):
 #    SOCSHARK_VERSION        version to install, e.g. 0.7.0 (default: latest)
 #    SOCSHARK_FROM_SOURCE=1  build from source instead of downloading
-#    SOCSHARK_DOWNLOAD_URL   another download location (a release mirror)
+#    SOCSHARK_DOWNLOAD_URL   another download location (a release mirror, https:// only)
 #    SOCSHARK_REPO / SOCSHARK_REF / SOCSHARK_DIR   repo, branch and folder to build
+#                            (SOCSHARK_REF defaults to the tag v<version> when
+#                            SOCSHARK_VERSION is set, otherwise main)
 #    GH_TOKEN                token, only to build from a private repository
 #
 #  Pure ASCII, no BOM: that is what makes `irm | iex` and Windows
-#  PowerShell 5.1 both work.
+#  PowerShell 5.1 both work. On failure it prints the reason and throws
+#  (it never calls `exit`, which would close the console under `irm | iex`).
 # =====================================================================
 
 & {
     # --- Settings --------------------------------------------------------
+    $Version    = if ($env:SOCSHARK_VERSION) { $env:SOCSHARK_VERSION.TrimStart('v') } else { '' }
     $GhRepo     = if ($env:SOCSHARK_REPO) { $env:SOCSHARK_REPO } else { 'Ruby570bocadito/soc-shark' }
-    $GhRef      = if ($env:SOCSHARK_REF)  { $env:SOCSHARK_REF }  else { 'main' }
+    # A pinned version also pins the source fallback to its tag.
+    $GhRef      = if ($env:SOCSHARK_REF)  { $env:SOCSHARK_REF }  elseif ($Version) { "v$Version" } else { 'main' }
     $GhToken    = if ($env:GH_TOKEN) { $env:GH_TOKEN } else { $env:GITHUB_TOKEN }
     $RepoDir    = if ($env:SOCSHARK_DIR)  { $env:SOCSHARK_DIR }  else { Join-Path $HOME 'soc-shark' }
     $InstallDir = Join-Path $HOME '.socshark\bin'
-    $Version    = if ($env:SOCSHARK_VERSION) { $env:SOCSHARK_VERSION.TrimStart('v') } else { '' }
     $FromSource = $env:SOCSHARK_FROM_SOURCE -and $env:SOCSHARK_FROM_SOURCE -ne '0'
     $Asset      = 'socshark-x86_64-pc-windows-msvc.zip'
     # No progress bar (it makes downloads crawl in Windows PowerShell 5.1)
@@ -42,8 +46,27 @@
     function Ok([string]$m)   { Write-Host "   [OK] $m" -ForegroundColor Green }
     function Warn([string]$m) { Write-Host "   [!] $m" -ForegroundColor Yellow }
     function Fail([string]$m) { Write-Host ''; Write-Host "[X] $m" -ForegroundColor Red }
+    # Prints the reason and stops with an error (non-zero exit when run as
+    # a script file; a visible error, not a silent return, under irm | iex).
+    function Abort([string]$m, [string[]]$hints = @()) {
+        Fail $m
+        foreach ($h in $hints) { Write-Host "    $h" -ForegroundColor Red }
+        $global:LASTEXITCODE = 1
+        throw "SOC SHARK installation failed: $m"
+    }
+    # True if the ';'-separated list already holds $dir (exact entry match,
+    # case-insensitive, ignoring a trailing '\' and expanding %VARS%).
+    function PathHas([string]$list, [string]$dir) {
+        $want = $dir.TrimEnd('\')
+        foreach ($e in ($list -split ';')) {
+            if (-not $e) { continue }
+            $e2 = [Environment]::ExpandEnvironmentVariables($e).TrimEnd('\')
+            if ($e2 -ieq $want -or $e.TrimEnd('\') -ieq $want) { return $true }
+        }
+        return $false
+    }
     function AddSessionPath([string]$p) {
-        if ($env:Path -notlike "*$p*") { $env:Path = "$p;$env:Path" }
+        if (-not (PathHas $env:Path $p)) { $env:Path = "$p;$env:Path" }
     }
 
     # Block-letter banner. Each ASCII symbol becomes its Unicode box
@@ -70,12 +93,15 @@
 
     # --- System ----------------------------------------------------------
     if ($env:OS -ne 'Windows_NT') {
-        Fail 'This installer is for Windows. On Linux or macOS use install.sh (see the README).'
-        return
+        Abort 'This installer is for Windows. On Linux or macOS use install.sh (see the README).'
     }
     if ($PSVersionTable.PSVersion.Major -lt 5) {
-        Fail 'PowerShell 5.1 or newer is required.'
-        return
+        Abort 'PowerShell 5.1 or newer is required.'
+    }
+    # A mirror must be HTTPS: the SHA-256 check is only as trustworthy as
+    # the channel that delivers SHA256SUMS.
+    if ($env:SOCSHARK_DOWNLOAD_URL -and $env:SOCSHARK_DOWNLOAD_URL -notmatch '^https://') {
+        Abort "SOCSHARK_DOWNLOAD_URL must start with https:// (got: $env:SOCSHARK_DOWNLOAD_URL)."
     }
     $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'aarch64' } else { 'x86_64' }
 
@@ -137,8 +163,7 @@
             }
         }
         if (-not $gitExe) {
-            Fail 'Git is missing and could not be installed. Get it from https://git-scm.com/download/win and run this installer again.'
-            return
+            Abort 'Git is missing and could not be installed. Get it from https://git-scm.com/download/win and run this installer again.'
         }
         Ok "$(& $gitExe --version)"
 
@@ -157,10 +182,9 @@
             winget install --id Microsoft.VisualStudio.2022.BuildTools -e --source winget --accept-source-agreements --accept-package-agreements --override $vsArgs | Out-Null
         }
         if (-not (HasVcTools)) {
-            Fail 'The Visual Studio C++ Build Tools are missing (Rust needs them to link).'
-            Write-Host '    Get them from https://visualstudio.microsoft.com/visual-cpp-build-tools/' -ForegroundColor Red
-            Write-Host '    tick "Desktop development with C++" and run this installer again.' -ForegroundColor Red
-            return
+            Abort 'The Visual Studio C++ Build Tools are missing (Rust needs them to link).' @(
+                'Get them from https://visualstudio.microsoft.com/visual-cpp-build-tools/',
+                'tick "Desktop development with C++" and run this installer again.')
         }
         Ok 'C++ Build Tools'
 
@@ -175,13 +199,11 @@
             try {
                 Invoke-WebRequest -Uri "https://win.rustup.rs/$arch" -OutFile $rustupInit -UseBasicParsing
             } catch {
-                Fail "Could not download rustup-init: $_"
-                return
+                Abort "Could not download rustup-init: $($_.Exception.Message)"
             }
             & $rustupInit -y -q --default-toolchain stable --profile minimal | Out-Null
             if ($LASTEXITCODE -ne 0) {
-                Fail 'The Rust installation (rustup) failed.'
-                return
+                Abort 'The Rust installation (rustup) failed.'
             }
             AddSessionPath "$env:USERPROFILE\.cargo\bin"
             $cargoExe = "$env:USERPROFILE\.cargo\bin\cargo.exe"
@@ -189,13 +211,23 @@
         Ok "$(& $cargoExe --version)"
 
         # With a token (private repository) it travels in a header for this
-        # command only: never saved in .git\config nor in the remote URL.
+        # command only, passed through GIT_CONFIG_* environment variables:
+        # never saved in .git\config, in the remote URL or on the command
+        # line (where any process listing would show it).
         function GitAuth {
+            $env:GIT_TERMINAL_PROMPT = '0'
             if ($GhToken) {
                 $b64 = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("x-access-token:$GhToken"))
-                & $gitExe -c "http.https://github.com/.extraheader=Authorization: Basic $b64" @args
-            } else {
+                $env:GIT_CONFIG_COUNT   = '1'
+                $env:GIT_CONFIG_KEY_0   = 'http.https://github.com/.extraheader'
+                $env:GIT_CONFIG_VALUE_0 = "Authorization: Basic $b64"
+            }
+            try {
                 & $gitExe @args
+            } finally {
+                foreach ($n in 'GIT_CONFIG_COUNT', 'GIT_CONFIG_KEY_0', 'GIT_CONFIG_VALUE_0', 'GIT_TERMINAL_PROMPT') {
+                    Remove-Item -Path "Env:$n" -ErrorAction SilentlyContinue
+                }
             }
         }
         if (Test-Path (Join-Path $RepoDir '.git')) {
@@ -205,9 +237,8 @@
         } else {
             GitAuth clone --quiet --depth 1 --branch $GhRef "https://github.com/$GhRepo.git" $RepoDir
             if ($LASTEXITCODE -ne 0) {
-                Fail "Could not clone https://github.com/$GhRepo ($GhRef). Check your connection."
-                Write-Host "    If the folder was left half-done, delete it and try again: Remove-Item -Recurse -Force `"$RepoDir`"" -ForegroundColor Red
-                return
+                Abort "Could not clone https://github.com/$GhRepo ($GhRef). Check your connection." @(
+                    "If the folder was left half-done, delete it and try again: Remove-Item -Recurse -Force `"$RepoDir`"")
             }
         }
         Ok "Source: $RepoDir ($GhRef)"
@@ -217,16 +248,14 @@
         try {
             & $cargoExe build --release --locked --quiet -p socshark-cli
             if ($LASTEXITCODE -ne 0) {
-                Fail 'The build failed (see the errors above).'
-                return
+                Abort 'The build failed (see the errors above).'
             }
         } finally {
             Pop-Location
         }
         $exe = Join-Path $RepoDir 'target\release\socshark.exe'
         if (-not (Test-Path $exe)) {
-            Fail "The build finished but $exe is missing."
-            return
+            Abort "The build finished but $exe is missing."
         }
         Ok 'Built'
     }
@@ -234,16 +263,33 @@
     # --- Install, PATH and a quick self-test ------------------------------
     Step 'Installing'
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-    Copy-Item $exe $InstallDir -Force
-    if ($tmp) { Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue }
     $shark = Join-Path $InstallDir 'socshark.exe'
+    try {
+        Copy-Item $exe $shark -Force -ErrorAction Stop
+    } catch {
+        if ($tmp) { Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue }
+        Abort "Could not replace $shark ($($_.Exception.Message))." @(
+            'Is socshark running? Close socshark first (the GUI window, a TUI or a live capture)',
+            'and run this installer again.')
+    }
+    if ($tmp) { Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue }
     Ok $shark
 
+    # User PATH: read the raw registry value (REG_EXPAND_SZ, %VARS% kept
+    # unexpanded), compare whole entries and write it back as ExpandString,
+    # so entries such as %USERPROFILE%\bin are not flattened.
     AddSessionPath $InstallDir
     $newTerminal = $false
-    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-    if ($userPath -notlike "*$InstallDir*") {
-        [Environment]::SetEnvironmentVariable('Path', "$userPath;$InstallDir", 'User')
+    if (-not (Test-Path 'HKCU:\Environment')) { New-Item -Path 'HKCU:\Environment' | Out-Null }
+    $envKey  = Get-Item -Path 'HKCU:\Environment'
+    $rawPath = [string]$envKey.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+    if (-not (PathHas $rawPath $InstallDir)) {
+        $newPath = if ($rawPath.Trim(';')) { $rawPath.TrimEnd(';') + ';' + $InstallDir } else { $InstallDir }
+        Set-ItemProperty -Path 'HKCU:\Environment' -Name 'Path' -Value $newPath -Type ExpandString
+        # Tell Explorer and new terminals the environment changed: setting
+        # (and removing) a dummy user variable broadcasts WM_SETTINGCHANGE.
+        [Environment]::SetEnvironmentVariable('SOCSHARK_PATH_REFRESH', '1', 'User')
+        [Environment]::SetEnvironmentVariable('SOCSHARK_PATH_REFRESH', $null, 'User')
         $newTerminal = $true
     }
 
@@ -258,8 +304,7 @@
     if ($selfTest) {
         Ok 'Self-test passed'
     } else {
-        Fail "socshark is installed but could not analyse a demo capture. Try: socshark capture -r <file.pcap>"
-        return
+        Abort 'socshark is installed but could not analyse a demo capture. Try: socshark capture -r <file.pcap>'
     }
 
     # Live capture needs Npcap (the driver Wireshark uses), loaded at run time.

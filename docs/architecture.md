@@ -25,7 +25,9 @@ describe cómo está organizado el código para sostener ese plan.
 2. **Privilegio mínimo radical.** Solo el *daemon* de captura toca el kernel
    (CAP_NET_RAW, CAP_BPF). Dissectors, plugins, heurísticas y UI corren sin
    privilegios: un bug en un parser nunca debe convertirse en un root
-   exploit. Detalle completo en [security.md](security.md).
+   exploit. Es el diseño objetivo: hoy captura y análisis comparten un
+   único binario (con `setcap` en Linux, todo él tiene las capacidades);
+   detalle completo y estado real en [security.md](security.md).
 3. **Zero-copy donde importa.** Los dissectors trabajan con slices prestados
    del buffer de captura; solo se copian los metadatos pequeños y las cadenas
    DNS necesarias. El objetivo de rendimiento (Fase 2+) es que ningún byte
@@ -93,7 +95,7 @@ imposible si solo mirara un paquete.
 
 ## Plataforma y stack
 
-- **Lenguaje: Rust** (edition 2021, MSRV 1.75). Motivación completa en
+- **Lenguaje: Rust** (edition 2021, MSRV 1.88). Motivación completa en
   ADR-001: rendimiento comparable a C/C++ con las garantías de memoria que
   exige software que procesa datos hostiles a línea caliente.
 - **Captura en Fase 1: archivos pcap clásicos** con lector propio. En Fase 2

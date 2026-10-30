@@ -99,6 +99,23 @@ impl LiveCaptureConfig {
     }
 }
 
+/// Convierte un `timeval` de libpcap a microsegundos Unix sin desbordar:
+/// los valores negativos (posibles con `tv_sec` de 32 bits en Windows o un
+/// reloj corrupto) se fijan a 0 y el producto se satura.
+#[cfg_attr(
+    not(any(
+        all(unix, target_pointer_width = "64"),
+        all(windows, target_pointer_width = "64")
+    )),
+    allow(dead_code)
+)]
+fn timeval_to_micros(tv_sec: impl Into<i64>, tv_usec: impl Into<i64>) -> u64 {
+    // `Into<i64>` acepta los campos de 32 y 64 bits sin casts por plataforma.
+    let sec = u64::try_from(tv_sec.into()).unwrap_or(0);
+    let usec = u64::try_from(tv_usec.into()).unwrap_or(0);
+    sec.saturating_mul(1_000_000).saturating_add(usec)
+}
+
 #[cfg(not(any(
     all(unix, target_pointer_width = "64"),
     all(windows, target_pointer_width = "64")
@@ -160,6 +177,7 @@ mod backend {
 ))]
 mod backend {
     use std::ffi::{c_char, c_int, c_void, CStr, CString};
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
 
     use super::*;
@@ -188,12 +206,32 @@ mod backend {
         pub const PERM_HINT: &str =
             "ejecuta con sudo (o instala ChmodBPF, el ayudante de Wireshark, para capturar sin sudo)";
 
-        /// Debian/Ubuntu (`so.0.8`), Fedora/Arch (`so.1`), genérico con
-        /// `-dev` instalado y macOS (`libpcap` resuelve `libpcap.dylib`).
+        /// Linux: solo *sonames* sin `/` (Debian/Ubuntu `so.0.8`,
+        /// Fedora/Arch `so.1`, genérico con `-dev`), que `dlopen` resuelve
+        /// con la caché del enlazador y las rutas del sistema, nunca contra
+        /// el directorio actual.
+        #[cfg(not(target_os = "macos"))]
         pub fn candidates() -> Vec<String> {
-            ["libpcap.so.0.8", "libpcap.so.1", "libpcap.so", "libpcap"]
+            ["libpcap.so.1", "libpcap.so.0.8", "libpcap.so"]
                 .map(String::from)
                 .to_vec()
+        }
+
+        /// macOS: rutas absolutas. Un nombre suelto (`libpcap`) no lleva
+        /// `.dylib`, así que nunca resolvía, y `dlopen` lo buscaría también
+        /// en el directorio actual (biblioteca plantada). Primero la del
+        /// sistema (en la caché compartida de dyld) y después Homebrew
+        /// (Apple Silicon e Intel).
+        #[cfg(target_os = "macos")]
+        pub fn candidates() -> Vec<String> {
+            [
+                "/usr/lib/libpcap.A.dylib",
+                "/usr/lib/libpcap.dylib",
+                "/opt/homebrew/opt/libpcap/lib/libpcap.dylib",
+                "/usr/local/opt/libpcap/lib/libpcap.dylib",
+            ]
+            .map(String::from)
+            .to_vec()
         }
 
         pub unsafe fn open(name: &str) -> *mut c_void {
@@ -216,14 +254,18 @@ mod backend {
         use std::ffi::{c_char, c_void, OsStr};
         use std::os::windows::ffi::OsStrExt;
 
-        /// Resuelve las dependencias (`Packet.dll`) en la carpeta de la DLL.
-        const LOAD_WITH_ALTERED_SEARCH_PATH: u32 = 0x0000_0008;
+        /// Dependencias (`Packet.dll`) solo desde la carpeta de la propia DLL.
+        const LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR: u32 = 0x0000_0100;
+        /// Búsqueda restringida a System32: nunca la carpeta de la
+        /// aplicación, el directorio actual ni el `PATH` (DLL planting).
+        const LOAD_LIBRARY_SEARCH_SYSTEM32: u32 = 0x0000_0800;
 
         #[link(name = "kernel32")]
         extern "system" {
             fn LoadLibraryExW(name: *const u16, file: *mut c_void, flags: u32) -> *mut c_void;
             fn GetProcAddress(module: *mut c_void, name: *const c_char) -> *mut c_void;
             fn FreeLibrary(module: *mut c_void) -> i32;
+            fn GetSystemDirectoryW(buf: *mut u16, size: u32) -> u32;
         }
 
         pub const LIB_NAME: &str = "Npcap (wpcap.dll)";
@@ -232,22 +274,42 @@ mod backend {
         pub const PERM_HINT: &str =
             "abre la consola como administrador (Npcap se instaló solo para administradores)";
 
-        /// Instalación propia de Npcap y, si no, la ruta de búsqueda normal
-        /// (modo compatible con WinPcap, que la copia en System32).
-        pub fn candidates() -> Vec<String> {
-            let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
-            vec![
-                format!(r"{root}\System32\Npcap\wpcap.dll"),
-                "wpcap.dll".into(),
-            ]
+        /// Carpeta System32 según el propio sistema (`GetSystemDirectoryW`),
+        /// no según `%SystemRoot%`, que cualquiera puede cambiar en el
+        /// entorno del proceso.
+        fn system_dir() -> Option<String> {
+            let mut buf = [0u16; 512];
+            // SAFETY: búfer propio con su tamaño real; la función escribe
+            // como mucho `size` u16 y devuelve la longitud sin el NUL.
+            let n = unsafe { GetSystemDirectoryW(buf.as_mut_ptr(), buf.len() as u32) } as usize;
+            if n == 0 || n >= buf.len() {
+                return None;
+            }
+            Some(String::from_utf16_lossy(&buf[..n]))
         }
 
+        /// Instalación propia de Npcap (`System32\Npcap`) y, si no, el
+        /// `wpcap.dll` de System32 (modo compatible con WinPcap). Ambas
+        /// cargas se restringen a carpetas del sistema (ver [`open`]).
+        pub fn candidates() -> Vec<String> {
+            let mut out = Vec::new();
+            if let Some(sys) = system_dir() {
+                out.push(format!(r"{sys}\Npcap\wpcap.dll"));
+            }
+            out.push("wpcap.dll".into());
+            out
+        }
+
+        /// Con ruta absoluta, las dependencias (`Packet.dll`) se buscan solo
+        /// en la carpeta de la DLL y en System32; con nombre suelto, solo
+        /// en System32. Nunca la carpeta de la aplicación ni el directorio
+        /// actual.
         pub unsafe fn open(name: &str) -> *mut c_void {
             let wide: Vec<u16> = OsStr::new(name).encode_wide().chain(Some(0)).collect();
             let flags = if name.contains('\\') {
-                LOAD_WITH_ALTERED_SEARCH_PATH
+                LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32
             } else {
-                0
+                LOAD_LIBRARY_SEARCH_SYSTEM32
             };
             LoadLibraryExW(wide.as_ptr(), std::ptr::null_mut(), flags)
         }
@@ -276,6 +338,9 @@ mod backend {
     }
     #[cfg(unix)]
     const POLLIN: i16 = 0x1;
+    /// Tramo máximo de cada `poll`: cota de lo que tarda en verse una parada.
+    #[cfg(unix)]
+    const POLL_SLICE_MS: c_int = 100;
     /// `nfds_t`: `unsigned long` en Linux, `unsigned int` en macOS.
     #[cfg(target_os = "macos")]
     type NfdsT = std::ffi::c_uint;
@@ -592,10 +657,15 @@ mod backend {
         /// Dirección del handle abierto; `None` en cuanto se cierra.
         handle: Mutex<Option<usize>>,
         breakloop: unsafe extern "C" fn(*mut PcapT),
+        /// Petición de parada pendiente. `pcap_breakloop` no despierta el
+        /// `poll` propio de unix, así que la espera se hace en tramos cortos
+        /// que consultan esta bandera (se consume al devolver el tick).
+        stop: AtomicBool,
     }
 
     impl LiveBreaker {
         pub fn interrupt(&self) {
+            self.inner.stop.store(true, Ordering::SeqCst);
             if let Ok(h) = self.inner.handle.lock() {
                 if let Some(addr) = *h {
                     // SAFETY: el handle sigue abierto mientras se tenga el
@@ -744,6 +814,7 @@ mod backend {
             let brk = Arc::new(BreakState {
                 handle: Mutex::new(Some(handle as usize)),
                 breakloop: syms.breakloop,
+                stop: AtomicBool::new(false),
             });
             Ok(Self {
                 syms,
@@ -797,15 +868,35 @@ mod backend {
             #[cfg(unix)]
             if rc == 0 && self.fd >= 0 {
                 // Nada disponible: esperar al descriptor como mucho un
-                // timeout. Vencido o interrumpido por una señal (EINTR,
-                // p. ej. Ctrl-C), es un tick sin datos.
-                let mut pfd = PollFd {
-                    fd: self.fd,
-                    events: POLLIN,
-                    revents: 0,
-                };
-                if unsafe { poll(&mut pfd, 1, self.timeout_ms) } <= 0 {
-                    return Ok(None);
+                // timeout, en tramos de POLL_SLICE_MS para atender pronto
+                // una parada (`LiveBreaker::interrupt`). Vencido, parado o
+                // interrumpido por una señal (EINTR, p. ej. Ctrl-C), es un
+                // tick sin datos.
+                // Timeout negativo = espera sin límite (como `poll`).
+                let infinite = self.timeout_ms < 0;
+                let mut remaining = self.timeout_ms.max(0);
+                loop {
+                    if self.brk.stop.swap(false, Ordering::SeqCst) {
+                        return Ok(None);
+                    }
+                    let slice = if infinite {
+                        POLL_SLICE_MS
+                    } else {
+                        remaining.min(POLL_SLICE_MS)
+                    };
+                    let mut pfd = PollFd {
+                        fd: self.fd,
+                        events: POLLIN,
+                        revents: 0,
+                    };
+                    let n = unsafe { poll(&mut pfd, 1, slice) };
+                    if n > 0 {
+                        break;
+                    }
+                    remaining -= slice;
+                    if n < 0 || (!infinite && remaining <= 0) {
+                        return Ok(None);
+                    }
                 }
                 rc = unsafe { (self.syms.next_ex)(self.handle, &mut hdr, &mut data) };
             }
@@ -818,7 +909,7 @@ mod backend {
                     let h = unsafe { &*hdr };
                     let bytes =
                         unsafe { std::slice::from_raw_parts(data, h.caplen as usize) }.to_vec();
-                    let ts_micros = h.ts.tv_sec as u64 * 1_000_000 + h.ts.tv_usec as u64;
+                    let ts_micros = super::timeval_to_micros(h.ts.tv_sec, h.ts.tv_usec);
                     Ok(Some(RawPacket {
                         ts_micros,
                         orig_len: h.len,
@@ -944,6 +1035,19 @@ pub use backend::{list_ifaces, LiveBreaker, LiveCapture};
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn timeval_negativo_o_enorme_no_desborda() {
+        // Regresión: `tv_sec as u64 * 1_000_000` hacía panic en debug con
+        // tv_sec negativo (i32 en Windows).
+        assert_eq!(timeval_to_micros(-1i32, 5i32), 5);
+        assert_eq!(timeval_to_micros(1i64, -3i64), 1_000_000);
+        assert_eq!(timeval_to_micros(i64::MAX, i64::MAX), u64::MAX);
+        assert_eq!(
+            timeval_to_micros(1_700_000_000i64, 42i64),
+            1_700_000_000_000_042
+        );
+    }
 
     /// En una máquina sin libpcap la apertura debe fallar limpio y en
     /// español; con libpcap instalada, fallar por la interfaz o por

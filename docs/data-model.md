@@ -15,7 +15,8 @@ paquete ──► DissectedPacket (metadatos prestados) ──► FlowAccum (acu
 
 El flujo nace con el primer paquete de una 5-tupla canónica y muere en uno
 de tres momentos: expira por inactividad (`idle_timeout_secs`), es expulsado
-por presión de memoria (`max_flows`), o se exporta al terminar la captura
+por presión de memoria (`max_flows`, y entonces se exporta igualmente en el
+siguiente `drain_expired`/`finish()`: no se pierde), o se exporta al terminar la captura
 (`finish()`). Después de exportarse se enriquece con el contexto global de la
 sesión y ya no muta: los consumidores (filtro, tabla, JSONL, futuros SIEM)
 reciben datos inmutables.
@@ -77,7 +78,7 @@ reciben datos inmutables.
 | `is_background_noise` | `bool` | True para tráfico de mantenimiento (NTP, mDNS, LLMNR, SSDP, NetBIOS, DHCP...). La UI lo atenúa; nunca se borra. | Capa SOC (F1) |
 | `human_summary` | `String` | Una línea en español: `DNS 192.168.1.30:53002 → 8.8.8.8:53: consulta <qname> (TXT)`. | Capa SOC (F1) |
 | `risk_score` | `u8` | 0-100 por suma de reglas heurísticas (ver [soc-features.md](soc-features.md)). | Capa SOC (F1) |
-| `alerts` | `Vec<Alert>` | Alertas disparadas: `id` estable, `name`, `severity` (Info→Critical), `detail` y `mitre` (p. ej. `T1048.003`). | Capa SOC (F1) |
+| `alerts` | `Vec<Alert>` | Alertas disparadas: `id` estable, `name`, `severity` (Info→Critical), `detail` y `mitre` (p. ej. `T1071.004`). | Capa SOC (F1) |
 | `extracted_files` | `Vec<ExtractedFile>` | Archivos reconstruidos del flujo (`--carve-files`): nombre, tamaño, SHA-256, magic bytes y marca `masquerading_suspect` (nombre ≠ tipo real o doble extensión → T1036). | Carving (F4) |
 
 ## Estructuras anidadas

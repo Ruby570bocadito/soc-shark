@@ -5,7 +5,9 @@
 //! respuesta por conexión (`Connection: close`). Todo está acotado: tamaño
 //! de cabeceras, de cuerpo y tiempo de lectura.
 
-use std::io::{self, BufRead, BufReader, Read, Write};
+#[cfg(test)]
+use std::io::BufReader;
+use std::io::{self, BufRead, Read, Write};
 
 /// Cota de la línea de petición más las cabeceras.
 const MAX_HEAD: usize = 16 * 1024;
@@ -56,12 +58,22 @@ impl From<io::Error> for ReadError {
 }
 
 /// Lee una petición completa; el cuerpo se limita a `max_body` bytes.
+#[cfg(test)]
 pub fn read_request(stream: impl Read, max_body: usize) -> Result<Request, ReadError> {
     let mut reader = BufReader::new(stream);
+    let mut req = read_head(&mut reader)?;
+    read_body(&mut reader, &mut req, max_body)?;
+    Ok(req)
+}
+
+/// Lee solo la línea de petición y las cabeceras (el cuerpo queda vacío y
+/// sin leer). El servidor valida Host, token y ruta con esto ANTES de
+/// aceptar un cuerpo: un cliente sin token no puede hacerle reservar nada.
+pub fn read_head<R: BufRead>(reader: &mut R) -> Result<Request, ReadError> {
     let mut head_len = 0usize;
     let mut line = String::new();
 
-    let mut read_line = |reader: &mut BufReader<_>, line: &mut String| -> Result<(), ReadError> {
+    let mut read_line = |reader: &mut R, line: &mut String| -> Result<(), ReadError> {
         line.clear();
         let n = reader
             .by_ref()
@@ -78,7 +90,7 @@ pub fn read_request(stream: impl Read, max_body: usize) -> Result<Request, ReadE
         Ok(())
     };
 
-    read_line(&mut reader, &mut line)?;
+    read_line(reader, &mut line)?;
     let mut parts = line.trim_end().splitn(3, ' ');
     let (Some(method), Some(target), Some(version)) = (parts.next(), parts.next(), parts.next())
     else {
@@ -96,7 +108,7 @@ pub fn read_request(stream: impl Read, max_body: usize) -> Result<Request, ReadE
     };
 
     loop {
-        read_line(&mut reader, &mut line)?;
+        read_line(reader, &mut line)?;
         let l = line.trim_end();
         if l.is_empty() {
             break;
@@ -108,20 +120,46 @@ pub fn read_request(stream: impl Read, max_body: usize) -> Result<Request, ReadE
             .push((k.trim().to_string(), v.trim().to_string()));
     }
 
-    if let Some(len) = req.header("content-length") {
-        let len: usize = len
-            .parse()
-            .map_err(|_| ReadError::Bad(400, "Content-Length inválido"))?;
-        if len > max_body {
-            return Err(ReadError::Bad(413, "archivo demasiado grande"));
-        }
-        let mut body = vec![0u8; len];
-        reader.read_exact(&mut body)?;
-        req.body = body;
-    } else if req.header("transfer-encoding").is_some() {
-        return Err(ReadError::Bad(411, "se requiere Content-Length"));
-    }
     Ok(req)
+}
+
+/// Lee el cuerpo anunciado por `Content-Length` (como mucho `max_body`).
+///
+/// No reserva de golpe lo que diga la cabecera: el búfer crece a medida que
+/// llegan los datos (con `try_reserve`, sin abortar si falta memoria), así
+/// que anunciar 512 MiB sin enviarlos no cuesta nada al servidor.
+pub fn read_body(
+    reader: &mut impl Read,
+    req: &mut Request,
+    max_body: usize,
+) -> Result<(), ReadError> {
+    let Some(len) = req.header("content-length") else {
+        if req.header("transfer-encoding").is_some() {
+            return Err(ReadError::Bad(411, "se requiere Content-Length"));
+        }
+        return Ok(());
+    };
+    let len: usize = len
+        .parse()
+        .map_err(|_| ReadError::Bad(400, "Content-Length inválido"))?;
+    if len > max_body {
+        return Err(ReadError::Bad(413, "archivo demasiado grande"));
+    }
+    let mut body = Vec::new();
+    let mut chunk = vec![0u8; len.min(64 * 1024)];
+    while body.len() < len {
+        let want = (len - body.len()).min(chunk.len());
+        let n = reader.read(&mut chunk[..want])?;
+        if n == 0 {
+            // El cliente cerró antes de enviar todo lo anunciado.
+            return Err(ReadError::Io);
+        }
+        body.try_reserve(n)
+            .map_err(|_| ReadError::Bad(503, "memoria insuficiente"))?;
+        body.extend_from_slice(&chunk[..n]);
+    }
+    req.body = body;
+    Ok(())
 }
 
 /// Decodifica `%XX` y `+` (espacio) de una query; secuencias inválidas se
@@ -208,6 +246,7 @@ fn reason(status: u16) -> &'static str {
         421 => "Misdirected Request",
         431 => "Request Header Fields Too Large",
         500 => "Internal Server Error",
+        503 => "Service Unavailable",
         505 => "HTTP Version Not Supported",
         _ => "",
     }
@@ -277,6 +316,22 @@ mod tests {
             req("POST /x HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n"),
             Err(ReadError::Bad(411, _))
         ));
+    }
+
+    #[test]
+    fn el_cuerpo_no_se_reserva_por_adelantado() {
+        // Antes se hacía vec![0; Content-Length]: anunciar 1 TiB (sin
+        // enviarlo) abortaba el proceso por falta de memoria.
+        let raw = "POST /api/open HTTP/1.1\r\nContent-Length: 1099511627776\r\n\r\nabcd";
+        assert!(matches!(
+            read_request(raw.as_bytes(), usize::MAX),
+            Err(ReadError::Io)
+        ));
+        // La cabecera se puede leer sin tocar el cuerpo.
+        let mut r = BufReader::new(raw.as_bytes());
+        let head = read_head(&mut r).unwrap();
+        assert!(head.body.is_empty());
+        assert_eq!(head.path, "/api/open");
     }
 
     #[test]

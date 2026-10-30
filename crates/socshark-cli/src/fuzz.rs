@@ -18,7 +18,7 @@ use socshark_dissectors::DissectorPipeline;
 use socshark_flow::FlowAggregator;
 use socshark_soc::{enrich_all, SocContext};
 use socshark_testgen as tg;
-use socshark_testgen::fuzz::{mutate_frame, splice_frames, FuzzRng};
+use socshark_testgen::fuzz::{hostile_scenarios, mutate_frame, splice_frames, FuzzRng};
 
 static FUZZ_SEED: AtomicU64 = AtomicU64::new(0);
 static FUZZ_ITER: AtomicUsize = AtomicUsize::new(0);
@@ -56,9 +56,14 @@ pub fn run_fuzz(opts: &FuzzOptions) -> Result<FuzzStats> {
         prev_hook(info);
     }));
 
+    // Escenarios hostiles ordenados (chunked gigante, miles de "HTTP/1.",
+    // IPv4 fragmentado, TLS en registros partidos): se inyectan completos y
+    // además sus tramas engrosan el corpus base que se muta.
+    let scenarios = hostile_scenarios();
     let base: Vec<Vec<u8>> = tg::sample_pcap_packets()
         .into_iter()
         .map(|(_, frame)| frame)
+        .chain(scenarios.iter().flatten().cloned())
         .collect();
     anyhow::ensure!(!base.is_empty(), "el corpus base está vacío");
 
@@ -74,7 +79,7 @@ pub fn run_fuzz(opts: &FuzzOptions) -> Result<FuzzStats> {
 
     for iter in 0..opts.iterations {
         FUZZ_ITER.store(iter, Ordering::Relaxed);
-        fuzz_iteration(&mut rng, &base, &cfg, &mut stats);
+        fuzz_iteration(&mut rng, &base, &scenarios, &cfg, &mut stats);
         if opts.report_every > 0 && iter > 0 && iter % opts.report_every == 0 {
             eprintln!(
                 "[*] fuzz iter {iter}/{} · {} tramas · {} diseccionadas · {} exportadas · {} evals DSL",
@@ -94,11 +99,36 @@ pub fn run_fuzz(opts: &FuzzOptions) -> Result<FuzzStats> {
 fn fuzz_iteration(
     rng: &mut FuzzRng,
     base: &[Vec<u8>],
+    scenarios: &[Vec<Vec<u8>>],
     cfg: &PipelineConfig,
     stats: &mut FuzzStats,
 ) {
     let mut aggregator = FlowAggregator::new(cfg.max_flows, cfg.idle_timeout_secs, true);
     let dissectors = DissectorPipeline::new();
+
+    // Un escenario hostil completo y en orden (mutado con poca
+    // probabilidad por trama) para que llegue entero al reensamblado, al
+    // ClientHello y al carving.
+    if !scenarios.is_empty() && rng.coin(30) {
+        let sc = &scenarios[rng.below(scenarios.len())];
+        for (i, frame) in sc.iter().enumerate() {
+            let frame = if rng.coin(10) {
+                mutate_frame(rng, frame)
+            } else {
+                frame.clone()
+            };
+            let raw = RawPacket {
+                ts_micros: 1_000_000 + i as u64 * 1_000,
+                orig_len: frame.len() as u32,
+                data: frame,
+            };
+            if let Some(dp) = dissectors.dissect(&raw, LinkType::Ethernet) {
+                aggregator.on_packet(raw.ts_micros, raw.data.len(), &dp);
+                stats.parsed += 1;
+            }
+            stats.frames += 1;
+        }
+    }
 
     let batch = 1 + rng.below(base.len() * 2);
     for _ in 0..batch {
@@ -145,8 +175,11 @@ fn fuzz_iteration(
         }
     }
 
-    let mut flows = aggregator.finish();
+    let (mut flows, streams) = aggregator.finish_with_streams();
     stats.exported += flows.len() as u64;
+    // Carving HTTP sobre los streams reensamblados (chunked, Content-Length
+    // y búsqueda de cabeceras con entrada hostil).
+    socshark_soc::carve::carve_all(&mut flows, &streams);
     if rng.coin(15) {
         let mut ctx = SocContext::default();
         enrich_all(&mut ctx, &mut flows, cfg);

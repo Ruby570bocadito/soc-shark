@@ -126,36 +126,35 @@ impl DissectorPipeline {
     /// Diseca un paquete crudo. Devuelve `None` si no se puede interpretar:
     /// Ethernet truncado, ethertype no-IP, L3/L4 truncado, fragmento IPv6
     /// no inicial, etc.
+    ///
+    /// Los fragmentos IPv4 no iniciales se devuelven como paquete solo-L3
+    /// (`transport = Other(proto)`, sin TCP/UDP ni L7): sus bytes no son una
+    /// cabecera L4 y leerlos como tal inventaría puertos (flujos y alertas
+    /// falsas).
     pub fn dissect<'a>(&self, raw: &'a RawPacket, link: LinkType) -> Option<DissectedPacket<'a>> {
-        let (eth, l3) = match link {
-            LinkType::Ethernet => {
-                let (info, rest) = parse_ethernet(&raw.data)?;
-                (Some(info), rest)
-            }
-            LinkType::RawIp => (None, &raw.data[..]),
-            // SLL, loopback, etc.: fuera de alcance (documentado).
-            LinkType::Unknown(_) => return None,
-        };
+        let (eth, l3, version) = split_link(&raw.data, link)?;
 
-        // ¿IPv4 o IPv6? En Ethernet lo dice el ethertype; en IP crudo, el
-        // nibble de versión. Otros ethertypes (ARP, ...) se descartan por ahora.
-        let is_v6 = match &eth {
-            Some(e) => e.ethertype == 0x86dd,
-            None => l3.first().is_some_and(|b| b >> 4 == 6),
-        };
-        let (ipv4, ipv6, transport, l4) = if is_v6 {
-            let (i6, l4) = parse_ipv6(l3)?;
-            let t = Transport::from_ip_proto(i6.next_header);
-            (None, Some(i6), t, l4)
-        } else {
-            let (i4, l4) = parse_ipv4(l3)?;
-            let t = Transport::from_ip_proto(i4.protocol);
-            (Some(i4), None, t, l4)
+        let (ipv4, ipv6, transport, l4) = match version {
+            6 => {
+                let (i6, l4) = parse_ipv6(l3)?;
+                let t = Transport::from_ip_proto(i6.next_header);
+                (None, Some(i6), t, l4)
+            }
+            4 => {
+                let (i4, l4) = parse_ipv4(l3)?;
+                let t = if i4.is_non_initial_fragment() {
+                    Transport::Other(i4.protocol)
+                } else {
+                    Transport::from_ip_proto(i4.protocol)
+                };
+                (Some(i4), None, t, l4)
+            }
+            _ => return None,
         };
 
         let mut pkt = DissectedPacket {
             eth,
-            ip_version: if ipv6.is_some() { 6 } else { 4 },
+            ip_version: version,
             ipv4,
             ipv6,
             transport,
@@ -212,6 +211,83 @@ impl DissectorPipeline {
             Transport::Tcp if sport == 53 || dport == 53 => payload.get(2..).and_then(parse_dns),
             _ => None,
         }
+    }
+}
+
+/// Ethertypes IP (también protocolo de Linux SLL/SLL2).
+const ETHERTYPE_IPV4: u16 = 0x0800;
+const ETHERTYPE_IPV6: u16 = 0x86dd;
+
+/// Versión IP a partir de un ethertype; `None` si no es IP (ARP, MPLS, LLC,
+/// etiqueta VLAN sin resolver, ...).
+fn ip_version_from_ethertype(ethertype: u16) -> Option<u8> {
+    match ethertype {
+        ETHERTYPE_IPV4 => Some(4),
+        ETHERTYPE_IPV6 => Some(6),
+        _ => None,
+    }
+}
+
+/// Versión IP a partir de la familia de direcciones de DLT_NULL/DLT_LOOP:
+/// AF_INET = 2 en todos los sistemas; AF_INET6 = 24 (BSD), 28 (FreeBSD),
+/// 30 (macOS).
+fn ip_version_from_af(family: u32) -> Option<u8> {
+    match family {
+        2 => Some(4),
+        24 | 28 | 30 => Some(6),
+        _ => None,
+    }
+}
+
+/// Separa la cabecera de enlace: devuelve `(ethernet, bytes_l3, versión_ip)`.
+///
+/// Enlaces soportados: Ethernet (1), IP crudo (101/12), Linux "any" SLL
+/// (113, 16 B, protocolo en el offset 14) y SLL2 (276, 20 B, protocolo en
+/// el offset 0), BSD loopback DLT_NULL (0, familia de 4 B en el orden del
+/// equipo que capturó) y DLT_LOOP (108, familia en orden de red).
+fn split_link(data: &[u8], link: LinkType) -> Option<(Option<EthernetInfo>, &[u8], u8)> {
+    match link {
+        LinkType::Ethernet => {
+            let (info, rest) = parse_ethernet(data)?;
+            // Solo 0x0800/0x86dd son IP; el resto (ARP, MPLS, LLC, más
+            // etiquetas VLAN de las soportadas, ...) se descarta.
+            let v = ip_version_from_ethertype(info.ethertype)?;
+            Some((Some(info), rest, v))
+        }
+        LinkType::RawIp => {
+            let v = data.first()? >> 4;
+            Some((None, data, v))
+        }
+        LinkType::Unknown(113) => {
+            let proto = data.get(14..16)?;
+            let v = ip_version_from_ethertype(u16::from_be_bytes([proto[0], proto[1]]))?;
+            Some((None, data.get(16..)?, v))
+        }
+        LinkType::Unknown(276) => {
+            let proto = data.get(0..2)?;
+            let v = ip_version_from_ethertype(u16::from_be_bytes([proto[0], proto[1]]))?;
+            Some((None, data.get(20..)?, v))
+        }
+        LinkType::Unknown(0) => {
+            let fam: [u8; 4] = data.get(0..4)?.try_into().ok()?;
+            // Orden del equipo de captura, desconocido aquí: las familias
+            // caben en 16 bits, así que si en little-endian sale un valor
+            // enorme es que se escribió en big-endian (heurística de Wireshark).
+            let le = u32::from_le_bytes(fam);
+            let family = if le > 0xffff {
+                u32::from_be_bytes(fam)
+            } else {
+                le
+            };
+            Some((None, data.get(4..)?, ip_version_from_af(family)?))
+        }
+        LinkType::Unknown(108) => {
+            let fam: [u8; 4] = data.get(0..4)?.try_into().ok()?;
+            let v = ip_version_from_af(u32::from_be_bytes(fam))?;
+            Some((None, data.get(4..)?, v))
+        }
+        // Resto de enlaces (802.11, PPP, ...): fuera de alcance.
+        LinkType::Unknown(_) => None,
     }
 }
 
@@ -544,5 +620,118 @@ mod tests {
         let (info, payload) = parse_ethernet(&frame).unwrap();
         assert_eq!(info.ethertype, 0x0800);
         assert_eq!(payload.len(), 20);
+    }
+    fn trama_tcp_telnet() -> Vec<u8> {
+        tg::frame_tcp(
+            tg::MAC_HOST_A,
+            tg::MAC_ROUTER,
+            tg::HOST_A,
+            tg::WEB,
+            40000,
+            23,
+            1,
+            0,
+            tg::flags::SYN,
+            &[],
+        )
+    }
+
+    fn dissect_link(data: Vec<u8>, link: LinkType) -> Option<DissectedPacket<'static>> {
+        let raw: &'static RawPacket = Box::leak(Box::new(RawPacket {
+            ts_micros: 0,
+            orig_len: data.len() as u32,
+            data,
+        }));
+        DissectorPipeline::new().dissect(raw, link)
+    }
+
+    #[test]
+    fn fragmento_ipv4_no_inicial_es_solo_l3() {
+        // Regresión: offset 185 con proto 6 producía un flujo TCP falso.
+        let mut f = trama_tcp_telnet();
+        f[20..22].copy_from_slice(&185u16.to_be_bytes());
+        let dp = dissect_link(f, LinkType::Ethernet).expect("se conserva como L3");
+        assert_eq!(dp.ip_version, 4);
+        assert_eq!(dp.transport, Transport::Other(6));
+        assert!(dp.tcp.is_none() && dp.udp.is_none());
+        assert_eq!(dp.l7, L7Protocol::Unknown);
+
+        // El primer fragmento (MF=1, offset 0) sí lleva cabecera TCP.
+        let mut f = trama_tcp_telnet();
+        f[20..22].copy_from_slice(&0x2000u16.to_be_bytes());
+        let dp = dissect_link(f, LinkType::Ethernet).unwrap();
+        assert_eq!(dp.tcp.unwrap().dst_port, 23);
+    }
+
+    #[test]
+    fn ethertypes_no_ip_se_descartan_y_qinq_se_resuelve() {
+        let base = trama_tcp_telnet();
+        // MPLS (0x8847) y longitud LLC (0x0040): ya no van al parser IPv4.
+        for et in [0x8847u16, 0x0040, 0x88a8] {
+            let mut f = base.clone();
+            f[12..14].copy_from_slice(&et.to_be_bytes());
+            assert!(dissect_link(f, LinkType::Ethernet).is_none(), "{et:#06x}");
+        }
+        // QinQ: 0x88a8 + 0x8100 + IPv4.
+        let mut f = base[..12].to_vec();
+        f.extend_from_slice(&[0x88, 0xa8, 0, 10, 0x81, 0x00, 0, 20]);
+        f.extend_from_slice(&base[12..]);
+        let dp = dissect_link(f, LinkType::Ethernet).expect("QinQ diseccionado");
+        assert_eq!(dp.tcp.unwrap().dst_port, 23);
+    }
+
+    #[test]
+    fn enlaces_sll_sll2_null_y_loop() {
+        let ip = trama_tcp_telnet()[14..].to_vec();
+        let ip6 = tg::frame_ipv6_udp(
+            tg::MAC_HOST_A,
+            tg::MAC_ROUTER,
+            tg::HOST_A6,
+            tg::DNS6,
+            53010,
+            53,
+            &tg::dns_query(7, "sll.example", 1),
+        )[14..]
+            .to_vec();
+
+        // SLL: 16 bytes, protocolo en el offset 14.
+        let mut sll = vec![0u8; 14];
+        sll.extend_from_slice(&0x0800u16.to_be_bytes());
+        let dp = dissect_link([sll, ip.clone()].concat(), LinkType::Unknown(113)).unwrap();
+        assert_eq!(dp.tcp.unwrap().dst_port, 23);
+
+        // SLL2: 20 bytes, protocolo en el offset 0.
+        let mut sll2 = 0x86ddu16.to_be_bytes().to_vec();
+        sll2.extend_from_slice(&[0u8; 18]);
+        let dp = dissect_link([sll2, ip6.clone()].concat(), LinkType::Unknown(276)).unwrap();
+        assert_eq!(dp.ip_version, 6);
+        assert!(dp.dns.is_some());
+
+        // DLT_NULL: familia en el orden del equipo (aquí LE y BE).
+        let le = [2u32.to_le_bytes().to_vec(), ip.clone()].concat();
+        assert_eq!(
+            dissect_link(le, LinkType::Unknown(0)).unwrap().ip_version,
+            4
+        );
+        let be = [30u32.to_be_bytes().to_vec(), ip6.clone()].concat();
+        assert_eq!(
+            dissect_link(be, LinkType::Unknown(0)).unwrap().ip_version,
+            6
+        );
+
+        // DLT_LOOP: orden de red.
+        let lo = [24u32.to_be_bytes().to_vec(), ip6].concat();
+        assert_eq!(
+            dissect_link(lo, LinkType::Unknown(108)).unwrap().ip_version,
+            6
+        );
+
+        // Familia desconocida, enlace no soportado o truncado: None, sin panic.
+        let raro = [7u32.to_be_bytes().to_vec(), ip.clone()].concat();
+        assert!(dissect_link(raro, LinkType::Unknown(108)).is_none());
+        assert!(dissect_link(ip, LinkType::Unknown(105)).is_none());
+        for link in [0u32, 108, 113, 276] {
+            assert!(dissect_link(vec![0; 3], LinkType::Unknown(link)).is_none());
+        }
     }
 }
