@@ -1,0 +1,94 @@
+name: Fuzz
+
+# Fuzzing guiado por cobertura (cargo-fuzz + libFuzzer, nightly). No es un
+# gate de PR: corre cada noche y a demanda. El gate obligatorio sigue siendo
+# el fuzzer determinista de ci.yml (`socshark dev fuzz`).
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: "Segundos de fuzzing por objetivo"
+        required: false
+        default: "300"
+
+# Mínimo privilegio: solo lectura del repositorio.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_FUZZ_VERSION: "0.13.2"
+
+# Acciones fijadas por SHA de commit completo (mismas que ci.yml/release.yml).
+jobs:
+  fuzz:
+    name: fuzz (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [dns, ipv4, ipv6, tcp, udp, tls, dissect, pcap, carve, filter]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Instalar toolchain nightly
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: nightly
+
+      - name: Caché de dependencias
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: |
+            fuzz -> target
+            fuzz/seeds -> target
+
+      - name: Instalar cargo-fuzz
+        run: |
+          if ! cargo fuzz --version 2>/dev/null | grep -q "$CARGO_FUZZ_VERSION"; then
+            cargo install cargo-fuzz --locked --version "$CARGO_FUZZ_VERSION"
+          fi
+
+      # Corpus persistente: clave única por ejecución y restauración por
+      # prefijo, así cada noche parte del corpus de la anterior.
+      - name: Restaurar corpus
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: fuzz-corpus-${{ matrix.target }}-
+
+      - name: Semillas (escenarios de socshark-testgen)
+        run: cargo run --release --manifest-path fuzz/seeds/Cargo.toml -- fuzz/corpus
+
+      - name: Fuzzing
+        env:
+          TARGET: ${{ matrix.target }}
+          SECONDS_PER_TARGET: ${{ github.event.inputs.seconds || '300' }}
+        run: cargo fuzz run "$TARGET" -- -max_total_time="$SECONDS_PER_TARGET" -timeout=10
+
+      - name: Minimizar corpus
+        if: success()
+        env:
+          TARGET: ${{ matrix.target }}
+        run: cargo fuzz cmin "$TARGET"
+
+      - name: Guardar corpus
+        if: always()
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+
+      # Entradas que provocan el fallo: reproducir con
+      # `cargo +nightly fuzz run <objetivo> <archivo>`.
+      - name: Subir entradas que fallan
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}
+          if-no-files-found: ignore
