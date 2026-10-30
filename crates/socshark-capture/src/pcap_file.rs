@@ -282,8 +282,7 @@ impl<R: Read> PcapFileReader<R> {
                 "pcapng: bloque de {len} bytes imposible (archivo corrupto)"
             )));
         }
-        let mut body = vec![0u8; len - 8];
-        self.reader.read_exact(&mut body).map_err(truncated)?;
+        let mut body = read_len(&mut self.reader, len - 8).map_err(truncated)?;
         body.truncate(len - 12); // fuera la longitud repetida del final
         if kind == NG_IDB {
             ng.interfaces.push(parse_idb(ng.endian, &body)?);
@@ -388,6 +387,18 @@ impl<R: Read> PcapFileReader<R> {
     }
 }
 
+/// Lee exactamente `len` bytes sin reservarlos de antemano: la longitud
+/// viene del archivo y un registro de 40 bytes que declara 256 MiB no debe
+/// costar 256 MiB de memoria. El búfer crece con lo que de verdad llega.
+fn read_len(reader: &mut impl Read, len: usize) -> std::io::Result<Vec<u8>> {
+    let mut buf = Vec::with_capacity(len.min(64 * 1024));
+    reader.by_ref().take(len as u64).read_to_end(&mut buf)?;
+    if buf.len() < len {
+        return Err(std::io::ErrorKind::UnexpectedEof.into());
+    }
+    Ok(buf)
+}
+
 /// Resto de un Section Header Block (tras su tipo): devuelve su orden de
 /// bytes y deja el lector al principio del bloque siguiente.
 fn read_shb(reader: &mut impl Read) -> Result<Endianness, CaptureError> {
@@ -410,8 +421,7 @@ fn read_shb(reader: &mut impl Read) -> Result<Endianness, CaptureError> {
         )));
     }
     // versión(4) + longitud de sección(8) + opciones + longitud final.
-    let mut rest = vec![0u8; len - 12];
-    reader.read_exact(&mut rest).map_err(truncated)?;
+    let rest = read_len(reader, len - 12).map_err(truncated)?;
     let major = endian.u16([rest[0], rest[1]]);
     if major != 1 {
         return Err(CaptureError::InvalidPcap(format!(
@@ -502,15 +512,15 @@ impl<R: Read> CaptureSource for PcapFileReader<R> {
             )));
         }
 
-        let mut data = vec![0u8; incl_len];
-        if let Err(e) = self.reader.read_exact(&mut data) {
-            if e.kind() == std::io::ErrorKind::UnexpectedEof {
+        let data = match read_len(&mut self.reader, incl_len) {
+            Ok(d) => d,
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
                 return Err(CaptureError::InvalidPcap(
                     "archivo truncado a mitad de un registro".into(),
                 ));
             }
-            return Err(e.into());
-        }
+            Err(e) => return Err(e.into()),
+        };
 
         let ts_micros = if nanos {
             ts_sec as u64 * 1_000_000 + (ts_frac / 1_000) as u64
@@ -610,6 +620,30 @@ mod tests {
         assert!(r.nanosecond_resolution());
         let p = r.next_packet().unwrap().unwrap();
         assert_eq!(p.ts_micros, 5_123_456); // 789 ns truncados a micros
+    }
+
+    #[test]
+    fn longitud_declarada_enorme_no_reserva_memoria_por_adelantado() {
+        // 40 bytes que anuncian un registro de 200 MiB: antes se reservaban
+        // los 200 MiB antes de leer (el fuzzer `pcap` hacía ~270 ejecuciones
+        // en 20 s). Ahora falla como truncado sin reservar nada grande.
+        let mut b = Vec::new();
+        b.extend_from_slice(&0xa1b2c3d4u32.to_le_bytes());
+        b.extend_from_slice(&2u16.to_le_bytes());
+        b.extend_from_slice(&4u16.to_le_bytes());
+        b.extend_from_slice(&[0; 8]);
+        b.extend_from_slice(&65535u32.to_le_bytes());
+        b.extend_from_slice(&1u32.to_le_bytes());
+        b.extend_from_slice(&[0; 8]);
+        let huge = 200u32 * 1024 * 1024;
+        b.extend_from_slice(&huge.to_le_bytes());
+        b.extend_from_slice(&huge.to_le_bytes());
+        let mut r = PcapFileReader::new(b.as_slice()).unwrap();
+        assert!(matches!(r.next_packet(), Err(CaptureError::InvalidPcap(_))));
+
+        let mut cursor = &[1u8, 2, 3][..];
+        let e = read_len(&mut cursor, usize::MAX / 2).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::UnexpectedEof);
     }
 
     #[test]
