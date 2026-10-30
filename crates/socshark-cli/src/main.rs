@@ -8,16 +8,35 @@ use socshark_cli::fuzz::{self, FuzzOptions};
 use socshark_cli::gui::{self, GuiOptions};
 use socshark_cli::output;
 use socshark_cli::pipeline::{run_capture, run_follow};
+#[cfg(feature = "tui")]
 use socshark_cli::tui;
 use socshark_core::config::PipelineConfig;
 use std::io::Write;
+use std::path::{Path, PathBuf};
 
 fn main() {
     let cli = Cli::parse();
     if let Err(err) = run(cli) {
+        // `socshark capture --json - | head -1`: que el lector se vaya no es
+        // un error del análisis; se sale limpio, como las herramientas Unix.
+        if output::is_broken_pipe(&err) {
+            std::process::exit(0);
+        }
         eprintln!("error: {err:#}");
         std::process::exit(1);
     }
+}
+
+/// Entradas de un comando (captura e intel) que ninguna salida puede pisar.
+fn inputs<'a>(
+    read: &'a Path,
+    intel_feodo: &'a Option<PathBuf>,
+    intel_tor: &'a Option<PathBuf>,
+) -> Vec<&'a Path> {
+    std::iter::once(read)
+        .chain(intel_feodo.as_deref())
+        .chain(intel_tor.as_deref())
+        .collect()
 }
 
 fn run(cli: Cli) -> anyhow::Result<()> {
@@ -39,6 +58,9 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 eprintln!("error: --workers debe ser ≥ 1");
                 std::process::exit(2);
             }
+            if let Some(path) = &json {
+                output::refuse_overwrite(path, &inputs(&read, &intel_feodo, &intel_tor))?;
+            }
             let cfg = PipelineConfig {
                 max_flows,
                 idle_timeout_secs: idle_timeout,
@@ -53,16 +75,14 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             match &json {
                 Some(path) if path.as_os_str() == "-" => {
                     // Volcado puro a stdout (para tuberías con jq, etc.).
-                    for flow in &out.flows {
-                        println!("{}", serde_json::to_string(flow)?);
-                    }
+                    output::write_jsonl_to(&mut std::io::stdout().lock(), &out.flows)?;
                 }
                 Some(path) => {
                     output::write_jsonl(path, &out.flows)?;
                     eprintln!("[+] JSONL escrito en {}", path.display());
-                    output::print_summary(&out, top);
+                    output::print_summary(&out, top)?;
                 }
-                None => output::print_summary(&out, top),
+                None => output::print_summary(&out, top)?,
             }
             Ok(())
         }
@@ -79,7 +99,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 ..PipelineConfig::default()
             };
             match run_follow(&read, &flow, &cfg)? {
-                Some((flow, stream)) => follow::print_follow(&flow, &stream, hex, max_bytes),
+                Some((flow, stream)) => follow::print_follow(&flow, &stream, hex, max_bytes)?,
                 None => {
                     eprintln!("[!] ningún flujo coincide con '{flow}'");
                     eprintln!(
@@ -99,10 +119,9 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             #[cfg(not(feature = "tui"))]
             {
                 let _ = (&read, &filter);
-                eprintln!(
-                    "[!] La TUI no está incluida en este build: recompila con --features tui"
-                );
-                Ok(())
+                Err(anyhow::anyhow!(
+                    "la TUI no está incluida en este build: recompila con --features tui"
+                ))
             }
         }
 
@@ -168,6 +187,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             intel_feodo,
             intel_tor,
         } => {
+            output::refuse_overwrite(&out, &inputs(&read, &intel_feodo, &intel_tor))?;
             let cfg = PipelineConfig {
                 file_carving: true,
                 intel_feodo,
@@ -199,6 +219,9 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 eprintln!("error: --format debe ser 'ecs' o 'wazuh' (recibido: '{format}')");
                 std::process::exit(2);
             }
+            if let Some(p) = &out {
+                output::refuse_overwrite(p, &inputs(&read, &intel_feodo, &intel_tor))?;
+            }
             let cfg = PipelineConfig {
                 file_carving: carve_files,
                 intel_feodo,
@@ -218,14 +241,15 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 };
                 writeln!(sink, "{line}")?;
             }
-            if sink.flush().is_ok() {
-                eprintln!(
-                    "[+] {} flujos exportados en formato {fmt} a {}",
-                    out_data.flows.len(),
-                    out.as_ref()
-                        .map_or_else(|| "stdout".to_string(), |p| p.display().to_string())
-                );
-            }
+            // Un fallo al vaciar (disco lleno, tubería rota) es un fallo de
+            // la exportación: se propaga en vez de salir con 0.
+            sink.flush()?;
+            eprintln!(
+                "[+] {} flujos exportados en formato {fmt} a {}",
+                out_data.flows.len(),
+                out.as_ref()
+                    .map_or_else(|| "stdout".to_string(), |p| p.display().to_string())
+            );
             Ok(())
         }
 

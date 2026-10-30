@@ -84,6 +84,13 @@ pub struct ClientHello {
 }
 
 impl ClientHello {
+    /// True si el cliente envió la extensión SNI (0x0000). Es lo único que
+    /// mira el spec JA4 para la bandera `d`/`i`: no importa si el nombre es
+    /// UTF-8 válido ni si la lista está bien formada.
+    pub fn has_sni_extension(&self) -> bool {
+        self.sni.is_some() || self.extensions.iter().any(|(t, _)| *t == 0x0000)
+    }
+
     /// Extrae el SNI y el ALPN de los datos crudos de las extensiones.
     fn populate_extras(&mut self) {
         for (etype, data) in &self.extensions {
@@ -168,7 +175,7 @@ impl ClientHello {
         let part_a = format!(
             "t{}{}{:02}{:02}{}",
             self.tls_version_str(),
-            if self.sni.is_some() { "d" } else { "i" },
+            if self.has_sni_extension() { "d" } else { "i" },
             n_ciphers.min(99),
             n_exts.min(99),
             self.alpn_str(),
@@ -319,12 +326,22 @@ pub fn parse_client_hello(data: &[u8]) -> Option<ClientHello> {
     }
     let comp_len = p[0] as usize;
     p = &p[1..];
-    if p.len() < comp_len + 2 {
+    if p.len() < comp_len {
         return None;
     }
     p = &p[comp_len..];
-    let ext_len = u16::from_be_bytes([p[0], p[1]]) as usize;
-    p = &p[2..];
+    // El bloque de extensiones es opcional en TLS 1.0/1.1 (RFC 4346 §7.4.1.2):
+    // si el cuerpo termina tras la compresión, son cero extensiones (JA4
+    // cuenta `00`). Un único byte suelto sí es un mensaje malformado.
+    let ext_len = match p.len() {
+        0 => 0,
+        1 => return None,
+        _ => {
+            let l = u16::from_be_bytes([p[0], p[1]]) as usize;
+            p = &p[2..];
+            l
+        }
+    };
     if p.len() < ext_len {
         return None;
     }
@@ -396,18 +413,23 @@ impl ClientHelloCapture {
     /// Alimenta con el siguiente payload en dirección iniciador→servidor.
     /// Los payloads que no empiezan por un registro handshake TLS marcan la
     /// captura como fallida de forma permanente (el CH es lo primero que
-    /// envía un cliente TLS legítimo).
+    /// envía un cliente TLS legítimo). Un primer segmento de un solo byte
+    /// `0x16` no basta para decidir: se acumula y se espera al siguiente.
+    ///
+    /// Los payloads deben llegar **en orden de secuencia TCP y sin
+    /// duplicados** (retransmisiones descartadas): ordenar es tarea del
+    /// agregador de flujos, este acumulador solo concatena.
     pub fn feed(&mut self, payload: &[u8]) {
         match self.state {
             HelloState::Complete | HelloState::Failed => {}
-            HelloState::Idle => {
-                if payload.len() >= 2 && payload[0] == 0x16 && payload[1] == 0x03 {
+            HelloState::Idle => match payload {
+                [] => {}
+                [0x16] | [0x16, 0x03, ..] => {
                     self.state = HelloState::Accumulating;
                     self.push(payload);
-                } else if !payload.is_empty() {
-                    self.state = HelloState::Failed;
                 }
-            }
+                _ => self.state = HelloState::Failed,
+            },
             HelloState::Accumulating => self.push(payload),
         }
     }
@@ -421,28 +443,53 @@ impl ClientHelloCapture {
         self.try_finish();
     }
 
-    /// Intenta completar: comprueba cabecera de registro (5 B) y de
-    /// handshake (4 B) y espera a tener el mensaje íntegro aunque cruce
-    /// varios registros/segmentos.
+    /// Intenta completar: recorre los registros TLS acumulados (cabecera de
+    /// 5 B cada uno), concatena sus cuerpos quitando esas cabeceras y espera
+    /// a tener el mensaje handshake íntegro (cabecera de 4 B + cuerpo),
+    /// aunque cruce varios registros y segmentos.
     fn try_finish(&mut self) {
-        if self.buf.len() < 9 {
-            return;
-        }
-        if self.buf[0] != 0x16 || self.buf[5] != 0x01 {
+        // Segundo byte del primer registro: versión mayor 3 (SSL3/TLS).
+        if self.buf.len() >= 2 && self.buf[1] != 0x03 {
             self.state = HelloState::Failed;
             return;
         }
-        let hs_len =
-            ((self.buf[6] as usize) << 16) | ((self.buf[7] as usize) << 8) | self.buf[8] as usize;
+        let mut hs: Vec<u8> = Vec::new();
+        let mut rest = &self.buf[..];
+        while rest.len() >= 5 {
+            // Todos los registros que transportan el CH son de handshake.
+            if rest[0] != 0x16 || rest[1] != 0x03 {
+                self.state = HelloState::Failed;
+                return;
+            }
+            let rec_len = u16::from_be_bytes([rest[3], rest[4]]) as usize;
+            if rec_len == 0 {
+                // Prohibido por RFC 8446 §5.1 para handshake: no insistir.
+                self.state = HelloState::Failed;
+                return;
+            }
+            // Un registro aún incompleto aporta lo que ya haya llegado.
+            let body = &rest[5..];
+            let take = rec_len.min(body.len());
+            hs.extend_from_slice(&body[..take]);
+            rest = &body[take..];
+        }
+        if hs.len() < 4 {
+            return; // esperar más segmentos
+        }
+        if hs[0] != 0x01 {
+            self.state = HelloState::Failed;
+            return;
+        }
+        let hs_len = ((hs[1] as usize) << 16) | ((hs[2] as usize) << 8) | hs[3] as usize;
         if hs_len > MAX_HELLO_BYTES {
             self.state = HelloState::Failed;
             return;
         }
-        let needed = 9 + hs_len;
-        if self.buf.len() < needed {
-            return; // esperar más segmentos
+        let needed = 4 + hs_len;
+        if hs.len() < needed {
+            return; // esperar más registros/segmentos
         }
-        match parse_client_hello(&self.buf[5..needed]) {
+        match parse_client_hello(&hs[..needed]) {
             Some(hello) => {
                 self.hello = Some(hello);
                 self.state = HelloState::Complete;
@@ -527,10 +574,11 @@ mod tests {
     }
 
     /// Construye un registro TLS completo a partir del cuerpo del handshake.
+    /// La longitud del registro incluye la cabecera de handshake (4 B).
     fn record(hs_body: &[u8]) -> Vec<u8> {
         let mut out = vec![0x16, 0x03, 0x01];
         let l = hs_body.len();
-        out.extend_from_slice(&(l as u16).to_be_bytes());
+        out.extend_from_slice(&((l + 4) as u16).to_be_bytes());
         out.push(0x01);
         out.extend_from_slice(&[(l >> 16) as u8, (l >> 8) as u8, l as u8]);
         out.extend_from_slice(hs_body);
@@ -637,6 +685,78 @@ mod tests {
             cap.ja4().as_deref(),
             Some("t13d0208h2_777cda164f4b_af51ac0c444f")
         );
+    }
+
+    #[test]
+    fn primer_segmento_de_un_byte_no_falla() {
+        // Regresión: un primer segmento [0x16] marcaba la captura como fallida.
+        let rec = demo_client_hello("byte.example", b"h2");
+        let mut cap = ClientHelloCapture::default();
+        cap.feed(&rec[..1]);
+        assert!(!cap.is_done());
+        cap.feed(&rec[1..]);
+        assert_eq!(cap.hello().unwrap().sni.as_deref(), Some("byte.example"));
+    }
+
+    #[test]
+    fn client_hello_repartido_en_varios_registros() {
+        // Regresión: el CH partido en dos registros TLS fallaba porque la
+        // cabecera del segundo registro quedaba en medio del handshake.
+        let rec = demo_client_hello("registros.example", b"h2");
+        let hs = &rec[5..];
+        let (a, b) = hs.split_at(40);
+        let mut two = Vec::new();
+        for part in [a, b] {
+            two.extend_from_slice(&[0x16, 0x03, 0x01]);
+            two.extend_from_slice(&(part.len() as u16).to_be_bytes());
+            two.extend_from_slice(part);
+        }
+        // Además partido en segmentos TCP arbitrarios (uno corta la 2ª cabecera).
+        let mut cap = ClientHelloCapture::default();
+        for chunk in [&two[..3], &two[3..46], &two[46..47], &two[47..]] {
+            cap.feed(chunk);
+        }
+        assert_eq!(
+            cap.ja4().as_deref(),
+            Some("t13d0208h2_777cda164f4b_af51ac0c444f")
+        );
+    }
+
+    #[test]
+    fn client_hello_sin_extensiones_tls10() {
+        // TLS 1.0 sin bloque de extensiones: válido, cero extensiones.
+        let mut body = vec![0x03, 0x01];
+        body.extend_from_slice(&[0x11; 32]);
+        body.push(0);
+        body.extend_from_slice(&[0x00, 0x02, 0x00, 0x2f]);
+        body.extend_from_slice(&[0x01, 0x00]);
+        let rec = record(&body);
+        let ch = parse_client_hello(&rec[5..]).expect("extensiones opcionales");
+        assert!(ch.extensions.is_empty());
+        assert!(ch.ja4().starts_with("t10i010000_"), "{}", ch.ja4());
+        let mut cap = ClientHelloCapture::default();
+        cap.feed(&rec);
+        assert!(cap.hello().is_some());
+        // Un byte suelto donde iría la longitud sí es malformado.
+        let mut body1 = body.clone();
+        body1.push(0x00);
+        assert!(parse_client_hello(&record(&body1)[5..]).is_none());
+    }
+
+    #[test]
+    fn sni_no_utf8_sigue_contando_como_dominio() {
+        // La bandera 'd' depende de la presencia de la extensión 0x0000,
+        // no de que el nombre sea UTF-8 válido.
+        let ch = ClientHello {
+            legacy_version: [0x03, 0x03],
+            cipher_suites: vec![0x1301],
+            extensions: vec![(0x0000, vec![0, 4, 0, 0, 1, 0xff])],
+            sni: None,
+            alpn: None,
+            sig_algs: vec![],
+            supported_versions: vec![],
+        };
+        assert!(ch.ja4().starts_with("t12d0101"), "{}", ch.ja4());
     }
 
     #[test]

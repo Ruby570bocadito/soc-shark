@@ -18,7 +18,7 @@ edition = "2021"
 license = "MIT"
 authors = ["soc-shark contributors"]
 repository = "https://github.com/Ruby570bocadito/soc-shark"
-rust-version = "1.75"
+rust-version = "1.88"
 
 [workspace.dependencies]
 # Crates internos

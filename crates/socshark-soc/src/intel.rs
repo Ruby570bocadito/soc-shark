@@ -3,13 +3,18 @@
 //! Cubre la parte de la Fase 4 que no exige datos binarios propietarios:
 //! listas de texto plano de IPs/CIDR de C2 (formato Feodo Tracker) y de
 //! nodos de salida de Tor (formato Bulk Exit List). Cada línea válida aporta
-//! una IP exacta o un CIDR v4/v6; los comentarios (`#`), las líneas vacías
-//! y las que no contienen IP se toleran sin error (las listas públicas
-//! cambian de formato con frecuencia y un parser estricto rompería el pipeline).
+//! una IP exacta o un CIDR v4/v6; los comentarios (`#`), las líneas vacías,
+//! las que no contienen IP y las que no son UTF-8 válido se toleran sin
+//! error (las listas públicas cambian de formato con frecuencia y un parser
+//! estricto rompería el pipeline). Las redes demasiado amplias (`0.0.0.0/0`,
+//! prefijos más cortos que /8 en IPv4 o /16 en IPv6) se rechazan con un
+//! aviso en [`ThreatIntelDb::warnings`]: una sola línea así marcaría media
+//! Internet como C2.
 //!
 //! El enriquecimiento marca `EnrichedFlow::threat_intel` con las etiquetas
-//! coincidentes (`FEODO-C2`, `TOR-EXIT`) y la regla `R7` del mini-IDS las
-//! convierte en alertas. GeoIP/ASN (`.mmdb`) queda pendiente de un lector
+//! coincidentes (`FEODO-C2`, `TOR-EXIT`) de **cualquiera de los dos
+//! extremos** (un C2 o una salida Tor también pueden iniciar la conexión
+//! hacia dentro) y la regla `R7` del mini-IDS las convierte en alertas. GeoIP/ASN (`.mmdb`) queda pendiente de un lector
 //! propio sin dependencias (ver roadmap, Fase 4).
 //!
 //! Este módulo no hace red: las listas se descargan fuera (cron, curl, el
@@ -25,6 +30,13 @@ pub const TAG_FEODO: &str = "FEODO-C2";
 /// Etiqueta aplicada a los flujos cuyo destino es un nodo de salida Tor.
 pub const TAG_TOR: &str = "TOR-EXIT";
 
+/// Prefijo IPv4 más corto aceptado en una lista (más amplio = rechazado).
+pub const MIN_PREFIX_V4: u8 = 8;
+/// Prefijo IPv6 más corto aceptado en una lista.
+pub const MIN_PREFIX_V6: u8 = 16;
+/// Tope de avisos guardados (una lista corrupta no llena la memoria).
+const MAX_WARNINGS: usize = 32;
+
 /// Base de indicadores en memoria: IPs exactas por lista y redes CIDR.
 #[derive(Debug, Default, Clone)]
 pub struct ThreatIntelDb {
@@ -35,13 +47,21 @@ pub struct ThreatIntelDb {
     /// Contadores de carga: útil para verificar en CLI que la lista se leyó.
     pub feodo_entries: usize,
     pub tor_entries: usize,
+    /// Avisos de carga (redes demasiado amplias rechazadas). La CLI debería
+    /// mostrarlos tras cargar las listas.
+    pub warnings: Vec<String>,
 }
 
 impl ThreatIntelDb {
     /// Carga una lista tipo Feodo Tracker (ipblocklist): una IP o CIDR por
     /// línea, `#` para comentarios. Devuelve el número de entradas válidas.
     pub fn load_feodo(&mut self, path: &Path) -> std::io::Result<usize> {
-        let added = Self::load_into(&mut self.feodo_ips, &mut self.feodo_nets, path)?;
+        let added = Self::load_into(
+            &mut self.feodo_ips,
+            &mut self.feodo_nets,
+            &mut self.warnings,
+            path,
+        )?;
         self.feodo_entries += added;
         Ok(added)
     }
@@ -49,7 +69,12 @@ impl ThreatIntelDb {
     /// Carga una lista tipo Tor Bulk Exit List: líneas `ExitAddress <ip>`
     /// (se extrae la primera IP de cada línea). Devuelve entradas válidas.
     pub fn load_tor(&mut self, path: &Path) -> std::io::Result<usize> {
-        let added = Self::load_into(&mut self.tor_ips, &mut self.tor_nets, path)?;
+        let added = Self::load_into(
+            &mut self.tor_ips,
+            &mut self.tor_nets,
+            &mut self.warnings,
+            path,
+        )?;
         self.tor_entries += added;
         Ok(added)
     }
@@ -89,6 +114,31 @@ impl ThreatIntelDb {
         tags
     }
 
+    /// Etiquetas que coinciden con cualquiera de los dos extremos de un
+    /// flujo (sin duplicados, orden estable: Feodo antes que Tor).
+    pub fn check_flow(&self, src: IpAddr, dst: IpAddr) -> Vec<&'static str> {
+        let mut tags = self.check(dst);
+        for t in self.check(src) {
+            if !tags.contains(&t) {
+                tags.push(t);
+            }
+        }
+        tags.sort_by_key(|t| usize::from(*t != TAG_FEODO));
+        tags
+    }
+
+    /// Extremo del flujo que figura en la lista de `tag`: el destino si
+    /// está listado (caso habitual), si no el origen. `None` si ninguno.
+    pub fn listed_endpoint(&self, src: IpAddr, dst: IpAddr, tag: &str) -> Option<IpAddr> {
+        if self.check(dst).contains(&tag) {
+            Some(dst)
+        } else if self.check(src).contains(&tag) {
+            Some(src)
+        } else {
+            None
+        }
+    }
+
     fn match_list(ip: IpAddr, ips: &HashSet<IpAddr>, nets: &[(IpAddr, u8)]) -> bool {
         if ips.contains(&ip) {
             return true;
@@ -100,13 +150,24 @@ impl ThreatIntelDb {
     fn load_into(
         ips: &mut HashSet<IpAddr>,
         nets: &mut Vec<(IpAddr, u8)>,
+        warnings: &mut Vec<String>,
         path: &Path,
     ) -> std::io::Result<usize> {
         let f = std::fs::File::open(path)?;
-        let reader = std::io::BufReader::new(f);
+        let mut reader = std::io::BufReader::new(f);
         let mut added = 0usize;
-        for line in reader.lines() {
-            let line = line?;
+        // Dedup O(1) de redes (antes `nets.contains` hacía la carga O(n²)).
+        let mut seen_nets: HashSet<(IpAddr, u8)> = nets.iter().copied().collect();
+        let mut raw = Vec::new();
+        let mut line_no = 0usize;
+        loop {
+            raw.clear();
+            // Bytes crudos: una línea no UTF-8 no aborta la carga.
+            if reader.read_until(b'\n', &mut raw)? == 0 {
+                break;
+            }
+            line_no += 1;
+            let line = String::from_utf8_lossy(&raw);
             // Quita el comentario de cola y busca el primer token que sea
             // IP o CIDR (Feodo pone la IP al principio; el Bulk Exit List de
             // Tor la pone tras "ExitAddress").
@@ -123,8 +184,21 @@ impl ThreatIntelDb {
                     break;
                 }
                 if let Some((base, prefix)) = parse_cidr(token) {
-                    // Dedup simple: las listas públicas repiten redes a veces.
-                    if !nets.contains(&(base, prefix)) {
+                    let min = match base {
+                        IpAddr::V4(_) => MIN_PREFIX_V4,
+                        IpAddr::V6(_) => MIN_PREFIX_V6,
+                    };
+                    if prefix < min {
+                        if warnings.len() < MAX_WARNINGS {
+                            warnings.push(format!(
+                                "{}:{line_no}: red {base}/{prefix} demasiado amplia (mínimo /{min}), ignorada",
+                                path.display()
+                            ));
+                        }
+                        break;
+                    }
+                    // Las listas públicas repiten redes a veces.
+                    if seen_nets.insert((base, prefix)) {
                         nets.push((base, prefix));
                         added += 1;
                     }
@@ -326,6 +400,60 @@ mod tests {
             parse_cidr("10.0.0.0/8").map(|(b, p)| (b.to_string(), p)),
             Some(("10.0.0.0".into(), 8))
         );
+    }
+
+    #[test]
+    fn redes_demasiado_amplias_se_rechazan_con_aviso() {
+        let p = write_temp(
+            "amplias.txt",
+            "0.0.0.0/0\n1.0.0.0/7\n::/0\n2001::/15\n10.0.0.0/8\n2001:db8::/16\n",
+        );
+        let mut db = ThreatIntelDb::default();
+        let n = db.load_feodo(&p).unwrap();
+        assert_eq!(n, 2, "solo /8 v4 y /16 v6");
+        assert_eq!(db.warnings.len(), 4, "{:?}", db.warnings);
+        assert!(db.check("8.8.8.8".parse().unwrap()).is_empty());
+    }
+
+    #[test]
+    fn lineas_no_utf8_se_saltan_sin_abortar() {
+        let dir = std::env::temp_dir().join(format!("socshark-intel-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("binaria.txt");
+        std::fs::write(
+            &p,
+            b"\xff\xfe basura\n185.222.57.24\n\xc3\x28\n45.133.1.0/24\n",
+        )
+        .unwrap();
+        let mut db = ThreatIntelDb::default();
+        assert_eq!(db.load_feodo(&p).unwrap(), 2);
+        assert!(!db.check("185.222.57.24".parse().unwrap()).is_empty());
+    }
+
+    #[test]
+    fn redes_repetidas_se_cuentan_una_vez() {
+        let mut txt = String::new();
+        for i in 0..2000u32 {
+            txt.push_str(&format!("10.{}.{}.0/24\n", i / 256, i % 256));
+        }
+        txt.push_str(&txt.clone());
+        let p = write_temp("repetidas.txt", &txt);
+        let mut db = ThreatIntelDb::default();
+        assert_eq!(db.load_feodo(&p).unwrap(), 2000);
+    }
+
+    #[test]
+    fn ambos_extremos_del_flujo_se_comprueban() {
+        let p = write_temp("c2.txt", "203.0.113.66\n");
+        let mut db = ThreatIntelDb::default();
+        db.load_feodo(&p).unwrap();
+        let c2: IpAddr = "203.0.113.66".parse().unwrap();
+        let lan: IpAddr = "192.168.1.10".parse().unwrap();
+        // Conexión entrante desde el C2: antes no se etiquetaba.
+        assert_eq!(db.check_flow(c2, lan), vec![TAG_FEODO]);
+        assert_eq!(db.listed_endpoint(c2, lan, TAG_FEODO), Some(c2));
+        assert_eq!(db.listed_endpoint(lan, c2, TAG_FEODO), Some(c2));
+        assert!(db.check_flow(lan, lan).is_empty());
     }
 
     #[test]

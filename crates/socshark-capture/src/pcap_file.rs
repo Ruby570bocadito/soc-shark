@@ -86,7 +86,11 @@ impl TsResolution {
                 None => 0,
             },
             TsResolution::Decimal(n) => ts.saturating_mul(10u64.pow(u32::from(6 - n))),
-            TsResolution::Binary(n) => ((u128::from(ts) * 1_000_000) >> n.min(127)) as u64,
+            // Con n pequeño el resultado no cabe en u64: se satura en vez de
+            // truncar los bits altos (un `as` daría una marca arbitraria).
+            TsResolution::Binary(n) => {
+                u64::try_from((u128::from(ts) * 1_000_000) >> n.min(127)).unwrap_or(u64::MAX)
+            }
         }
     }
 }
@@ -236,7 +240,9 @@ impl<R: Read> PcapFileReader<R> {
                 }
                 Some((NG_IDB, _)) => {
                     if let Format::Ng(ng) = &me.format {
-                        me.link = ng.interfaces[0].link;
+                        if let Some(first) = ng.interfaces.first() {
+                            me.link = first.link;
+                        }
                     }
                     break;
                 }
@@ -342,7 +348,8 @@ impl<R: Read> PcapFileReader<R> {
                     "pcapng: paquete de la interfaz {iface}, que no se declaró"
                 )));
             };
-            let data = body.get(start..start + cap).ok_or_else(bad)?.to_vec();
+            let end = usize::checked_add(start, cap).ok_or_else(bad)?;
+            let data = body.get(start..end).ok_or_else(bad)?.to_vec();
             let ts_micros = match ts {
                 Some(raw) => {
                     let base = iface.resolution.to_micros(raw);
@@ -718,6 +725,9 @@ mod tests {
         assert_eq!(TsResolution::Decimal(3).to_micros(1_500), 1_500_000);
         assert_eq!(TsResolution::Binary(20).to_micros(1 << 20), 1_000_000);
         assert_eq!(TsResolution::Decimal(127).to_micros(u64::MAX), 0);
+        // Resolución binaria fina con marca enorme: satura, no trunca.
+        assert_eq!(TsResolution::Binary(0).to_micros(u64::MAX), u64::MAX);
+        assert_eq!(TsResolution::Binary(1).to_micros(u64::MAX), u64::MAX);
     }
 
     #[test]

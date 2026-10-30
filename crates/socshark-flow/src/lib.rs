@@ -12,8 +12,10 @@
 //! - **Sin reordenar**: los timestamps fuera de orden solo empujan
 //!   `first_seen` hacia atrás; nada se pierde.
 //! - **Presión de memoria acotada**: `max_flows` con expulsión de los flujos
-//!   más antiguos, y reensamblado TCP opcional con tope de 1 MiB por
-//!   dirección ([`ReassembledStream`]).
+//!   más antiguos (que no se pierden: salen por la siguiente
+//!   [`FlowAggregator::drain_expired`] o por `finish`), y reensamblado TCP
+//!   opcional con tope de 1 MiB y de segmentos por dirección más un
+//!   presupuesto global entre todos los flujos ([`ReassembledStream`]).
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -27,6 +29,27 @@ use socshark_dissectors::{ClientHelloCapture, DissectedPacket, DnsInfo};
 /// Tope de bytes recolectados por dirección y flujo para el reensamblado.
 /// Lo que exceda el tope se descarta y se marca el stream como `lossy`.
 pub const MAX_STREAM_BYTES: u64 = 1024 * 1024;
+
+/// Presupuesto global por defecto de bytes de reensamblado entre todos los
+/// flujos vivos (payload + sobrecoste por segmento). Sin él, `max_flows`
+/// flujos × 2 direcciones × 1 MiB podían sumar decenas de GiB.
+pub const DEFAULT_STREAM_BUDGET: u64 = 256 * 1024 * 1024;
+
+/// Sobrecoste contabilizado por segmento retenido (cabecera del `Vec`,
+/// asignación y número de secuencia): un flujo de segmentos de 1 byte no
+/// debe pasar por barato.
+pub const SEGMENT_OVERHEAD: u64 = 64;
+
+/// Segmentos retenidos como máximo por dirección y flujo.
+pub const MAX_SEGMENTS_PER_DIR: usize = 8192;
+
+/// Nombres DNS distintos que se acumulan como máximo en `dns.queries`.
+pub const MAX_DNS_QUERIES: usize = 64;
+
+/// Segmentos fuera de orden que se retienen para el ClientHello (JA4).
+const MAX_HELLO_PENDING: usize = 8;
+/// Bytes como máximo en esos segmentos adelantados.
+const MAX_HELLO_PENDING_BYTES: usize = 16 * 1024;
 
 /// Timestamps en dirección iniciador que se retienen por flujo para las
 /// estadísticas de intervalos (33 muestras = 32 intervalos; a un beacon de
@@ -95,18 +118,26 @@ impl PipelineStats {
 
 // --------------------------------------------------- reensamblado TCP (Fase 2)
 
+/// Contabilidad global del reensamblado (compartida por todos los flujos).
+#[derive(Debug, Clone, Copy)]
+struct StreamBudget {
+    used: u64,
+    limit: u64,
+}
+
 /// Buffer de una dirección: segmentos `(seq, datos)` con su ISN observado.
 #[derive(Debug, Default, Clone)]
 struct StreamBuf {
     /// Número de secuencia del primer segmento observado en la dirección.
     base: Option<u32>,
     segs: Vec<(u32, Vec<u8>)>,
+    /// Coste contabilizado: payload + [`SEGMENT_OVERHEAD`] por segmento.
     collected: u64,
     truncated: bool,
 }
 
 impl StreamBuf {
-    fn push(&mut self, seq: u32, data: &[u8]) {
+    fn push(&mut self, seq: u32, data: &[u8], budget: &mut StreamBudget) {
         if data.is_empty() {
             return;
         }
@@ -122,43 +153,66 @@ impl StreamBuf {
                 }
             }
         }
-        if self.collected + data.len() as u64 > MAX_STREAM_BYTES {
+        let cost = data.len() as u64 + SEGMENT_OVERHEAD;
+        if self.collected + cost > MAX_STREAM_BYTES
+            || self.segs.len() >= MAX_SEGMENTS_PER_DIR
+            || budget.used + cost > budget.limit
+        {
             self.truncated = true;
             return;
         }
-        self.collected += data.len() as u64;
+        self.collected += cost;
+        budget.used += cost;
         self.segs.push((seq, data.to_vec()));
     }
 
     /// Reensambla en orden de secuencia relativo al primer ISN observado:
-    /// elimina retransmisiones solapadas y marca los huecos con un
-    /// separador legible. Devuelve `(bytes, hay_pérdida)`.
-    fn reassemble(&self) -> (Vec<u8>, bool) {
+    /// elimina retransmisiones solapadas, compara su contenido con lo ya
+    /// visto (si difiere hay inyección o corrupción: `lossy`) y marca los
+    /// huecos con un separador legible. Consume el buffer y ordena en sitio,
+    /// sin clonar los segmentos. Devuelve `(bytes, hay_pérdida)`.
+    fn reassemble(mut self) -> (Vec<u8>, bool) {
         let Some(base) = self.base else {
             return (Vec::new(), false);
         };
-        let mut segs = self.segs.clone();
-        segs.sort_by_key(|(seq, _)| seq.wrapping_sub(base));
+        // Orden estable: ante seq iguales gana el primero que llegó.
+        self.segs.sort_by_key(|(seq, _)| seq.wrapping_sub(base));
 
-        let mut out = Vec::with_capacity(self.collected as usize);
+        let payload: usize = self.segs.iter().map(|(_, d)| d.len()).sum();
+        let mut out = Vec::with_capacity(payload);
         let mut cursor: u64 = 0; // offset relativo ya cubierto
+                                 // Offset relativo desde el que `out` es contiguo (tras el último
+                                 // separador de hueco): solo ahí se puede comparar un solape.
+        let mut contiguous_from: u64 = 0;
         let mut lossy = self.truncated;
-        for (seq, data) in segs {
+        for (seq, data) in &self.segs {
             let off = seq.wrapping_sub(base) as u64;
             let end = off + data.len() as u64;
-            if end <= cursor {
-                continue; // retransmisión íntegra ya vista
-            }
             if off > cursor {
                 let gap = off - cursor;
                 out.extend_from_slice(format!("\n[{gap} bytes perdidos]\n").as_bytes());
                 lossy = true;
-                out.extend_from_slice(&data);
-            } else {
+                out.extend_from_slice(data);
+                contiguous_from = off;
+                cursor = end;
+                continue;
+            }
+            // Solape con lo ya reensamblado: [max(off, contiguo), min(end, cursor)).
+            let ov_start = off.max(contiguous_from);
+            let ov_end = end.min(cursor);
+            if ov_start < ov_end {
+                let in_out = out.len() - (cursor - ov_start) as usize;
+                let len = (ov_end - ov_start) as usize;
+                let in_data = (ov_start - off) as usize;
+                if out[in_out..in_out + len] != data[in_data..in_data + len] {
+                    lossy = true; // retransmisión con contenido distinto
+                }
+            }
+            if end > cursor {
                 let skip = (cursor - off) as usize;
                 out.extend_from_slice(&data[skip..]);
+                cursor = end;
             }
-            cursor = end;
         }
         (out, lossy)
     }
@@ -209,6 +263,11 @@ struct FlowAccum {
     streams: Option<StreamPair>,
     /// Captura acotada del ClientHello del iniciador (Fase 3, JA4).
     hello: ClientHelloCapture,
+    /// Siguiente seq esperado del iniciador para el ClientHello: solo se le
+    /// dan segmentos en orden, sin retransmisiones.
+    hello_next: Option<u32>,
+    /// Segmentos del iniciador llegados antes de tiempo (acotado).
+    hello_pending: Vec<(u32, Vec<u8>)>,
     /// Timestamps (µs) de los primeros paquetes en dirección iniciador
     /// (Fase 3, beaconing). No mantiene orden: se ordena al exportar.
     times_fwd: Vec<u64>,
@@ -237,8 +296,65 @@ impl FlowAccum {
             dns: self.dns.clone(),
             streams: None,
             hello: self.hello.clone(),
+            hello_next: self.hello_next,
+            hello_pending: Vec::new(),
             times_fwd: self.times_fwd.clone(),
         }
+    }
+
+    /// Coste de reensamblado que este flujo tiene contabilizado.
+    fn stream_cost(&self) -> u64 {
+        self.streams
+            .as_ref()
+            .map_or(0, |sp| sp.fwd.collected + sp.rev.collected)
+    }
+
+    /// Alimenta el ClientHello solo con datos en orden de secuencia: las
+    /// retransmisiones se ignoran (o se recorta lo ya visto) y lo que llega
+    /// adelantado espera en `hello_pending` hasta que se cierre el hueco.
+    fn feed_hello(&mut self, seq: u32, payload: &[u8]) {
+        if self.hello.is_done() {
+            self.hello_pending = Vec::new();
+            return;
+        }
+        if payload.is_empty() {
+            return;
+        }
+        let next = *self.hello_next.get_or_insert(seq);
+        let rel = seq.wrapping_sub(next) as i32;
+        if rel > 0 {
+            let pending: usize = self.hello_pending.iter().map(|(_, d)| d.len()).sum();
+            if self.hello_pending.len() < MAX_HELLO_PENDING
+                && pending + payload.len() <= MAX_HELLO_PENDING_BYTES
+            {
+                self.hello_pending.push((seq, payload.to_vec()));
+            }
+            return;
+        }
+        self.feed_hello_from(seq, payload);
+        // Vacía los adelantados que ya encajan.
+        while let Some(next) = self.hello_next {
+            let Some(i) = self
+                .hello_pending
+                .iter()
+                .position(|(s, _)| (s.wrapping_sub(next) as i32) <= 0)
+            else {
+                break;
+            };
+            let (s, d) = self.hello_pending.swap_remove(i);
+            self.feed_hello_from(s, &d);
+        }
+    }
+
+    /// Entrega a la captura la parte de `payload` posterior a `hello_next`.
+    fn feed_hello_from(&mut self, seq: u32, payload: &[u8]) {
+        let Some(next) = self.hello_next else { return };
+        let skip = next.wrapping_sub(seq) as usize;
+        if skip >= payload.len() {
+            return; // retransmisión íntegra
+        }
+        self.hello.feed(&payload[skip..]);
+        self.hello_next = Some(seq.wrapping_add(payload.len() as u32));
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -283,6 +399,8 @@ impl FlowAccum {
                 None
             },
             hello: ClientHelloCapture::default(),
+            hello_next: None,
+            hello_pending: Vec::new(),
             times_fwd: Vec::new(),
         }
     }
@@ -290,6 +408,11 @@ impl FlowAccum {
     /// Fusiona un paquete DNS en el resumen del flujo: la consulta aporta
     /// `queries`, la respuesta aporta `rcode` + `answers` (y marca
     /// `is_response`). Así un flujo query+response queda completo.
+    ///
+    /// `queries` **acumula** todos los nombres preguntados en el flujo (sin
+    /// duplicados, hasta [`MAX_DNS_QUERIES`]): un mismo 5-tupla puede llevar
+    /// muchas consultas (resolutores con puerto fijo, túneles) y
+    /// `dns.qname` debe verlas todas, no solo las del último paquete.
     fn merge_dns(&mut self, d: &DnsInfo) {
         let to_query = |q: &socshark_dissectors::DnsQuestion| DnsQuerySummary {
             name: q.name.clone(),
@@ -308,7 +431,12 @@ impl FlowAccum {
                 self.dns = Some(DnsSummary {
                     is_response: d.is_response,
                     rcode: d.rcode,
-                    queries: d.queries.iter().map(to_query).collect(),
+                    queries: d
+                        .queries
+                        .iter()
+                        .take(MAX_DNS_QUERIES)
+                        .map(to_query)
+                        .collect(),
                     answers: d.answers.iter().map(to_answer).collect(),
                 });
             }
@@ -317,8 +445,19 @@ impl FlowAccum {
                     s.is_response = true;
                     s.rcode = d.rcode;
                     s.answers = d.answers.iter().map(to_answer).collect();
-                } else {
-                    s.queries = d.queries.iter().map(to_query).collect();
+                }
+                // La sección de preguntas viaja en consultas y respuestas.
+                for q in &d.queries {
+                    if s.queries.len() >= MAX_DNS_QUERIES {
+                        break;
+                    }
+                    let dup = s
+                        .queries
+                        .iter()
+                        .any(|e| e.qtype == q.qtype && e.name.eq_ignore_ascii_case(&q.name));
+                    if !dup {
+                        s.queries.push(to_query(q));
+                    }
                 }
             }
         }
@@ -333,6 +472,10 @@ pub struct FlowAggregator {
     idle_timeout_micros: u64,
     collect_streams: bool,
     stats: PipelineStats,
+    budget: StreamBudget,
+    /// Flujos expulsados por presión de memoria pendientes de entregar
+    /// (con su stream y el coste que aún ocupa en el presupuesto).
+    evicted: Vec<(EnrichedFlow, Option<ReassembledStream>, u64)>,
 }
 
 impl FlowAggregator {
@@ -345,7 +488,35 @@ impl FlowAggregator {
             idle_timeout_micros: idle_timeout_secs * 1_000_000,
             collect_streams,
             stats: PipelineStats::default(),
+            budget: StreamBudget {
+                used: 0,
+                limit: DEFAULT_STREAM_BUDGET,
+            },
+            evicted: Vec::new(),
         }
+    }
+
+    /// Cambia el presupuesto global de bytes de reensamblado (por defecto
+    /// [`DEFAULT_STREAM_BUDGET`]). Lo que no quepa se descarta y el stream
+    /// queda marcado `lossy`.
+    pub fn with_stream_budget(mut self, bytes: u64) -> Self {
+        self.budget.limit = bytes;
+        self
+    }
+
+    /// Bytes de reensamblado contabilizados ahora mismo (todos los flujos).
+    pub fn stream_bytes_used(&self) -> u64 {
+        self.budget.used
+    }
+
+    /// Flujos vivos en la tabla (sin contar los expulsados pendientes).
+    pub fn live_flows(&self) -> usize {
+        self.flows.len()
+    }
+
+    /// Flujos expulsados por `max_flows` aún no entregados.
+    pub fn evicted_pending(&self) -> usize {
+        self.evicted.len()
     }
 
     /// Estadísticas acumuladas del pipeline.
@@ -429,14 +600,20 @@ impl FlowAggregator {
             if let Some(sp) = acc.streams.as_mut() {
                 if !dp.payload.is_empty() {
                     let dir = if forward { &mut sp.fwd } else { &mut sp.rev };
-                    dir.push(t.seq, &dp.payload);
+                    dir.push(t.seq, &dp.payload, &mut self.budget);
                 }
             }
 
             // Captura del ClientHello (Fase 3, JA4): solo la dirección del
-            // iniciador; la máquina de estados rechaza no-TLS por si sola.
-            if forward && !dp.payload.is_empty() {
-                acc.hello.feed(&dp.payload);
+            // iniciador y en orden de secuencia; la máquina de estados
+            // rechaza no-TLS por sí sola. El SYN fija el primer seq de datos
+            // para que un segundo segmento adelantado no se tome por el
+            // inicio.
+            if forward {
+                if f.syn && !f.ack && acc.hello_next.is_none() {
+                    acc.hello_next = Some(t.seq.wrapping_add(1));
+                }
+                acc.feed_hello(t.seq, &dp.payload);
             }
         }
 
@@ -449,7 +626,21 @@ impl FlowAggregator {
     }
 
     /// Expulsa los flujos inactivos (last_seen + timeout < now) y los devuelve.
+    ///
+    /// Incluye también, primero, los flujos que se expulsaron antes por
+    /// presión de memoria (`max_flows`): así ningún flujo se pierde sin
+    /// exportar y los llamadores existentes no tienen que cambiar.
     pub fn drain_expired(&mut self, now_micros: u64) -> Vec<EnrichedFlow> {
+        self.drain_expired_with_streams(now_micros).0
+    }
+
+    /// Como [`FlowAggregator::drain_expired`], pero devuelve además los
+    /// streams reensamblados (clave: `flow_id`) si `collect_streams` estaba
+    /// activo.
+    pub fn drain_expired_with_streams(
+        &mut self,
+        now_micros: u64,
+    ) -> (Vec<EnrichedFlow>, HashMap<String, ReassembledStream>) {
         let timeout = self.idle_timeout_micros;
         let expired: Vec<FlowKey> = self
             .flows
@@ -457,12 +648,36 @@ impl FlowAggregator {
             .filter(|(_, a)| now_micros.saturating_sub(a.last_seen) > timeout)
             .map(|(k, _)| k.clone())
             .collect();
-        expired
+        let mut out = Vec::with_capacity(self.evicted.len() + expired.len());
+        let mut streams_out = HashMap::new();
+        for (flow, stream, cost) in std::mem::take(&mut self.evicted) {
+            self.budget.used = self.budget.used.saturating_sub(cost);
+            if let Some(s) = stream {
+                streams_out.insert(flow.flow_id.0.clone(), s);
+            }
+            out.push(flow);
+        }
+        for k in expired {
+            if let Some(acc) = self.flows.remove(&k) {
+                self.budget.used = self.budget.used.saturating_sub(acc.stream_cost());
+                let (flow, stream) = Self::export_with_streams(acc);
+                if let Some(s) = stream {
+                    streams_out.insert(flow.flow_id.0.clone(), s);
+                }
+                out.push(flow);
+            }
+        }
+        (out, streams_out)
+    }
+
+    /// Entrega solo los flujos expulsados por presión de memoria (sin
+    /// tocar los vivos), con sus streams si los había.
+    pub fn take_evicted(&mut self) -> Vec<(EnrichedFlow, Option<ReassembledStream>)> {
+        std::mem::take(&mut self.evicted)
             .into_iter()
-            .filter_map(|k| {
-                self.flows
-                    .remove(&k)
-                    .map(|acc| Self::export_with_streams(acc).0)
+            .map(|(flow, stream, cost)| {
+                self.budget.used = self.budget.used.saturating_sub(cost);
+                (flow, stream)
             })
             .collect()
     }
@@ -495,26 +710,31 @@ impl FlowAggregator {
     /// Como [`FlowAggregator::finish`], pero además devuelve los streams TCP
     /// reensamblados por flujo (solo si `collect_streams` estaba activo).
     /// La clave del mapa es el `flow_id` del flujo.
+    /// Incluye los flujos expulsados por `max_flows` aún no drenados.
     pub fn finish_with_streams(self) -> (Vec<EnrichedFlow>, HashMap<String, ReassembledStream>) {
         let mut streams_out = HashMap::new();
-        let mut out: Vec<EnrichedFlow> = self
-            .flows
-            .into_values()
-            .map(|acc| {
-                let (flow, streams) = Self::export_with_streams(acc);
-                if let Some(s) = streams {
-                    streams_out.insert(flow.flow_id.0.clone(), s);
-                }
-                flow
-            })
-            .collect();
+        let mut out: Vec<EnrichedFlow> = Vec::with_capacity(self.flows.len() + self.evicted.len());
+        for (flow, stream, _) in self.evicted {
+            if let Some(s) = stream {
+                streams_out.insert(flow.flow_id.0.clone(), s);
+            }
+            out.push(flow);
+        }
+        for acc in self.flows.into_values() {
+            let (flow, streams) = Self::export_with_streams(acc);
+            if let Some(s) = streams {
+                streams_out.insert(flow.flow_id.0.clone(), s);
+            }
+            out.push(flow);
+        }
         out.sort_by_key(|f| f.first_seen_micros);
         (out, streams_out)
     }
 
     /// Bajo presión de memoria: expulsa los `excess` flujos con `last_seen`
     /// más antiguo (independientemente de su timeout) hasta dejar la tabla
-    /// al 90% de `max_flows`.
+    /// al 90% de `max_flows`. Los expulsados se exportan a la cola
+    /// `evicted`, que entregan `drain_expired` y `finish`.
     fn force_expire(&mut self) {
         let target = self.max_flows * 9 / 10;
         if self.flows.len() <= target {
@@ -528,7 +748,11 @@ impl FlowAggregator {
         by_age.sort_by_key(|(_, ls)| *ls);
         let excess = self.flows.len() - target;
         for (k, _) in by_age.into_iter().take(excess) {
-            self.flows.remove(&k);
+            if let Some(acc) = self.flows.remove(&k) {
+                let cost = acc.stream_cost();
+                let (flow, stream) = Self::export_with_streams(acc);
+                self.evicted.push((flow, stream, cost));
+            }
         }
     }
 
@@ -1038,11 +1262,197 @@ mod tests {
             ));
             agg.on_packet((i as u64 + 1) * 1_000_000, len, &d);
         }
-        let flows = agg.finish();
         assert!(
-            flows.len() <= 4,
+            agg.live_flows() <= 4,
             "la tabla no debe superar max_flows tras la expulsión (obtenido {})",
-            flows.len()
+            agg.live_flows()
         );
+        // Los expulsados no se pierden: salen en finish.
+        assert_eq!(agg.finish().len(), 6);
+    }
+
+    /// Segmento TCP cliente→servidor del flujo de pruebas 50010→443.
+    fn seg_cli(seq: u32, flags: u8, payload: &[u8]) -> (usize, DissectedPacket<'static>) {
+        dissected(tg::frame_tcp(
+            tg::MAC_HOST_A,
+            tg::MAC_ROUTER,
+            tg::HOST_A,
+            tg::WEB,
+            50010,
+            443,
+            seq,
+            0,
+            flags,
+            payload,
+        ))
+    }
+
+    #[test]
+    fn retransmision_con_contenido_distinto_marca_lossy() {
+        let mut agg = FlowAggregator::new(1000, 120, true);
+        for (i, (seq, data)) in [(1000u32, &b"HOLA MUNDO"[..]), (1005, &b"XXXXX"[..])]
+            .into_iter()
+            .enumerate()
+        {
+            let (len, d) = seg_cli(seq, tg::flags::PSH_ACK, data);
+            agg.on_packet(i as u64 * 1000, len, &d);
+        }
+        let (_, streams) = agg.finish_with_streams();
+        let s = streams.values().next().unwrap();
+        assert_eq!(s.client, b"HOLA MUNDO", "gana lo primero que llegó");
+        assert!(s.client_lossy, "el solape difiere: inyección o corrupción");
+
+        // Retransmisión idéntica: no es pérdida.
+        let mut agg = FlowAggregator::new(1000, 120, true);
+        for (i, (seq, data)) in [(1000u32, &b"HOLA MUNDO"[..]), (1005, &b"MUNDO!"[..])]
+            .into_iter()
+            .enumerate()
+        {
+            let (len, d) = seg_cli(seq, tg::flags::PSH_ACK, data);
+            agg.on_packet(i as u64 * 1000, len, &d);
+        }
+        let (_, streams) = agg.finish_with_streams();
+        let s = streams.values().next().unwrap();
+        assert_eq!(s.client, b"HOLA MUNDO!");
+        assert!(!s.client_lossy);
+    }
+
+    #[test]
+    fn presupuesto_global_y_tope_de_segmentos() {
+        // Presupuesto global de 10 KiB repartido entre dos flujos.
+        let mut agg = FlowAggregator::new(1000, 120, true).with_stream_budget(10 * 1024);
+        let chunk = vec![b'z'; 1000];
+        for i in 0..20u32 {
+            let (len, d) = seg_cli(1000 + i * 1000, tg::flags::PSH_ACK, &chunk);
+            agg.on_packet(i as u64, len, &d);
+            assert!(agg.stream_bytes_used() <= 10 * 1024);
+        }
+        let (_, streams) = agg.finish_with_streams();
+        assert!(streams.values().next().unwrap().client_lossy);
+
+        // Segmentos de 1 byte: se corta por número de segmentos.
+        let mut agg = FlowAggregator::new(1000, 120, true);
+        for i in 0..(MAX_SEGMENTS_PER_DIR as u32 + 10) {
+            let (len, d) = seg_cli(1000 + i, tg::flags::PSH_ACK, b"a");
+            agg.on_packet(i as u64, len, &d);
+        }
+        assert!(agg.stream_bytes_used() <= MAX_SEGMENTS_PER_DIR as u64 * (1 + SEGMENT_OVERHEAD));
+        let (_, streams) = agg.finish_with_streams();
+        let s = streams.values().next().unwrap();
+        assert_eq!(s.client.len(), MAX_SEGMENTS_PER_DIR);
+        assert!(s.client_lossy);
+    }
+
+    #[test]
+    fn expulsados_por_max_flows_se_exportan() {
+        let mut agg = FlowAggregator::new(4, 120, false);
+        for i in 0..6u16 {
+            let (len, d) = dissected(tg::frame_udp(
+                tg::MAC_HOST_A,
+                tg::MAC_ROUTER,
+                tg::HOST_A,
+                tg::DNS_EXT,
+                50000 + i,
+                53,
+                &tg::dns_query(i, &format!("f{i}.example"), 1),
+            ));
+            agg.on_packet((i as u64 + 1) * 1_000_000, len, &d);
+        }
+        assert!(agg.evicted_pending() > 0);
+        // Ninguno ha caducado por tiempo, pero los expulsados salen ya.
+        let drained = agg.drain_expired(7_000_000);
+        assert!(!drained.is_empty());
+        assert_eq!(agg.evicted_pending(), 0);
+        let rest = agg.finish();
+        assert_eq!(drained.len() + rest.len(), 6, "ningún flujo se pierde");
+
+        // Sin drenar, finish los incluye.
+        let mut agg = FlowAggregator::new(4, 120, false);
+        for i in 0..6u16 {
+            let (len, d) = dissected(tg::frame_udp(
+                tg::MAC_HOST_A,
+                tg::MAC_ROUTER,
+                tg::HOST_A,
+                tg::DNS_EXT,
+                50000 + i,
+                53,
+                &tg::dns_query(i, &format!("f{i}.example"), 1),
+            ));
+            agg.on_packet((i as u64 + 1) * 1_000_000, len, &d);
+        }
+        assert_eq!(agg.finish().len(), 6);
+    }
+
+    #[test]
+    fn dns_acumula_todos_los_nombres_del_flujo() {
+        let mut agg = FlowAggregator::new(1000, 120, false);
+        let names = ["a.example", "b.example", "a.example", "c.example"];
+        for (i, n) in names.iter().enumerate() {
+            let (len, d) = dissected(tg::frame_udp(
+                tg::MAC_HOST_A,
+                tg::MAC_ROUTER,
+                tg::HOST_A,
+                tg::DNS_EXT,
+                53001,
+                53,
+                &tg::dns_query(i as u16, n, 1),
+            ));
+            agg.on_packet(i as u64 * 1000, len, &d);
+        }
+        let f = agg.finish().remove(0);
+        let got: Vec<String> = f.dns.unwrap().queries.into_iter().map(|q| q.name).collect();
+        assert_eq!(got, ["a.example", "b.example", "c.example"]);
+
+        // Con cota.
+        let mut agg = FlowAggregator::new(1000, 120, false);
+        for i in 0..(MAX_DNS_QUERIES as u16 + 20) {
+            let (len, d) = dissected(tg::frame_udp(
+                tg::MAC_HOST_A,
+                tg::MAC_ROUTER,
+                tg::HOST_A,
+                tg::DNS_EXT,
+                53001,
+                53,
+                &tg::dns_query(i, &format!("n{i}.example"), 1),
+            ));
+            agg.on_packet(i as u64 * 1000, len, &d);
+        }
+        let f = agg.finish().remove(0);
+        assert_eq!(f.dns.unwrap().queries.len(), MAX_DNS_QUERIES);
+    }
+
+    #[test]
+    fn client_hello_desordenado_y_retransmitido_da_ja4() {
+        let ch = tg::client_hello("tienda.example", b"h2");
+        let cut = ch.len() / 2;
+        let isn = 7000u32;
+        let mut agg = FlowAggregator::new(1000, 120, false);
+        let pkts = [
+            seg_cli(isn, tg::flags::SYN, &[]),
+            // Llega primero la segunda mitad...
+            seg_cli(isn + 1 + cut as u32, tg::flags::PSH_ACK, &ch[cut..]),
+            // ...luego la primera, y una retransmisión de la primera.
+            seg_cli(isn + 1, tg::flags::PSH_ACK, &ch[..cut]),
+            seg_cli(isn + 1, tg::flags::PSH_ACK, &ch[..cut]),
+        ];
+        for (i, (len, d)) in pkts.iter().enumerate() {
+            agg.on_packet(i as u64 * 1000, *len, d);
+        }
+        let f = agg.finish().remove(0);
+        assert_eq!(f.tls_sni.as_deref(), Some("tienda.example"));
+        assert!(f.ja4_fingerprint.is_some());
+
+        // Una retransmisión intercalada (en orden) tampoco corrompe el CH.
+        let mut agg = FlowAggregator::new(1000, 120, false);
+        let pkts = [
+            seg_cli(isn + 1, tg::flags::PSH_ACK, &ch[..cut]),
+            seg_cli(isn + 1, tg::flags::PSH_ACK, &ch[..cut]),
+            seg_cli(isn + 1 + cut as u32, tg::flags::PSH_ACK, &ch[cut..]),
+        ];
+        for (i, (len, d)) in pkts.iter().enumerate() {
+            agg.on_packet(i as u64 * 1000, *len, d);
+        }
+        let f = agg.finish().remove(0);
+        assert_eq!(f.tls_sni.as_deref(), Some("tienda.example"));
     }
 }

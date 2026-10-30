@@ -55,13 +55,29 @@ fn ipv4_at(data: &[u8], off: usize) -> Option<Ipv4Addr> {
     (!ip.is_unspecified()).then_some(ip)
 }
 
-/// Texto anunciado por la red, limpio: imprimible, sin espacios sobrantes y
-/// acotado. `None` si no queda nada.
+/// Caracteres de formato invisibles que alteran cómo se *ve* un texto sin
+/// verse ellos: marcas y aislamientos bidi (U+202A–U+202E, U+2066–U+2069,
+/// U+200E/U+200F, U+061C), ancho cero (U+200B–U+200D, U+2060) y BOM
+/// (U+FEFF). Un nombre anunciado con ellos puede hacerse pasar por otro en
+/// la UI («Trojan Source»), así que nunca se muestran tal cual.
+pub(crate) fn is_invisible_format(c: char) -> bool {
+    matches!(
+        c,
+        '\u{200b}'..='\u{200f}'
+            | '\u{202a}'..='\u{202e}'
+            | '\u{2060}'..='\u{2069}'
+            | '\u{061c}'
+            | '\u{feff}'
+    )
+}
+
+/// Texto anunciado por la red, limpio: imprimible (sin control ni formato
+/// invisible), sin espacios sobrantes y acotado. `None` si no queda nada.
 pub fn clean_name(raw: &[u8]) -> Option<String> {
     let text = String::from_utf8_lossy(raw);
     let cleaned: String = text
         .chars()
-        .filter(|c| !c.is_control() && *c != '\u{fffd}')
+        .filter(|c| !c.is_control() && *c != '\u{fffd}' && !is_invisible_format(*c))
         .take(MAX_NAME)
         .collect();
     let trimmed = cleaned.trim().trim_end_matches('.').trim();
@@ -216,6 +232,13 @@ pub fn parse_nbns(data: &[u8]) -> Option<NbnsName> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clean_name_quita_bidi_y_ancho_cero() {
+        let raw = "PC-\u{202e}gpj.exe\u{200b}\u{feff}-Ana\u{2066}x\u{2069}".as_bytes();
+        assert_eq!(clean_name(raw).as_deref(), Some("PC-gpj.exe-Anax"));
+        assert_eq!(clean_name("\u{200f}\u{202a}".as_bytes()), None);
+    }
 
     fn dhcp(op: u8, mac: [u8; 6], options: &[u8]) -> Vec<u8> {
         let mut p = vec![0u8; 240];

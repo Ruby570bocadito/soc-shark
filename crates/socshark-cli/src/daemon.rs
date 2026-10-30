@@ -205,6 +205,9 @@ pub fn run_daemon(opts: &DaemonOptions) -> Result<()> {
                 "no se pudo cargar la lista de threat intel: {e} (revisa --intel-feodo / --intel-tor)"
             )
         })?;
+        for w in &db.warnings {
+            eprintln!("[!] {w}");
+        }
         eprintln!(
             "[*] Threat intel offline: {} entradas (Feodo: {} · Tor: {})",
             db.len(),
@@ -216,6 +219,14 @@ pub fn run_daemon(opts: &DaemonOptions) -> Result<()> {
 
     // El JSONL incremental escribe al vuelo; stdout sin búfer intermedio
     // para que `| jq` responda en tiempo real.
+    if let Some(p) = &opts.json {
+        let inputs: Vec<&std::path::Path> = [&opts.intel_feodo, &opts.intel_tor]
+            .into_iter()
+            .flatten()
+            .map(|p| p.as_path())
+            .collect();
+        crate::output::refuse_overwrite(p, &inputs)?;
+    }
     let mut writer: Option<Box<dyn Write>> = match &opts.json {
         Some(p) if p.as_os_str() == "-" => Some(Box::new(io::stdout().lock())),
         Some(p) => Some(Box::new(BufWriter::new(
@@ -229,6 +240,7 @@ pub fn run_daemon(opts: &DaemonOptions) -> Result<()> {
     let mut last_report = Instant::now();
     let mut packets: u64 = 0;
     let mut alerts: u64 = 0;
+    let mut fatal: Option<String> = None;
 
     loop {
         if STOP.load(Ordering::SeqCst) {
@@ -259,6 +271,9 @@ pub fn run_daemon(opts: &DaemonOptions) -> Result<()> {
             Err(e) => {
                 eprintln!("[!] Error de captura: {e}");
                 eprintln!("    Termino con lo acumulado hasta ahora.");
+                // Se exporta lo acumulado y después se devuelve el error:
+                // el código de salida debe reflejar que la sesión falló.
+                fatal = Some(e.to_string());
                 break;
             }
         }
@@ -296,7 +311,10 @@ pub fn run_daemon(opts: &DaemonOptions) -> Result<()> {
         "[+] Daemon terminado: {packets} paquetes · {} flujos exportados · {alerts} alertas",
         remaining.len()
     );
-    Ok(())
+    match fatal {
+        Some(e) => Err(anyhow::anyhow!("la captura en vivo falló: {e}")),
+        None => Ok(()),
+    }
 }
 
 /// Escribe los flujos al JSONL (si hay destino) y anuncia por stderr los
@@ -319,16 +337,111 @@ fn announce(
         {
             announced += 1;
             for a in &f.alerts {
-                eprintln!(
-                    "[!] ALERTA riesgo {} · {} [{}] · {} · MITRE {}",
-                    f.risk_score,
-                    a.name,
-                    a.id,
-                    a.detail,
-                    a.mitre.as_deref().unwrap_or("-")
-                );
+                eprintln!("{}", alert_line(f, a));
             }
         }
     }
+    // Cada lote llega al disco al momento: con BufWriter y vaciado solo al
+    // salir, un `tail -f` no veía nada y un corte perdía la sesión.
+    if let Some(w) = writer {
+        w.flush().context("error vaciando el JSONL")?;
+    }
     Ok(announced)
+}
+
+/// Línea de alerta para stderr, neutralizada para el terminal (el detalle
+/// lleva qnames, SNI... que controla quien genera el tráfico).
+fn alert_line(f: &EnrichedFlow, a: &socshark_core::Alert) -> String {
+    let line = format!(
+        "[!] ALERTA riesgo {} · {} [{}] · {} · MITRE {}",
+        f.risk_score,
+        a.name,
+        a.id,
+        a.detail,
+        a.mitre.as_deref().unwrap_or("-")
+    );
+    crate::output::sanitize_terminal(&line).into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    /// Destino que guarda lo que realmente le llega (tras el BufWriter).
+    #[derive(Clone, Default)]
+    struct Disco(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for Disco {
+        fn write(&mut self, b: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn flujo_con_alerta(detail: &str) -> EnrichedFlow {
+        let mut f: EnrichedFlow = serde_json::from_str(
+            r#"{
+                "flow_id": "udp/10.0.0.1:5300-8.8.8.8:53",
+                "state": "Idle", "transport": "Udp", "l7_protocol": "Dns",
+                "src_ip": "10.0.0.1", "src_port": 5300,
+                "dst_ip": "8.8.8.8", "dst_port": 53,
+                "first_seen_micros": 0, "last_seen_micros": 1, "duration_micros": 1,
+                "packets": 1, "bytes": 80, "packets_rev": 1, "bytes_rev": 100,
+                "tcp_flags": {"syn":0,"ack":0,"fin":0,"rst":0,"psh":0,"urg":0},
+                "human_summary": "", "risk_score": 80,
+                "alerts": [], "extracted_files": []
+            }"#,
+        )
+        .unwrap();
+        f.alerts.push(socshark_core::Alert {
+            id: "DNS-TUNNELING".into(),
+            name: "Túnel DNS".into(),
+            severity: socshark_core::Severity::High,
+            detail: detail.into(),
+            mitre: None,
+        });
+        f
+    }
+
+    fn opts() -> DaemonOptions {
+        DaemonOptions {
+            iface: "lo".into(),
+            bpf: None,
+            json: None,
+            min_risk: 0,
+            show_noise: false,
+            flush_secs: 1,
+            report_secs: 1,
+            duration_secs: None,
+            max_packets: None,
+            max_flows: 10,
+            idle_timeout_secs: 1,
+            intel_feodo: None,
+            intel_tor: None,
+        }
+    }
+
+    #[test]
+    fn cada_lote_llega_al_disco_sin_esperar_al_final() {
+        let disco = Disco::default();
+        let mut w: Box<dyn Write> = Box::new(BufWriter::new(disco.clone()));
+        let n = announce(&[flujo_con_alerta("x")], &opts(), Some(&mut w)).unwrap();
+        assert_eq!(n, 1);
+        // Sin soltar el BufWriter: el lote ya está en el destino.
+        let escrito = String::from_utf8(disco.0.lock().unwrap().clone()).unwrap();
+        assert_eq!(escrito.lines().count(), 1, "{escrito}");
+        assert!(escrito.contains("DNS-TUNNELING"));
+    }
+
+    #[test]
+    fn alerta_neutralizada_para_el_terminal() {
+        let f = flujo_con_alerta("qname evil\x1b]0;x\x07.example");
+        let line = alert_line(&f, &f.alerts[0]);
+        assert!(!line.contains('\x1b') && !line.contains('\x07'), "{line:?}");
+        assert!(line.contains("evil\\x1b]0;x\\x07.example"));
+    }
 }

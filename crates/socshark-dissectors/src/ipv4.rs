@@ -1,8 +1,12 @@
 //! Dissector IPv4 con verificación de checksum.
 //!
-//! Los fragmentos IP (MF=1 u offset > 0) se entregan al L4 tal cual: el
-//! reensamblado de datagramas fragmentados es trabajo del Stream Reassembler
-//! (Fase 2+, ver `docs/pipeline.md`).
+//! Fragmentos IP: el primero (offset 0, aunque lleve MF=1) contiene la
+//! cabecera L4 y se entrega al L4 tal cual. Los fragmentos no iniciales
+//! (offset > 0) NO llevan cabecera TCP/UDP: sus primeros bytes son datos
+//! arbitrarios, y el pipeline los trata como paquete solo-L3 (ver
+//! [`Ipv4Info::is_non_initial_fragment`]) para no inventar puertos. El
+//! reensamblado de datagramas es trabajo del Stream Reassembler (Fase 2+,
+//! ver `docs/pipeline.md`).
 
 use std::net::Ipv4Addr;
 
@@ -23,11 +27,21 @@ pub struct Ipv4Info {
     pub checksum_ok: bool,
 }
 
+impl Ipv4Info {
+    /// True si es un fragmento no inicial (offset > 0): su payload no
+    /// empieza por una cabecera L4 y no debe interpretarse como TCP/UDP.
+    pub fn is_non_initial_fragment(&self) -> bool {
+        self.fragment_offset != 0
+    }
+}
+
 /// Parsea IPv4 y devuelve `(info, payload_l4)`.
 ///
 /// El payload se recorta según `total_len` cuando es consistente; si el
 /// paquete trae relleno Ethernet (padding) o `total_len` mentiroso, se usa
-/// el límite seguro disponible.
+/// el límite seguro disponible. `total_len == 0` (TSO/LSO: la NIC trocea
+/// después de capturar, habitual con Npcap) se interpreta como "usar la
+/// longitud capturada", igual que Wireshark.
 pub fn parse_ipv4(data: &[u8]) -> Option<(Ipv4Info, &[u8])> {
     if data.len() < 20 {
         return None;
@@ -41,7 +55,11 @@ pub fn parse_ipv4(data: &[u8]) -> Option<(Ipv4Info, &[u8])> {
         return None;
     }
     let total_len = u16::from_be_bytes([data[2], data[3]]) as usize;
-    let end = total_len.clamp(ihl, data.len());
+    let end = if total_len == 0 {
+        data.len()
+    } else {
+        total_len.clamp(ihl, data.len())
+    };
     let flags_frag = u16::from_be_bytes([data[6], data[7]]);
 
     let info = Ipv4Info {
@@ -124,6 +142,28 @@ mod tests {
         let (info, payload) = parse_ipv4(&ip).unwrap();
         assert_eq!(info.src, Ipv4Addr::new(10, 0, 0, 1));
         assert_eq!(payload.len(), 0);
+    }
+
+    #[test]
+    fn total_len_cero_tso_usa_la_longitud_capturada() {
+        // Captura con TSO/LSO: total_len = 0 y payload real tras la cabecera.
+        let mut ip = vec![0u8; 20];
+        ip[0] = 0x45;
+        ip[9] = 6;
+        ip.extend_from_slice(&[0xaa; 40]);
+        let (_, payload) = parse_ipv4(&ip).unwrap();
+        assert_eq!(payload.len(), 40);
+    }
+
+    #[test]
+    fn fragmento_no_inicial_se_marca() {
+        let mut ip = vec![0u8; 28];
+        ip[0] = 0x45;
+        ip[2..4].copy_from_slice(&28u16.to_be_bytes());
+        ip[6..8].copy_from_slice(&185u16.to_be_bytes());
+        ip[9] = 6;
+        let (info, _) = parse_ipv4(&ip).unwrap();
+        assert!(info.is_non_initial_fragment());
     }
 }
 

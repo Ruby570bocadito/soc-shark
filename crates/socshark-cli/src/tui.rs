@@ -9,6 +9,7 @@
 //! Atajos: `j/k` o flechas mueven, `Enter` expande el flujo, `/` abre la
 //! línea de filtro (DSL completo), `Enter` aplica, `Esc` cancela, `q` sale.
 
+use crate::output::sanitize_terminal;
 use socshark_core::EnrichedFlow;
 use socshark_filter::{eval, parse};
 
@@ -246,7 +247,10 @@ impl TuiApp {
                 f.pid
             ));
         }
-        v
+        // Dominios, qnames, resúmenes y detalles vienen del tráfico.
+        v.into_iter()
+            .map(|l| sanitize_terminal(&l).into_owned())
+            .collect()
     }
 
     /// Entradas del panel de alertas: `(flujo, línea)`.
@@ -256,13 +260,27 @@ impl TuiApp {
             if let Some(f) = self.visible(i) {
                 for a in &f.alerts {
                     out.push((
-                        f.flow_id.0.clone(),
-                        format!("({}) {} · {}", a.severity.as_str(), a.id, a.detail),
+                        sanitize_terminal(&f.flow_id.0).into_owned(),
+                        sanitize_terminal(&format!(
+                            "({}) {} · {}",
+                            a.severity.as_str(),
+                            a.id,
+                            a.detail
+                        ))
+                        .into_owned(),
                     ));
                 }
             }
         }
         out
+    }
+
+    /// Aplica el filtro inicial (`-f`) sobre todos los flujos: queda visible
+    /// y editable, y al borrarlo vuelven los que excluía.
+    pub fn preset_filter(&mut self, src: &str) {
+        let src = src.trim();
+        self.expr = (!src.is_empty()).then(|| src.to_string());
+        self.refresh();
     }
 }
 
@@ -390,6 +408,46 @@ mod tests {
     }
 
     #[test]
+    fn filtro_inicial_se_puede_borrar_y_vuelven_los_flujos() {
+        // Antes `-f` se aplicaba en el pipeline: borrar el filtro en la TUI
+        // nunca recuperaba los flujos descartados.
+        let mut a = app();
+        a.preset_filter("flow.risk >= 30");
+        assert_eq!(a.view_len(), 1);
+        assert_eq!(a.expr(), Some("flow.risk >= 30"));
+        a.on_key(Key::Char('/'));
+        a.on_key(Key::Enter); // línea vacía = sin filtro
+        assert_eq!(a.expr(), None);
+        assert_eq!(a.view_len(), 3);
+    }
+
+    #[test]
+    fn detalle_y_alertas_neutralizan_escapes() {
+        let mut f = flow("tcp/a-1", 60, false, Some("evil\x1b[2J.example"));
+        f.human_summary = "visita gpj.\u{202E}exe".into();
+        f.alerts.push(socshark_core::Alert {
+            id: "X".into(),
+            name: "x".into(),
+            severity: socshark_core::Severity::High,
+            detail: "sni \x1b]0;pwn\x07".into(),
+            mitre: None,
+        });
+        let a = TuiApp::new(vec![f]);
+        let todo: Vec<String> = a
+            .detail_lines()
+            .into_iter()
+            .chain(a.alert_lines().into_iter().flat_map(|(x, y)| [x, y]))
+            .collect();
+        for l in &todo {
+            assert!(
+                !l.chars().any(|c| c.is_control() || c == '\u{202E}'),
+                "{l:?}"
+            );
+        }
+        assert!(todo.iter().any(|l| l.contains("evil\\x1b[2J.example")));
+    }
+
+    #[test]
     fn escapar_cancela_filtro_y_q_sale() {
         let mut a = app();
         a.on_key(Key::Char('/'));
@@ -422,29 +480,56 @@ pub mod term {
     use std::path::Path;
     use std::time::Duration;
 
+    /// Deja el terminal como estaba: sin modo raw, fuera de la pantalla
+    /// alternativa y con cursor. Idempotente (errores ignorados).
+    fn restore_terminal() {
+        let _ = disable_raw_mode();
+        let _ = execute!(io::stdout(), LeaveAlternateScreen, crossterm::cursor::Show);
+    }
+
+    /// Restaura el terminal al salir de `run` por cualquier camino: retorno
+    /// normal, `?` a mitad de la preparación o pánico (desenrollado).
+    struct TerminalGuard;
+
+    impl Drop for TerminalGuard {
+        fn drop(&mut self) {
+            restore_terminal();
+        }
+    }
+
     /// Ejecuta la TUI sobre una captura ya analizada (incluye el ruido,
     /// atenuado en pantalla).
     pub fn run(read: &Path, initial_filter: Option<&str>) -> Result<()> {
+        // Un `-f` inválido sigue fallando antes de analizar nada.
+        if let Some(src) = initial_filter {
+            socshark_filter::parse(src).map_err(|e| anyhow::anyhow!("filtro inválido: {e}"))?;
+        }
         let cfg = socshark_core::config::PipelineConfig::default();
-        let out = crate::pipeline::run_capture(read, initial_filter, true, &cfg)?;
+        // Sin filtro en el pipeline: si se aplicara aquí, los flujos
+        // descartados no volverían al borrar el filtro dentro de la TUI. Lo
+        // aplica la propia TUI como filtro inicial editable.
+        let out = crate::pipeline::run_capture(read, None, true, &cfg)?;
         let mut app = TuiApp::new(out.flows);
         if let Some(src) = initial_filter {
-            // Precarga la línea de filtro para que el analista la vea/editable.
             app.preset_filter(src);
         }
 
-        let mut stdout = io::stdout();
+        // Un pánico debe restaurar el terminal ANTES de imprimir su mensaje
+        // (si no, sale ilegible en la pantalla alternativa y en modo raw).
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            restore_terminal();
+            previous(info);
+        }));
+
+        let _guard = TerminalGuard;
         enable_raw_mode()?;
+        let mut stdout = io::stdout();
         execute!(stdout, EnterAlternateScreen)?;
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend)?;
 
-        let res = event_loop(&mut terminal, &mut app);
-
-        disable_raw_mode()?;
-        execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-        terminal.show_cursor()?;
-        res
+        event_loop(&mut terminal, &mut app)
     }
 
     fn event_loop(
@@ -589,7 +674,7 @@ pub mod term {
                 };
                 let line = format!(
                     "{:<46} {:4} {:>5} {:>9} {:>4} {}",
-                    truncate(&flow.flow_id.0, 46),
+                    truncate(&crate::output::sanitize_terminal(&flow.flow_id.0), 46),
                     flow.l7_protocol.as_str(),
                     flow.packets + flow.packets_rev,
                     fmt_bytes(flow.bytes + flow.bytes_rev),
@@ -620,15 +705,6 @@ pub mod term {
             state.select(Some(app.selected()));
         }
         f.render_stateful_widget(list, area, &mut state);
-    }
-}
-
-#[cfg(feature = "tui")]
-impl TuiApp {
-    /// Precarga una expresión de filtro (sin reevaluar: ya la aplicó la CLI).
-    pub(crate) fn preset_filter(&mut self, src: &str) {
-        self.expr = Some(src.to_string());
-        self.refresh();
     }
 }
 

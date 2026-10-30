@@ -29,7 +29,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::ErrorKind;
 use std::net::{IpAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -47,7 +47,7 @@ use socshark_soc::hosts::HostDirectory;
 use socshark_soc::ThreatIntelDb;
 
 use crate::pipeline::run_capture;
-use http::{read_request, write_response, ReadError, Request, Response};
+use http::{read_body, read_head, write_response, ReadError, Request, Response};
 use live::LiveInfo;
 use names::{clean_nickname, Nicknames};
 use packets::PacketIndex;
@@ -60,6 +60,10 @@ const APP_CSS: &str = include_str!("../../assets/gui/app.css");
 pub const DEFAULT_PORT: u16 = 8787;
 /// Tamaño máximo de una captura abierta desde la ventana.
 const MAX_UPLOAD: usize = 512 * 1024 * 1024;
+/// Cuerpo máximo de cualquier otra petición (apodos, etc.).
+const MAX_SMALL_BODY: usize = 64 * 1024;
+/// Conexiones simultáneas como mucho; las demás se cierran con un 503.
+const MAX_CONNS: usize = 64;
 /// Flujos que se envían como mucho a la tabla (el resto, con un filtro).
 const MAX_FLOWS: usize = 10_000;
 /// Filas como mucho de cada tabla de estadísticas.
@@ -148,6 +152,10 @@ pub(crate) struct Server {
     generation: AtomicU64,
     live: Mutex<Option<LiveHandle>>,
     upload_seq: AtomicU64,
+    /// Conexiones atendiéndose ahora mismo (ver [`MAX_CONNS`]).
+    conns: AtomicUsize,
+    /// Hay una captura subiéndose: solo se admite una a la vez.
+    uploading: AtomicBool,
     /// Apodos de los equipos (en disco salvo en tests).
     nicknames: Mutex<Nicknames>,
 }
@@ -162,12 +170,19 @@ fn new_token() -> String {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
+    // Algo más de entropía barata: la dirección de una reserva en el heap
+    // (ASLR) y el hilo actual.
+    let heap = Box::new(0u8);
+    let addr = &*heap as *const u8 as usize;
+    let thread = format!("{:?}", std::thread::current().id());
     (0..2u8)
         .map(|i| {
             let mut h = RandomState::new().build_hasher();
             h.write_u8(i);
             h.write_u128(now);
             h.write_u32(std::process::id());
+            h.write_usize(addr);
+            h.write(thread.as_bytes());
             format!("{:016x}", h.finish())
         })
         .collect()
@@ -214,6 +229,8 @@ impl Server {
             generation: AtomicU64::new(0),
             live: Mutex::new(None),
             upload_seq: AtomicU64::new(0),
+            conns: AtomicUsize::new(0),
+            uploading: AtomicBool::new(false),
             nicknames: Mutex::new(Nicknames::in_memory()),
         }
     }
@@ -298,11 +315,26 @@ impl Server {
         }
     }
 
-    fn route(self: &Arc<Self>, req: &Request) -> Response {
+    /// Host y token: se comprueba con solo la cabecera leída, antes de
+    /// aceptar ningún cuerpo (ver [`handle`]).
+    fn authorize(&self, req: &Request) -> Result<(), Response> {
         // Antes que nada: solo peticiones dirigidas a este servidor local.
         match req.header("host") {
             Some(h) if self.host_ok.iter().any(|ok| ok.eq_ignore_ascii_case(h)) => {}
-            _ => return Response::error(421, "host no permitido"),
+            _ => return Err(Response::error(421, "host no permitido")),
+        }
+        if req.path.starts_with("/api/") {
+            match req.header("x-socshark-token") {
+                Some(t) if same(t, &self.token) => {}
+                _ => return Err(Response::error(403, "token de sesión ausente o incorrecto")),
+            }
+        }
+        Ok(())
+    }
+
+    fn route(self: &Arc<Self>, req: &Request) -> Response {
+        if let Err(resp) = self.authorize(req) {
+            return resp;
         }
         let path = req.path.as_str();
         if !path.starts_with("/api/") {
@@ -316,10 +348,6 @@ impl Server {
                 ("GET", "/app.css") => Response::new(200, "text/css; charset=utf-8", APP_CSS),
                 _ => Response::error(404, "no existe"),
             };
-        }
-        match req.header("x-socshark-token") {
-            Some(t) if same(t, &self.token) => {}
-            _ => return Response::error(403, "token de sesión ausente o incorrecto"),
         }
 
         let parts: Vec<&str> = path.trim_start_matches("/api/").split('/').collect();
@@ -473,6 +501,11 @@ impl Server {
             return Response::error(400, "falta la interfaz");
         };
         let bpf = req.query_param("bpf").filter(|b| !b.trim().is_empty());
+        if !bpf.as_deref().map(parens_balanced).unwrap_or(true) {
+            // `tcp) or (udp` escaparía del paréntesis de `live_bpf` y anularía
+            // la exclusión del tráfico de la propia ventana.
+            return Response::error(400, "el filtro BPF tiene paréntesis desequilibrados");
+        }
         self.stop_live();
         let open = |filter: Option<String>| {
             LiveCapture::open(LiveCaptureConfig {
@@ -552,12 +585,11 @@ impl Server {
         }
         self.stop_live();
         let name = display_name(&req.query_param("name").unwrap_or_default());
-        let seq = self.upload_seq.fetch_add(1, Ordering::Relaxed);
-        let tmp =
-            std::env::temp_dir().join(format!("socshark-gui-{}-{seq}.pcap", std::process::id()));
-        let result = std::fs::write(&tmp, &req.body)
-            .context("no se pudo guardar el archivo temporal")
-            .and_then(|_| self.load(&tmp, name));
+        let tmp = match self.write_temp(&req.body) {
+            Ok(tmp) => tmp,
+            Err(e) => return Response::error(500, &format!("{e:#}")),
+        };
+        let result = self.load(&tmp, name);
         std::fs::remove_file(&tmp).ok();
         match result {
             Ok(loaded) => {
@@ -569,6 +601,62 @@ impl Server {
             Err(e) => Response::error(400, &e.root_cause().to_string()),
         }
     }
+
+    /// Guarda la subida en un archivo temporal NUEVO: nombre con parte
+    /// aleatoria y `create_new` (nunca sigue un enlace simbólico ni pisa un
+    /// archivo que otro usuario haya plantado en el temporal compartido) y,
+    /// en Unix, permisos 0600.
+    fn write_temp(&self, body: &[u8]) -> Result<PathBuf> {
+        use std::io::Write;
+        let mut last_err = None;
+        for _ in 0..16 {
+            let seq = self.upload_seq.fetch_add(1, Ordering::Relaxed);
+            let tmp = std::env::temp_dir().join(format!(
+                "socshark-gui-{}-{seq}-{}.pcap",
+                std::process::id(),
+                &new_token()[..16]
+            ));
+            let mut opts = std::fs::OpenOptions::new();
+            opts.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                opts.mode(0o600);
+            }
+            match opts.open(&tmp) {
+                Ok(mut f) => {
+                    let written = f.write_all(body).and_then(|_| f.flush());
+                    if let Err(e) = written {
+                        drop(f);
+                        std::fs::remove_file(&tmp).ok();
+                        return Err(e).context("no se pudo guardar el archivo temporal");
+                    }
+                    return Ok(tmp);
+                }
+                Err(e) if e.kind() == ErrorKind::AlreadyExists => last_err = Some(e),
+                Err(e) => return Err(e).context("no se pudo guardar el archivo temporal"),
+            }
+        }
+        Err(last_err.expect("al menos un intento"))
+            .context("no se pudo crear un archivo temporal nuevo")
+    }
+}
+
+/// `true` si los paréntesis del filtro BPF están equilibrados (nunca se
+/// cierra uno que no se abrió y no queda ninguno abierto).
+fn parens_balanced(bpf: &str) -> bool {
+    let mut depth = 0usize;
+    for c in bpf.chars() {
+        match c {
+            '(' => depth += 1,
+            ')' => match depth.checked_sub(1) {
+                Some(d) => depth = d,
+                None => return false,
+            },
+            _ => {}
+        }
+    }
+    depth == 0
 }
 
 /// Nombre sugerido al guardar la captura.
@@ -1173,22 +1261,92 @@ fn packets_page(l: &Loaded, req: &Request) -> Response {
     )
 }
 
-fn handle(mut stream: TcpStream, server: &Arc<Server>) {
-    stream.set_read_timeout(Some(Duration::from_secs(30))).ok();
-    stream.set_write_timeout(Some(Duration::from_secs(60))).ok();
-    let resp = match read_request(&mut stream, MAX_UPLOAD) {
-        Ok(req) => server.route(&req),
-        Err(ReadError::Bad(status, msg)) => Response::error(status, msg),
-        Err(ReadError::Io) => return,
-    };
-    write_response(&mut stream, &resp).ok();
+/// Libera la marca de "subida en curso" al terminar (también si hay error).
+struct UploadSlot<'a>(&'a AtomicBool);
+
+impl Drop for UploadSlot<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
 }
 
-/// Atiende conexiones para siempre, una por hilo.
+/// Descuenta una conexión activa al terminar su hilo.
+struct ConnSlot(Arc<Server>);
+
+impl Drop for ConnSlot {
+    fn drop(&mut self) {
+        self.0.conns.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Atiende una conexión: primero la cabecera, después Host, token y ruta
+/// y solo entonces el cuerpo. Así nadie sin el token de la página puede
+/// hacer que el servidor reserve memoria; y solo `POST /api/open` admite un
+/// cuerpo grande, de una subida en una subida.
+fn handle(stream: TcpStream, server: &Arc<Server>) {
+    stream.set_read_timeout(Some(Duration::from_secs(30))).ok();
+    stream.set_write_timeout(Some(Duration::from_secs(60))).ok();
+    let Ok(write_half) = stream.try_clone() else {
+        return;
+    };
+    let mut reader = std::io::BufReader::new(stream);
+    let resp = match respond(&mut reader, server) {
+        Some(resp) => resp,
+        None => return,
+    };
+    write_response(write_half, &resp).ok();
+}
+
+/// Lee y despacha una petición; `None` si el cliente se fue sin más.
+fn respond(reader: &mut impl std::io::BufRead, server: &Arc<Server>) -> Option<Response> {
+    let bad = |e: ReadError| match e {
+        ReadError::Bad(status, msg) => Some(Response::error(status, msg)),
+        ReadError::Io => None,
+    };
+    let mut req = match read_head(reader) {
+        Ok(req) => req,
+        Err(e) => return bad(e),
+    };
+    if let Err(resp) = server.authorize(&req) {
+        return Some(resp);
+    }
+    let upload = req.method == "POST" && req.path == "/api/open";
+    let _slot = if upload {
+        if server
+            .uploading
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return Some(Response::error(503, "ya se está abriendo otra captura"));
+        }
+        Some(UploadSlot(&server.uploading))
+    } else {
+        None
+    };
+    let max_body = if upload { MAX_UPLOAD } else { MAX_SMALL_BODY };
+    if let Err(e) = read_body(reader, &mut req, max_body) {
+        return bad(e);
+    }
+    Some(server.route(&req))
+}
+
+/// Atiende conexiones para siempre, una por hilo y como mucho
+/// [`MAX_CONNS`] a la vez: el resto recibe un 503 inmediato y se cierra.
 fn serve(listener: TcpListener, server: Arc<Server>) {
     for stream in listener.incoming().flatten() {
-        let server = Arc::clone(&server);
-        std::thread::spawn(move || handle(stream, &server));
+        if server.conns.fetch_add(1, Ordering::SeqCst) >= MAX_CONNS {
+            server.conns.fetch_sub(1, Ordering::SeqCst);
+            // Sin bloquear el bucle de aceptación: la respuesta cabe en el
+            // búfer del socket; si no, se pierde y la conexión se cierra.
+            stream.set_nonblocking(true).ok();
+            write_response(&stream, &Response::error(503, "demasiadas conexiones")).ok();
+            continue;
+        }
+        let slot = ConnSlot(Arc::clone(&server));
+        std::thread::spawn(move || {
+            handle(stream, &slot.0);
+            drop(slot);
+        });
     }
 }
 
@@ -1289,13 +1447,15 @@ pub fn run(opts: GuiOptions) -> Result<()> {
     let mut server = Server::new(port, opts.cfg.clone());
     server.nicknames = Mutex::new(Nicknames::load());
     if opts.cfg.intel_feodo.is_some() || opts.cfg.intel_tor.is_some() {
-        server.intel = Some(
-            ThreatIntelDb::from_paths(
-                opts.cfg.intel_feodo.as_deref(),
-                opts.cfg.intel_tor.as_deref(),
-            )
-            .context("no se pudo cargar la lista de threat intel")?,
-        );
+        let db = ThreatIntelDb::from_paths(
+            opts.cfg.intel_feodo.as_deref(),
+            opts.cfg.intel_tor.as_deref(),
+        )
+        .context("no se pudo cargar la lista de threat intel")?;
+        for w in &db.warnings {
+            eprintln!("[!] {w}");
+        }
+        server.intel = Some(db);
     }
     let server = Arc::new(server);
     if let Some(path) = &opts.read {
@@ -1879,6 +2039,121 @@ mod tests {
             s.live_bpf(Some("udp port 53")),
             "(udp port 53) and not (tcp port 8787 and host 127.0.0.1)"
         );
+    }
+
+    #[test]
+    fn el_cuerpo_solo_se_lee_tras_validar_host_token_y_ruta() {
+        let s = Arc::new(Server::new(8787, PipelineConfig::default()));
+        let t = s.token.clone();
+        let status = |raw: String| {
+            let mut r = std::io::BufReader::new(std::io::Cursor::new(raw.into_bytes()));
+            respond(&mut r, &s).map(|resp| resp.status)
+        };
+        let grande = 512 * 1024 * 1024;
+        // Sin token / Host ajeno: se responde sin esperar ni reservar el
+        // cuerpo anunciado (antes 50 conexiones así tumbaban el proceso).
+        assert_eq!(
+            status(format!(
+                "POST /api/open HTTP/1.1\r\nHost: 127.0.0.1:8787\r\nContent-Length: {grande}\r\n\r\n"
+            )),
+            Some(403)
+        );
+        assert_eq!(
+            status(format!(
+                "POST /api/open HTTP/1.1\r\nHost: evil:8787\r\nX-Socshark-Token: {t}\r\nContent-Length: {grande}\r\n\r\n"
+            )),
+            Some(421)
+        );
+        // Con token, cualquier ruta que no sea la subida tiene un límite
+        // pequeño.
+        assert_eq!(
+            status(format!(
+                "POST /api/hosts/nick HTTP/1.1\r\nHost: 127.0.0.1:8787\r\nX-Socshark-Token: {t}\r\nContent-Length: {}\r\n\r\n",
+                MAX_SMALL_BODY + 1
+            )),
+            Some(413)
+        );
+        // Solo una subida a la vez.
+        s.uploading.store(true, Ordering::SeqCst);
+        assert_eq!(
+            status(format!(
+                "POST /api/open HTTP/1.1\r\nHost: 127.0.0.1:8787\r\nX-Socshark-Token: {t}\r\nContent-Length: 4\r\n\r\nabcd"
+            )),
+            Some(503)
+        );
+        s.uploading.store(false, Ordering::SeqCst);
+        // Subida legítima (no es un pcap): se lee, se intenta y se libera
+        // la marca de subida en curso.
+        assert_eq!(
+            status(format!(
+                "POST /api/open HTTP/1.1\r\nHost: 127.0.0.1:8787\r\nX-Socshark-Token: {t}\r\nContent-Length: 4\r\n\r\nabcd"
+            )),
+            Some(400)
+        );
+        assert!(!s.uploading.load(Ordering::SeqCst));
+        // Cuerpo anunciado pero no enviado: el cliente se fue, sin respuesta.
+        assert_eq!(
+            status(format!(
+                "POST /api/open HTTP/1.1\r\nHost: 127.0.0.1:8787\r\nX-Socshark-Token: {t}\r\nContent-Length: {grande}\r\n\r\nab"
+            )),
+            None
+        );
+        assert!(!s.uploading.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn demasiadas_conexiones_reciben_503() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let s = Arc::new(Server::new(port, PipelineConfig::default()));
+        s.conns.store(MAX_CONNS, Ordering::SeqCst);
+        std::thread::spawn(move || serve(listener, s));
+        let mut c = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        c.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let mut resp = String::new();
+        c.read_to_string(&mut resp).ok();
+        assert!(resp.starts_with("HTTP/1.1 503 "), "{resp}");
+    }
+
+    #[test]
+    fn bpf_con_parentesis_desequilibrados_se_rechaza() {
+        assert!(parens_balanced("tcp and (port 80 or port 443)"));
+        assert!(parens_balanced("udp"));
+        assert!(!parens_balanced("tcp) or (udp"));
+        assert!(!parens_balanced("(tcp"));
+        assert!(!parens_balanced("tcp)"));
+        let s = Arc::new(Server::new(8787, PipelineConfig::default()));
+        let t = s.token.clone();
+        let r = call(
+            &s,
+            "POST",
+            "/api/live/start?iface=lo&bpf=tcp)%20or%20(udp",
+            Some(&t),
+        );
+        assert_eq!(r.status, 400);
+        assert!(String::from_utf8_lossy(&r.body).contains("paréntesis"));
+    }
+
+    #[test]
+    fn archivo_temporal_nuevo_y_privado() {
+        let s = Server::new(8787, PipelineConfig::default());
+        let a = s.write_temp(b"uno").unwrap();
+        let b = s.write_temp(b"dos").unwrap();
+        assert_ne!(a, b);
+        assert_eq!(std::fs::read(&a).unwrap(), b"uno");
+        assert_eq!(std::fs::read(&b).unwrap(), b"dos");
+        // El nombre lleva una parte aleatoria: no se puede adivinar el
+        // siguiente a partir del PID y el contador.
+        let name = a.file_name().unwrap().to_string_lossy().to_string();
+        assert_eq!(name.split('-').count(), 5, "{name}");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&a).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        std::fs::remove_file(a).ok();
+        std::fs::remove_file(b).ok();
     }
 
     #[test]

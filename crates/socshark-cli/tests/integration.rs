@@ -40,7 +40,7 @@ fn pipeline_end_to_end_sin_ruido() {
         .find(|f| f.alerts.iter().any(|a| a.id == "DNS-TUNNELING"))
         .expect("debe detectar el túnel DNS");
     assert!(tunel.risk_score >= 45);
-    assert_eq!(tunel.alerts[0].mitre.as_deref(), Some("T1048.003"));
+    assert_eq!(tunel.alerts[0].mitre.as_deref(), Some("T1071.004"));
 
     // Las 12 sondas del escaneo quedan alertadas, respondiera el puerto o
     // no (abierto, cerrado con RST o filtrado), y solo como escaneo: la
@@ -508,4 +508,29 @@ fn export_ecs_y_wazuh_son_jsonl_validos_con_campos_clave() {
     assert_eq!(wazuh["program_name"], "socshark");
 
     std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn client_hello_partido_en_registros_y_desordenado_da_ja4_de_extremo_a_extremo() {
+    // Une los dos arreglos: el agregador entrega los segmentos en orden de
+    // secuencia (sin la retransmisión) y el disector TLS quita la cabecera
+    // de cada registro al reconstruir el mensaje.
+    let packets: Vec<(u64, Vec<u8>)> = socshark_testgen::fuzz::tls_split_records()
+        .into_iter()
+        .enumerate()
+        .map(|(i, frame)| (1_700_000_000_000_000 + i as u64 * 1_000, frame))
+        .collect();
+    let mut path = std::env::temp_dir();
+    path.push(format!("socshark-tls-partido-{}.pcap", std::process::id()));
+    write_pcap(&path, 1, &packets).unwrap();
+    let out = run_capture(&path, None, true, &PipelineConfig::default()).unwrap();
+    std::fs::remove_file(&path).ok();
+
+    let tls = out
+        .flows
+        .iter()
+        .find(|f| f.dst_port == 443)
+        .expect("debe haber un flujo al 443");
+    assert_eq!(tls.tls_sni.as_deref(), Some("partido.example"));
+    assert!(tls.ja4_fingerprint.is_some(), "sin JA4: {tls:#?}");
 }

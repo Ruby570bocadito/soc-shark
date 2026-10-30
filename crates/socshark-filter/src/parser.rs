@@ -19,16 +19,33 @@ pub struct FilterError {
     pub message: String,
 }
 
+/// Anidamiento máximo de `(`, `!` y `not`. La recursión del parser, del
+/// evaluador y del `Drop` del AST es proporcional a esta profundidad: sin
+/// límite, unos miles de `(` desbordaban la pila y abortaban el proceso.
+pub const MAX_DEPTH: usize = 128;
+
+/// Número máximo de tokens de una expresión. Acota el tamaño del AST; junto
+/// con las cadenas `&&`/`||` construidas como árboles equilibrados (ver
+/// `balanced`) mantiene acotada la profundidad total del árbol.
+pub const MAX_TOKENS: usize = 4096;
+
 /// Parsea una expresión de filtrado completa (consumiendo todo el input).
 pub fn parse(input: &str) -> Result<Expr, FilterError> {
     let toks = lex(input).map_err(|e| FilterError {
         pos: e.pos,
         message: e.message,
     })?;
+    if let Some((pos, _)) = toks.get(MAX_TOKENS) {
+        return Err(FilterError {
+            pos: *pos,
+            message: format!("expresión demasiado larga (máximo {MAX_TOKENS} tokens)"),
+        });
+    }
     let mut p = Parser {
         toks,
         pos: 0,
         end: input.len(),
+        depth: 0,
     };
     let expr = p.parse_or()?;
     if let Some((pos, tok)) = p.peek() {
@@ -51,6 +68,8 @@ struct Parser {
     pos: usize,
     /// Longitud de la entrada: posición que se reporta al faltar tokens.
     end: usize,
+    /// Anidamiento actual de `(`/`!`/`not` (ver [`MAX_DEPTH`]).
+    depth: usize,
 }
 
 impl Parser {
@@ -83,28 +102,43 @@ impl Parser {
     }
 
     fn parse_or(&mut self) -> Result<Expr, FilterError> {
-        let mut left = self.parse_and()?;
+        let mut items = vec![self.parse_and()?];
         while self.eat(&Tok::Or) {
-            let right = self.parse_and()?;
-            left = Expr::Or(Box::new(left), Box::new(right));
+            items.push(self.parse_and()?);
         }
-        Ok(left)
+        Ok(balanced(items, Expr::Or))
     }
 
     fn parse_and(&mut self) -> Result<Expr, FilterError> {
-        let mut left = self.parse_not()?;
+        let mut items = vec![self.parse_not()?];
         while self.eat(&Tok::And) {
-            let right = self.parse_not()?;
-            left = Expr::And(Box::new(left), Box::new(right));
+            items.push(self.parse_not()?);
         }
-        Ok(left)
+        Ok(balanced(items, Expr::And))
+    }
+
+    /// Entra en un nivel de anidamiento; error si se supera [`MAX_DEPTH`].
+    fn enter(&mut self, pos: usize) -> Result<(), FilterError> {
+        self.depth += 1;
+        if self.depth > MAX_DEPTH {
+            return Err(FilterError {
+                pos,
+                message: format!("anidamiento demasiado profundo (máximo {MAX_DEPTH} niveles)"),
+            });
+        }
+        Ok(())
     }
 
     fn parse_not(&mut self) -> Result<Expr, FilterError> {
+        let pos = self.peek().map(|(p, _)| p).unwrap_or(self.end);
         if self.eat(&Tok::Not) {
-            return Ok(Expr::Not(Box::new(self.parse_not()?)));
+            self.enter(pos)?;
+            let e = Expr::Not(Box::new(self.parse_not()?));
+            self.depth -= 1;
+            return Ok(e);
         }
         if self.eat(&Tok::LParen) {
+            self.enter(pos)?;
             let e = self.parse_or()?;
             if !self.eat(&Tok::RParen) {
                 return Err(FilterError {
@@ -112,6 +146,7 @@ impl Parser {
                     message: "se esperaba ')'".into(),
                 });
             }
+            self.depth -= 1;
             return Ok(e);
         }
         self.parse_cmp()
@@ -174,6 +209,34 @@ impl Parser {
     }
 }
 
+/// Combina una cadena `a op b op c ...` en un árbol binario equilibrado en
+/// lugar de uno sesgado a la izquierda: `&&` y `||` son asociativos y el
+/// recorrido en orden (y por tanto el cortocircuito de izquierda a derecha)
+/// se conserva, pero la profundidad pasa de O(n) a O(log n), de modo que
+/// `eval` y el `Drop` recursivo del AST no desbordan la pila.
+fn balanced(mut items: Vec<Expr>, mk: fn(Box<Expr>, Box<Expr>) -> Expr) -> Expr {
+    if items.len() == 1 {
+        return items.pop().expect("al menos un operando");
+    }
+    let right = items.split_off(items.len() / 2);
+    mk(Box::new(balanced(items, mk)), Box::new(balanced(right, mk)))
+}
+
+/// Número según la gramática documentada: `digit+` con parte decimal
+/// opcional (`0.01`). Rechaza lo que `f64::parse` aceptaría de más
+/// (`inf`, `nan`, `1e3`, `.5`, `+1`), que se tratan como cadenas.
+pub(crate) fn parse_number(word: &str) -> Option<f64> {
+    let (int, frac) = match word.split_once('.') {
+        Some((i, f)) => (i, Some(f)),
+        None => (word, None),
+    };
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    if !digits(int) || !frac.map(digits).unwrap_or(true) {
+        return None;
+    }
+    word.parse::<f64>().ok()
+}
+
 /// Clasifica el lado izquierdo: ¿es un valor literal (IP, número) o un campo?
 fn classify_word(word: &str) -> Prim {
     if let Some(ip) = parse_ip_literal(word) {
@@ -199,7 +262,7 @@ fn word_to_value(word: &str) -> Value {
     if word == "false" {
         return Value::Bool(false);
     }
-    if let Ok(n) = word.parse::<f64>() {
+    if let Some(n) = parse_number(word) {
         return Value::Num(n);
     }
     Value::Str(word.to_string())
@@ -267,6 +330,79 @@ mod tests {
             Expr::Cmp { value, .. } => assert!(matches!(value, Value::Str(_))),
             other => panic!("AST inesperado: {other:?}"),
         }
+    }
+
+    #[test]
+    fn numeros_segun_la_gramatica() {
+        let valor = |src: &str| match parse(&format!("flow.risk == {src}")).unwrap() {
+            Expr::Cmp { value, .. } => value,
+            other => panic!("AST inesperado: {other:?}"),
+        };
+        assert_eq!(valor("443"), Value::Num(443.0));
+        assert_eq!(valor("0.01"), Value::Num(0.01));
+        // Lo que f64::parse aceptaría de más se queda como cadena.
+        for raro in ["inf", "nan", "NaN", "infinity", "1e3", "1.", "1.2.3"] {
+            assert_eq!(valor(raro), Value::Str(raro.into()), "{raro}");
+        }
+        assert!(parse_number(".5").is_none());
+    }
+
+    #[test]
+    fn anidamiento_excesivo_es_error_normal() {
+        // Antes ~2000 '(' desbordaban la pila y abortaban el proceso.
+        let profundo = format!("{}a == 1{}", "(".repeat(2000), ")".repeat(2000));
+        let e = parse(&profundo).unwrap_err();
+        assert_eq!(e.pos, MAX_DEPTH);
+        assert!(e.message.contains("anidamiento"));
+        assert!(parse(&format!("{}a", "!".repeat(2000))).is_err());
+        assert!(parse(&format!("{}a", "not ".repeat(1000))).is_err());
+        // Justo en el límite sigue funcionando.
+        let ok = format!("{}a == 1{}", "(".repeat(MAX_DEPTH), ")".repeat(MAX_DEPTH));
+        assert!(parse(&ok).is_ok());
+    }
+
+    #[test]
+    fn expresion_demasiado_larga_es_error() {
+        let larga = vec!["a"; 3000].join(" || ");
+        let e = parse(&larga).unwrap_err();
+        assert!(e.message.contains("demasiado larga"));
+    }
+
+    #[test]
+    fn cadenas_largas_son_arboles_equilibrados() {
+        fn prof(e: &Expr) -> usize {
+            match e {
+                Expr::Or(a, b) | Expr::And(a, b) => 1 + prof(a).max(prof(b)),
+                Expr::Not(a) => 1 + prof(a),
+                _ => 1,
+            }
+        }
+        let cadena = vec!["a"; 2000].join(" && ");
+        let e = parse(&cadena).unwrap();
+        assert!(prof(&e) <= 12, "profundidad {}", prof(&e));
+    }
+
+    #[test]
+    fn peor_caso_cabe_en_una_pila_pequena() {
+        // Máximo anidamiento con cadenas en cada nivel, parseado, evaluado
+        // y destruido en un hilo de 512 KiB (el principal de Windows tiene
+        // 1 MiB): demuestra que los límites acotan toda la recursión.
+        let mut src = String::from("a == 1");
+        // Cada "!(" suma dos niveles.
+        for _ in 0..MAX_DEPTH / 2 {
+            src = format!("!(a == 1 || b == 2 || {src})");
+        }
+        std::thread::Builder::new()
+            .stack_size(512 * 1024)
+            .spawn(move || {
+                let e = parse(&src).unwrap();
+                let f = crate::tests::flujo_tls();
+                let _ = crate::eval(&e, &f);
+                drop(e);
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 
     #[test]

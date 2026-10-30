@@ -9,6 +9,11 @@
 //!
 //! Seguridad: los límites (número de registros, saltos de puntero, etiquetas)
 //! evitan bucles infinitos y explosión de memoria con paquetes crafted.
+//! Los nombres nunca hacen fallar el mensaje: los bytes que no son UTF-8
+//! válido, los de control y los de formato invisible (bidi, ancho cero) se
+//! escapan como `\xNN` / `\u{XXXX}` (ver [`push_label`]). Así un byte raro
+//! no esconde el paquete del análisis DNS (evasión de detección de túneles)
+//! y el texto que llega a terminales y UIs es siempre seguro de mostrar.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
@@ -159,7 +164,8 @@ pub fn parse_dns(data: &[u8]) -> Option<DnsInfo> {
 /// aunque el nombre termine en un puntero, para que el caller pueda seguir
 /// parseando campos fijos.
 fn read_name(data: &[u8], start: usize) -> Option<(String, usize)> {
-    let mut labels: Vec<&str> = Vec::new();
+    let mut name = String::new();
+    let mut labels = 0usize;
     let mut off = start;
     let mut next_off: Option<usize> = None;
     let mut jumps = 0usize;
@@ -179,19 +185,67 @@ fn read_name(data: &[u8], start: usize) -> Option<(String, usize)> {
             off = (((len & 0x3f) as usize) << 8) | hi as usize;
         } else if len == 0 {
             let end = next_off.unwrap_or(off + 1);
-            return Some((labels.join("."), end));
+            return Some((name, end));
         } else if len & 0xc0 != 0 {
             // 0x40/0x80: etiquetas reservadas / bitstring EDNS0, fuera de alcance.
             return None;
         } else {
             let l = len as usize;
-            if labels.len() >= MAX_NAME_LABELS {
+            if labels >= MAX_NAME_LABELS {
                 return None;
             }
             let bytes = data.get(off + 1..off + 1 + l)?;
-            let label = std::str::from_utf8(bytes).ok()?;
-            labels.push(label);
+            if labels > 0 {
+                name.push('.');
+            }
+            push_label(&mut name, bytes);
+            labels += 1;
             off += 1 + l;
+        }
+    }
+}
+
+/// Añade una etiqueta DNS al nombre escapando lo que no es texto seguro:
+/// bytes que no forman UTF-8 válido → `\xNN`; caracteres de control y de
+/// formato invisible (bidi, ancho cero, BOM) → `\xNN` o `\u{XXXX}`; la
+/// barra invertida se duplica para que el escape no sea ambiguo. El texto
+/// UTF-8 imprimible (mDNS usa nombres como «iPhone de Ana») se conserva.
+fn push_label(out: &mut String, mut bytes: &[u8]) {
+    use std::fmt::Write as _;
+    let push_str = |out: &mut String, s: &str| {
+        for c in s.chars() {
+            if c == '\\' {
+                out.push_str("\\\\");
+            } else if c.is_control() || crate::discovery::is_invisible_format(c) {
+                let cp = c as u32;
+                if cp < 0x100 {
+                    let _ = write!(out, "\\x{cp:02x}");
+                } else {
+                    let _ = write!(out, "\\u{{{cp:04x}}}");
+                }
+            } else {
+                out.push(c);
+            }
+        }
+    };
+    // Decodificación UTF-8 por tramos (equivale a `utf8_chunks`, que es de
+    // Rust 1.79; el MSRV del workspace es 1.75, ADR-001).
+    while !bytes.is_empty() {
+        match std::str::from_utf8(bytes) {
+            Ok(s) => {
+                push_str(out, s);
+                break;
+            }
+            Err(e) => {
+                let (valid, rest) = bytes.split_at(e.valid_up_to());
+                // `valid_up_to` garantiza que este tramo es UTF-8 válido.
+                push_str(out, std::str::from_utf8(valid).unwrap_or_default());
+                let bad = e.error_len().unwrap_or(rest.len()).max(1).min(rest.len());
+                for b in &rest[..bad] {
+                    let _ = write!(out, "\\x{b:02x}");
+                }
+                bytes = &rest[bad..];
+            }
         }
     }
 }
@@ -223,6 +277,43 @@ mod tests {
     fn mensaje_truncado_devuelve_none() {
         assert!(parse_dns(&[0u8; 11]).is_none());
         assert!(parse_dns(&[]).is_none());
+    }
+
+    /// Consulta con un nombre de etiquetas crudas (sin pasar por `&str`).
+    fn consulta_cruda(labels: &[&[u8]]) -> Vec<u8> {
+        let mut m = vec![0x12, 0x34, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0];
+        for l in labels {
+            m.push(l.len() as u8);
+            m.extend_from_slice(l);
+        }
+        m.extend_from_slice(&[0, 0, 16, 0, 1]); // fin + TXT/IN
+        m
+    }
+
+    #[test]
+    fn bytes_no_utf8_se_escapan_sin_perder_el_paquete() {
+        // Regresión: un solo byte no UTF-8 hacía que parse_dns devolviera
+        // None y el paquete escapara al análisis DNS (evasión de túneles).
+        let m = consulta_cruda(&[b"ab\xffcd", b"tunel", b"example"]);
+        let d = parse_dns(&m).expect("el mensaje sigue siendo DNS");
+        assert_eq!(d.queries[0].name, "ab\\xffcd.tunel.example");
+        assert_eq!(d.queries[0].qtype, 16);
+    }
+
+    #[test]
+    fn control_y_bidi_se_escapan_y_utf8_valido_se_conserva() {
+        let m = consulta_cruda(&[
+            b"a\x1b[31mb",
+            "x\u{202e}y".as_bytes(),
+            "iPhone de Ana".as_bytes(),
+            b"c\\d",
+        ]);
+        let d = parse_dns(&m).unwrap();
+        assert_eq!(
+            d.queries[0].name,
+            "a\\x1b[31mb.x\\u{202e}y.iPhone de Ana.c\\\\d"
+        );
+        assert!(!d.queries[0].name.chars().any(|c| c.is_control()));
     }
 
     #[test]
