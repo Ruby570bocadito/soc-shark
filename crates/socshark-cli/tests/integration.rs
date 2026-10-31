@@ -183,10 +183,16 @@ fn jsonl_se_escribe_correctamente() {
     let contenido = std::fs::read_to_string(&destino).unwrap();
     let lineas: Vec<&str> = contenido.lines().collect();
     assert_eq!(lineas.len(), out.flows.len());
-    // Cada línea debe ser JSON válido con flow_id.
+    // Cada línea debe ser JSON válido con flow_id y la versión del formato,
+    // y volver a leerse como EnrichedFlow (el campo extra no estorba).
     for linea in &lineas {
         let v: serde_json::Value = serde_json::from_str(linea).unwrap();
         assert!(v.get("flow_id").is_some());
+        assert_eq!(
+            v["schema_version"],
+            serde_json::json!(socshark_core::JSONL_SCHEMA_VERSION)
+        );
+        let _: socshark_core::EnrichedFlow = serde_json::from_str(linea).unwrap();
     }
 
     std::fs::remove_file(&destino).ok();

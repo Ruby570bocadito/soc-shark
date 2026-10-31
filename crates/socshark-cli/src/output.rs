@@ -6,7 +6,7 @@ use std::io::{self, BufWriter, Write};
 use std::path::Path;
 
 use anyhow::{bail, Result};
-use socshark_core::EnrichedFlow;
+use socshark_core::{EnrichedFlow, VersionedFlow};
 use socshark_soc::summarize::fmt_bytes;
 
 use crate::pipeline::CaptureOutput;
@@ -145,7 +145,8 @@ fn file_identity(_path: &Path) -> Option<(u64, u64)> {
     None
 }
 
-/// Escribe los flujos como JSONL (un `EnrichedFlow` por línea).
+/// Escribe los flujos como JSONL (un `EnrichedFlow` por línea, con su
+/// `schema_version`: ver [`socshark_core::JSONL_SCHEMA_VERSION`]).
 ///
 /// JSONL y no un array JSON: permite `jq`, `grep` y lectura en streaming
 /// sin cargar todo el archivo; es también el formato que consumirán los
@@ -160,7 +161,7 @@ pub fn write_jsonl(path: &Path, flows: &[EnrichedFlow]) -> Result<()> {
 /// JSONL a cualquier destino (stdout incluido) con vaciado final.
 pub fn write_jsonl_to(w: &mut impl Write, flows: &[EnrichedFlow]) -> io::Result<()> {
     for flow in flows {
-        serde_json::to_writer(&mut *w, flow)?;
+        serde_json::to_writer(&mut *w, &VersionedFlow::new(flow))?;
         w.write_all(b"\n")?;
     }
     w.flush()

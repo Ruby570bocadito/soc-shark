@@ -1,0 +1,59 @@
+{
+  "comment": "Corpus de verificación de detecciones. Ver corpus/README.md.",
+  "captures": [
+    {
+      "name": "demo",
+      "synthetic": "sample",
+      "source": "socshark-testgen: escenario demo (DNS, TLS, túnel DNS, escaneo, SSH, HTTP con descarga encubierta, beacon UDP)",
+      "carve_files": true,
+      "must": ["DNS-TUNNELING", "PORT-SCAN", "FILE-MASQUERADING", "BEACONING"],
+      "must_not": [],
+      "max_severity": "Critical"
+    },
+    {
+      "name": "home",
+      "synthetic": "home",
+      "source": "socshark-testgen: red doméstica (DHCP, mDNS, NetBIOS, navegación normal y un Telnet al router)",
+      "carve_files": false,
+      "must": ["INSECURE-PORT"],
+      "must_not": ["DNS-TUNNELING", "PORT-SCAN", "NETWORK-SWEEP", "BEACONING"],
+      "max_severity": "High"
+    },
+    {
+      "name": "dns-benign",
+      "synthetic": "dns_benign",
+      "source": "socshark-testgen: DNS legítimo con nombres largos (CDN, telemetría)",
+      "carve_files": false,
+      "must": [],
+      "must_not": ["DNS-TUNNELING"],
+      "max_severity": "Low"
+    },
+    {
+      "name": "dns-low-entropy-tunnel",
+      "synthetic": "dns_low_entropy_tunnel",
+      "source": "socshark-testgen: túnel DNS de baja entropía (estilo dnscat2/iodine), detectado por volumen",
+      "carve_files": false,
+      "must": ["DNS-TUNNELING"],
+      "must_not": [],
+      "max_severity": "Critical"
+    },
+    {
+      "name": "beacon-jitter",
+      "synthetic": "jittered_beacon",
+      "source": "socshark-testgen: beacon TCP con jitter aleatorio (semilla 7)",
+      "carve_files": false,
+      "must": ["BEACONING"],
+      "must_not": [],
+      "max_severity": "Critical"
+    },
+    {
+      "name": "interactive-sessions",
+      "synthetic": "interactive_sessions",
+      "source": "socshark-testgen: sesiones interactivas legítimas que no deben parecer beacons",
+      "carve_files": false,
+      "must": [],
+      "must_not": ["BEACONING"],
+      "max_severity": "Medium"
+    }
+  ]
+}

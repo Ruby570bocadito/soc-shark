@@ -14,8 +14,8 @@ y el estado se mantiene en este documento, en el README y en el CHANGELOG.
 | CLI, informe HTML, export ECS/Wazuh | ✅ estable |
 | GUI local y TUI | ✅ estable |
 | Captura en vivo (libpcap/Npcap) | 🟡 funciona; falta medir rendimiento en hardware real |
-| Atribución de proceso por eBPF | 🔴 solo los tipos compartidos |
-| Tauri, plugins WASM, DuckDB | 🔴 sin empezar |
+| Atribución de proceso por eBPF | ⏭️ después de la 1.0 (hoy: tabla de sockets) |
+| Tauri, plugins WASM, DuckDB | ⏭️ después de la 1.0 |
 
 La **auditoría de octubre de 2026** (ver CHANGELOG, «Sin publicar») cerró
 todos los fallos reproducidos:
@@ -51,145 +51,115 @@ Los tests pasaron de 209 a 281 (304 tras el primer bloque de la 0.8).
 
 ---
 
-## 0.7.1 — Parche de seguridad (rama `fix/auditoria-0.7`)
+## Alcance de la 1.0 (decisión de noviembre de 2026)
 
-Objetivo: publicar ya la auditoría, porque varios fallos tumban la app con
-una captura ajena.
+La hoja de ruta anterior metía en la 1.0 eBPF, un daemon con privilegios
+separados, Tauri, plugins WASM, DuckDB, cuatro protocolos nuevos, AF_XDP y
+cuatro canales de distribución: años de trabajo para un proyecto pequeño, y
+una meta que se alejaba cada vez que se cerraba una casilla.
 
-- [x] Todos los fallos reproducidos, corregidos y con test de regresión
-- [x] Fuzzer con escenarios hostiles (chunked, fragmentos, TLS partido) y
-      *carving* dentro del recorrido
-- [x] CI en Windows y macOS, MSRV real (1.88), actions fijadas por SHA
-- [ ] Probar los instaladores en limpio: Windows 11 con PowerShell 5.1,
-      Ubuntu, Fedora y macOS (actualizar con la GUI abierta debe fallar con
-      mensaje claro)
-- [x] Pasar `shellcheck install.sh` (0.10.0, sin avisos)
-- [ ] Release 0.7.1 desde el flujo de Actions
+La 1.0 se redefine como **lo que ya funciona, verificado y accesible**:
 
-**Criterio:** CI verde en los tres sistemas. Las reproducciones de la
-auditoría (`chunked_overflow.pcap`, 100 conexiones hostiles, filtro con
-7 000 paréntesis) no tumban ni `report` ni `gui`.
+1. **Confianza**: lo que dice la herramienta es correcto frente a capturas
+   reales (corpus con *golden files*, Wazuh con test de contrato).
+2. **Rendimiento suficiente**: el cuello de botella medido (*carving*)
+   resuelto y la GUI fluida con miles de flujos.
+3. **Accesible**: interfaz en inglés y español, política de seguridad y
+   formato de salida versionado.
+
+Todo lo demás pasa a [Después de la 1.0](#después-de-la-10) sin perderse:
+son ideas buenas, no requisitos para llamar «terminado» al producto.
 
 ## 0.8 — Confianza en los datos
 
-Objetivo: que lo que dice la herramienta sea correcto y verificable frente a
-la realidad.
+- [x] **Fuzzing guiado por cobertura**: `cargo-fuzz` con 10 objetivos y job
+      nocturno en CI (`fuzz/`, `.github/workflows/fuzz.yml`). Destapó la
+      reserva de 256 MiB del lector pcap: corregido
+- [x] **Túnel DNS por volumen** (`DnsVolumeTracker`)
+- [x] **Beaconing con jitter aleatorizado** (mediana + MAD)
+- [x] Validación de ECS contra el esquema oficial (v8.11) en CI
+- [x] `refuse_overwrite` para enlaces duros; rechazos completos en la GUI
+- [x] **Arnés del corpus** (`corpus/`, test `corpus`): cada captura declara
+      su verdad de campo (reglas que *deben* saltar y que *no deben*) y un
+      *golden file* con el resultado esperado; `SOCSHARK_BLESS=1` lo
+      regenera. Sembrado con los escenarios sintéticos de `socshark-testgen`
+- [x] **Test de contrato Wazuh**: forma del JSON fijada en un test y
+      `docs/wazuh/local_rules.xml` listo para copiar
+- [ ] **Capturas reales en el corpus** (públicas y sin datos personales:
+      ejemplos de Wireshark, Malware-Traffic-Analysis, CICIDS). Ver
+      [corpus/README.md](../corpus/README.md). Al menos un verdadero
+      positivo real por regla
+- [ ] `local_rules.xml` probado contra un manager de laboratorio en Docker
+      (`wazuh-logtest`)
 
-- [x] **Fuzzing guiado por cobertura**: `cargo-fuzz` con 10 objetivos
-      (DNS, IPv4/6, TCP, UDP, TLS, disección completa, pcap/pcapng,
-      *carving*, DSL) y job nocturno en CI con el corpus persistido
-      (`fuzz/`, `.github/workflows/fuzz.yml`). Su primera ejecución destapó
-      que el lector pcap reservaba la longitud declarada antes de leer (un
-      archivo de 40 bytes costaba 256 MiB): corregido. *Pendiente: el lector
-      HTTP de la GUI (es privado) y 24 h de ejecución sin hallazgos.*
-- [ ] **Corpus de capturas reales** (sin datos personales: capturas públicas
-      de Wireshark, Malware-Traffic-Analysis, CICIDS) con resultados
-      esperados en *golden files*. Cada regla del mini-IDS se mide en
-      verdaderos y falsos positivos
-- [x] **Túnel DNS por volumen**: ≥ 50 subdominios únicos de un dominio
-      base por cliente en 10 min (`DnsVolumeTracker`, acotado; excluye PTR,
-      mDNS y listas DNSBL)
-- [x] **Beaconing con jitter aleatorizado** (hasta ±50%): mediana + MAD y
-      fracción de intervalos en [0.4, 2] × mediana, dentro de un flujo y
-      entre conexiones; severidad baja (+10) y la regla estricta gana
-- [ ] **Wazuh verificado**: `local_rules.xml` probado contra un manager de
-      laboratorio en Docker y test de contrato del JSON de salida
-- [x] Validación de ECS contra el esquema oficial de Elastic (v8.11) en CI.
-      Encontró `flow.id` y `tls.ja4`, que no existen en ECS: ahora van en
-      `socshark.*`
-- [x] `refuse_overwrite` también para enlaces duros (dev+inode en unix,
-      volumen+índice de archivo en Windows)
-- [x] La GUI entrega la respuesta de rechazo completa antes de cerrar
-      (cierre diferido acotado a 1 s): en Windows el cliente recibía un
-      *reset*
+**Criterio:** el corpus real no da falsos positivos High y cada regla tiene
+al menos un verdadero positivo real.
 
-**Criterio:** el corpus real no da falsos positivos High; cada regla tiene
-al menos un verdadero positivo real; 24 h de fuzzing guiado sin hallazgos.
+## 0.9 — Rendimiento suficiente
 
-## 0.9 — Rendimiento y operación en vivo
+- [x] Banco reproducible (`socshark dev bench`) con umbral en CI
+- [x] **Optimizar el *carving***: el coste era casi todo SHA-256 de los
+      cuerpos tallados (que además copiaba el cuerpo entero) y una búsqueda
+      byte a byte. Ahora SHA-256 sin copia, búsqueda por primer byte (~4,7×)
+      y flujos tallados en paralelo. La etapa pasó de ~0,6 s a ~0,15 s con
+      1M paquetes; `dev bench` (500k paquetes, Windows, 12 núcleos) de
+      ~350k a ~450-510k paquetes/s
+- [ ] Presupuesto de reensamblado configurable y liberar los streams ya
+      tallados (se agota con 1M paquetes)
+- [ ] GUI y TUI fluidas con 10 000 flujos (lista virtualizada)
+- [ ] Captura en vivo probada a mano en Windows + Npcap, Linux y macOS
 
-Objetivo: cerrar el criterio pendiente de la Fase 2.
-
-- [x] Banco de rendimiento reproducible (`socshark dev bench`) con job de
-      CI y umbral de regresión. Primeras cifras (Windows, release): ~245k
-      paquetes/s (~1,3 Gbit/s) offline con 500k paquetes
-- [ ] **El *carving* domina el tiempo** (~3,4 s de ~4,4 s en una medida
-      por etapas): optimizarlo antes que el pool
-- [ ] `--workers N` sigue sin ganar a 1 hilo: lotes de 4096 (antes 256) lo
-      mejoraron de ~140k a ~218k paquetes/s, pero la copia `into_owned` y la
-      parte secuencial pesan más. Paralelizar el agregador por hash de flujo
-      o eliminar la copia
-- [ ] El presupuesto global de reensamblado (256 MiB) se agota con 1M
-      paquetes: hacerlo configurable y liberar los streams ya tallados
-- [ ] **≥ 200 Mbps sostenidos** en vivo en un portátil de referencia
-      (Windows + Npcap y Linux), sin pérdidas del kernel
-- [ ] TUI y GUI fluidas con 10 000 flujos (lista virtualizada, perfilado
-      del JSON)
-- [ ] Captura en vivo probada en hardware real en los tres sistemas. Hoy:
-      Windows solo con el `wpcap.dll` de Wine, y macOS sin probar tras
-      cambiar a rutas absolutas
-- [ ] Rotación de la salida JSONL del daemon y unidad systemd y servicio de
-      Windows de ejemplo
-- [ ] AF_XDP como backend de alto rendimiento en Linux (opcional, detrás de
-      *feature*)
-
-**Criterio:** 200 Mbps durante 10 min con < 0,1 % de pérdidas y memoria
-estable (sin crecer) en las tres plataformas.
-
-## 0.10 — Atribución de proceso y privilegios mínimos (Fase 3)
-
-Objetivo: la característica diferencial y el modelo de privilegios que
-promete `docs/security.md`.
-
-- [ ] **Separar privilegios**: `socshark-capture-helper` mínimo con
-      `cap_net_raw` (sin parsers), y el resto sin capacidades. El instalador
-      deja de dar `setcap` al binario completo
-- [ ] Probes eBPF con aya: `tcp_v4_connect`, `inet_sock_set_state`,
-      `udp_sendmsg`
-- [ ] Correlación de la *cookie* de socket con (pid, exe, uid) en el
-      enriquecedor; columnas Proceso/Usuario en TUI, GUI y JSONL
-- [ ] Atribución en macOS (`proc_pidfdinfo` o `nettop`) para igualar
-      Linux y Windows
-
-**Criterio:** un flujo de `curl` muestra `process_name=/usr/bin/curl` antes
-de que el primer paquete llegue al disector; los parsers corren sin ninguna
-capacidad (comprobado con `getpcaps`).
-
-## 0.11 — Ecosistema (Fase 4)
-
-- [ ] **Plugins WASM** (wasmtime) con la API WIT de
-      [wasm-plugins.md](wasm-plugins.md): límite de *fuel*, firma Ed25519 y
-      dos plugins oficiales (HTTP y SMB)
-- [ ] **Sesiones persistentes** (DuckDB o Parquet) y consultas analíticas
-      entre capturas
-- [ ] GeoIP/ASN offline con un lector `.mmdb` propio → `dst_geo_asn`
-- [ ] Más protocolos: QUIC (JA4 de QUIC), HTTP/2 con SNI/ALPN, SMB2, RDP,
-      Kerberos (para detecciones de movimiento lateral)
-- [ ] Push a TheHive y salida Sigma o Suricata EVE
-
-**Criterio:** un plugin comunitario corre en sandbox y enriquece flujos
-reales; un Wazuh de laboratorio recibe flujos con etiquetas ATT&CK
-correctas.
+**Criterio:** 10 000 flujos se abren y filtran sin bloqueos perceptibles;
+captura en vivo verificada en los tres sistemas.
 
 ## 1.0 — Producto
 
-- [ ] GUI empaquetada (Tauri) con instalador firmado; SequenceView de
-      handshakes y decodificador estilo CyberChef
-- [ ] **Interfaz en inglés y español** (hoy solo español) y documentación
-      completa en inglés
-- [ ] Distribución: winget, Homebrew, `.deb`/`.rpm`, actualización
-      automática opcional
-- [ ] **Releases firmados**: firma de los binarios (Authenticode en Windows,
-      notarización en macOS), procedencia SLSA y `SHA256SUMS` firmado (hoy
-      solo garantiza integridad, no autenticidad)
-- [ ] Política de seguridad (`SECURITY.md`) con canal de reporte y SLA
-- [ ] API estable del JSONL y del DSL con versionado semántico
+- [x] Política de seguridad ([SECURITY.md](../SECURITY.md)) con canal de
+      reporte y plazos
+- [x] **Formato JSONL versionado**: cada flujo lleva `schema_version`; los
+      cambios incompatibles suben su número mayor (ver
+      [data-model.md](data-model.md))
+- [ ] **Interfaz en inglés y español** (GUI con selector de idioma; TUI e
+      informe a continuación)
+- [ ] Probar los instaladores en limpio: Windows 11 (PowerShell 5.1),
+      Ubuntu, Fedora y macOS
+- [ ] Release desde el flujo de Actions con todo lo anterior
 
 **Criterio:** una persona sin conocimientos técnicos instala la app, abre
-una captura y entiende las tres primeras historias sin ayuda (prueba de
-usabilidad con 5 personas).
+una captura y entiende las tres primeras historias sin ayuda (prueba con
+5 personas, en inglés o en español).
 
 ---
+
+## Después de la 1.0
+
+Ordenado por valor estimado. Ninguno bloquea la 1.0.
+
+### 1.x — Mejoras incrementales
+
+- `--workers N` que gane a un hilo (paralelizar el agregador por hash de
+  flujo o eliminar la copia `into_owned`)
+- ≥ 200 Mbps sostenidos en vivo con < 0,1 % de pérdidas
+- Rotación del JSONL del daemon; unidad systemd y servicio de Windows
+- GeoIP/ASN offline con lector `.mmdb` propio
+- Salida Sigma o Suricata EVE; push a TheHive
+- Distribución: winget, Homebrew, `.deb`/`.rpm`
+- Releases firmados (Authenticode, notarización, SLSA, `SHA256SUMS` firmado)
+
+### 2.0 — Arquitectura
+
+- **Privilegios separados**: `socshark-capture-helper` mínimo con
+  `cap_net_raw` y parsers sin capacidades (ver [security.md](security.md))
+- **eBPF**: probes con aya (`tcp_v4_connect`, `inet_sock_set_state`,
+  `udp_sendmsg`) y atribución de proceso antes del primer paquete
+  (hoy se atribuye con la tabla de sockets del sistema). Tipos ya listos en
+  `socshark-ebpf-common`
+- Atribución en macOS
+- **Plugins WASM** con la API de [wasm-plugins.md](wasm-plugins.md)
+- Sesiones persistentes (DuckDB o Parquet)
+- Más protocolos: QUIC, HTTP/2, SMB2, RDP, Kerberos
+- GUI empaquetada con Tauri; SequenceView; decodificador tipo CyberChef
+- AF_XDP en Linux
 
 ## Fuera de alcance (declarado)
 

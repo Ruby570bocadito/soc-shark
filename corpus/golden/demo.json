@@ -1,0 +1,116 @@
+{
+  "alerted_flows": [
+    {
+      "alerts": [
+        "PORT-SCAN"
+      ],
+      "flow_id": "tcp/192.168.1.1:110-192.168.1.30:40001",
+      "risk_score": 30
+    },
+    {
+      "alerts": [
+        "PORT-SCAN"
+      ],
+      "flow_id": "tcp/192.168.1.1:135-192.168.1.30:40001",
+      "risk_score": 30
+    },
+    {
+      "alerts": [
+        "PORT-SCAN"
+      ],
+      "flow_id": "tcp/192.168.1.1:139-192.168.1.30:40001",
+      "risk_score": 30
+    },
+    {
+      "alerts": [
+        "PORT-SCAN"
+      ],
+      "flow_id": "tcp/192.168.1.1:21-192.168.1.30:40001",
+      "risk_score": 30
+    },
+    {
+      "alerts": [
+        "PORT-SCAN"
+      ],
+      "flow_id": "tcp/192.168.1.1:22-192.168.1.30:40001",
+      "risk_score": 30
+    },
+    {
+      "alerts": [
+        "PORT-SCAN"
+      ],
+      "flow_id": "tcp/192.168.1.1:23-192.168.1.30:40001",
+      "risk_score": 30
+    },
+    {
+      "alerts": [
+        "PORT-SCAN"
+      ],
+      "flow_id": "tcp/192.168.1.1:25-192.168.1.30:40001",
+      "risk_score": 30
+    },
+    {
+      "alerts": [
+        "PORT-SCAN"
+      ],
+      "flow_id": "tcp/192.168.1.1:3306-192.168.1.30:40001",
+      "risk_score": 30
+    },
+    {
+      "alerts": [
+        "PORT-SCAN"
+      ],
+      "flow_id": "tcp/192.168.1.1:3389-192.168.1.30:40001",
+      "risk_score": 30
+    },
+    {
+      "alerts": [
+        "PORT-SCAN"
+      ],
+      "flow_id": "tcp/192.168.1.1:445-192.168.1.30:40001",
+      "risk_score": 30
+    },
+    {
+      "alerts": [
+        "PORT-SCAN"
+      ],
+      "flow_id": "tcp/192.168.1.1:80-192.168.1.30:40001",
+      "risk_score": 30
+    },
+    {
+      "alerts": [
+        "PORT-SCAN"
+      ],
+      "flow_id": "tcp/192.168.1.1:8080-192.168.1.30:40001",
+      "risk_score": 30
+    },
+    {
+      "alerts": [
+        "FILE-MASQUERADING"
+      ],
+      "flow_id": "tcp/93.184.216.34:80-192.168.1.20:40112",
+      "risk_score": 55
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "udp/192.168.1.30:53100-198.51.100.23:8080",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "DNS-TUNNELING"
+      ],
+      "flow_id": "udp/8.8.8.8:53-192.168.1.30:53002",
+      "risk_score": 45
+    }
+  ],
+  "alerts_by_rule": {
+    "BEACONING": 1,
+    "DNS-TUNNELING": 1,
+    "FILE-MASQUERADING": 1,
+    "PORT-SCAN": 12
+  },
+  "flows": 22
+}

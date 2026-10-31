@@ -40,7 +40,53 @@ const MAX_FILES_PER_FLOW: usize = 8;
 /// `streams` es el mapa `flow_id → stream` que devuelve
 /// [`socshark_flow::FlowAggregator::finish_with_streams`]. Los flujos sin
 /// entrada en el mapa (UDP, TCP sin stream, carving desactivado) no se tocan.
+///
+/// Cada flujo se talla de forma independiente (búsqueda + SHA-256 de cada
+/// cuerpo, CPU pura), así que con varios núcleos y bastantes bytes HTTP el
+/// trabajo se reparte en hilos. El resultado es idéntico al secuencial:
+/// cada hilo escribe solo en sus propios flujos.
 pub fn carve_all(flows: &mut [EnrichedFlow], streams: &HashMap<String, ReassembledStream>) {
+    let http_bytes: usize = flows
+        .iter()
+        .filter(|f| f.l7_protocol == L7Protocol::Http)
+        .filter_map(|f| streams.get(&f.flow_id.0))
+        .map(|s| s.server.len())
+        .sum();
+    let threads = if http_bytes < PARALLEL_MIN_BYTES {
+        1
+    } else {
+        std::thread::available_parallelism()
+            .map_or(1, |n| n.get())
+            .min(MAX_CARVE_THREADS)
+    };
+    if threads <= 1 || flows.len() < 2 {
+        carve_slice(flows, streams);
+        return;
+    }
+    // Trozos pequeños repartidos por turno: los flujos HTTP grandes no
+    // quedan todos en el mismo hilo.
+    let chunk = flows.len().div_ceil(threads * 8).max(1);
+    std::thread::scope(|scope| {
+        let mut lanes: Vec<Vec<&mut [EnrichedFlow]>> = (0..threads).map(|_| Vec::new()).collect();
+        for (i, part) in flows.chunks_mut(chunk).enumerate() {
+            lanes[i % threads].push(part);
+        }
+        for lane in lanes {
+            scope.spawn(move || {
+                for part in lane {
+                    carve_slice(part, streams);
+                }
+            });
+        }
+    });
+}
+
+/// Por debajo de esto el coste de lanzar hilos supera al de tallar.
+const PARALLEL_MIN_BYTES: usize = 8 << 20;
+/// Tope de hilos del *carving* (el resto del pipeline sigue su `--workers`).
+const MAX_CARVE_THREADS: usize = 8;
+
+fn carve_slice(flows: &mut [EnrichedFlow], streams: &HashMap<String, ReassembledStream>) {
     for flow in flows.iter_mut() {
         if flow.l7_protocol != L7Protocol::Http {
             continue;
@@ -48,8 +94,7 @@ pub fn carve_all(flows: &mut [EnrichedFlow], streams: &HashMap<String, Reassembl
         let Some(stream) = streams.get(&flow.flow_id.0) else {
             continue;
         };
-        let files = carve_http(&stream.client, &stream.server);
-        flow.extracted_files = files;
+        flow.extracted_files = carve_http(&stream.client, &stream.server);
     }
 }
 
@@ -271,11 +316,27 @@ fn dechunk(server: &[u8], mut pos: usize) -> (Vec<u8>, Option<usize>) {
 }
 
 /// Busca la primera ocurrencia de `needle` en `haystack`.
+///
+/// Salta de candidato en candidato por el primer byte (`position` sobre un
+/// solo byte se vectoriza) y solo entonces compara el resto: en cuerpos
+/// binarios el primer byte casi nunca aparece y la búsqueda va varias veces
+/// más rápida que comparar la ventana en cada posición.
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    if needle.is_empty() || haystack.len() < needle.len() {
+    let (&first, rest) = needle.split_first()?;
+    if haystack.len() < needle.len() {
         return None;
     }
-    (0..=haystack.len() - needle.len()).find(|&i| &haystack[i..i + needle.len()] == needle)
+    let last_start = haystack.len() - needle.len();
+    let mut i = 0usize;
+    while i <= last_start {
+        let off = haystack[i..=last_start].iter().position(|&b| b == first)?;
+        let cand = i + off;
+        if &haystack[cand + 1..cand + needle.len()] == rest {
+            return Some(cand);
+        }
+        i = cand + 1;
+    }
+    None
 }
 
 // ------------------------------------------------------------- nombres
@@ -896,5 +957,71 @@ mod tests {
         let mut grande = vec![0u8; 4096];
         grande[..7].copy_from_slice(b"HTTP/1.");
         let _ = carve_http(b"", &grande);
+    }
+    #[test]
+    fn find_casos_frontera() {
+        assert_eq!(find(b"", b"ab"), None);
+        assert_eq!(find(b"ab", b""), None);
+        assert_eq!(find(b"ab", b"ab"), Some(0));
+        assert_eq!(find(b"xxab", b"ab"), Some(2));
+        assert_eq!(find(b"aab", b"ab"), Some(1));
+        assert_eq!(find(b"abaab", b"aab"), Some(2));
+        assert_eq!(find(b"HTTP/1HTTP/1.", b"HTTP/1."), Some(6));
+        assert_eq!(find(b"xxa", b"ab"), None);
+    }
+
+    /// El reparto en hilos da exactamente lo mismo que tallar en serie.
+    #[test]
+    fn carve_all_en_paralelo_igual_que_en_serie() {
+        let pe = pe_bytes(64 * 1024);
+        let mut streams = HashMap::new();
+        let mut flows = Vec::new();
+        // ~200 flujos × 64 KiB: por encima del umbral de paralelismo.
+        for i in 0..200u16 {
+            let mut f = crate::tests_support::flujo_basico(6, 40_000 + i, 80);
+            f.l7_protocol = L7Protocol::Http;
+            let name = format!("/f{i}.{}", if i % 3 == 0 { "jpg" } else { "exe" });
+            let client = format!(
+                "GET {name} HTTP/1.1
+Host: x
+
+"
+            )
+            .into_bytes();
+            let mut body = pe.clone();
+            body[100] = i as u8; // hashes distintos por flujo
+            let server = response(
+                &format!(
+                    "Content-Length: {}
+",
+                    body.len()
+                ),
+                &body,
+            );
+            streams.insert(
+                f.flow_id.0.clone(),
+                ReassembledStream {
+                    client,
+                    server,
+                    client_lossy: false,
+                    server_lossy: false,
+                },
+            );
+            flows.push(f);
+        }
+        let mut serie = flows.clone();
+        carve_slice(&mut serie, &streams);
+        carve_all(&mut flows, &streams);
+        // Comparación por JSON: flujo y archivos tallados (nombre, hash, veredicto).
+        let key = |fs: &[EnrichedFlow]| serde_json::to_string(fs).unwrap();
+        assert_eq!(key(&flows), key(&serie));
+        assert!(flows.iter().all(|f| f.extracted_files.len() == 1));
+        assert!(
+            flows
+                .iter()
+                .filter(|f| f.extracted_files[0].masquerading_suspect)
+                .count()
+                >= 60
+        );
     }
 }
