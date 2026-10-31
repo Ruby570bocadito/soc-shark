@@ -540,3 +540,109 @@ fn client_hello_partido_en_registros_y_desordenado_da_ja4_de_extremo_a_extremo()
     assert_eq!(tls.tls_sni.as_deref(), Some("partido.example"));
     assert!(tls.ja4_fingerprint.is_some(), "sin JA4: {tls:#?}");
 }
+
+/// Captura de `n` descargas HTTP de 64 KiB, una detrás de otra (cada una
+/// abre, transfiere y cierra con FIN en las dos direcciones), 10 s entre sí.
+fn descargas_secuenciales(n: u16) -> Vec<(u64, Vec<u8>)> {
+    use socshark_testgen::{self as tg, flags};
+    let mut pkts = Vec::new();
+    for i in 0..n {
+        let t = 1_700_000_000_000_000 + u64::from(i) * 10_000_000;
+        let port = 40_000 + i;
+        let cli = |seq: u32, ack: u32, fl: u8, p: &[u8]| {
+            tg::frame_tcp(
+                tg::MAC_HOST_A,
+                tg::MAC_ROUTER,
+                tg::HOST_A,
+                tg::WEB,
+                port,
+                80,
+                seq,
+                ack,
+                fl,
+                p,
+            )
+        };
+        let srv = |seq: u32, ack: u32, fl: u8, p: &[u8]| {
+            tg::frame_tcp(
+                tg::MAC_ROUTER,
+                tg::MAC_HOST_A,
+                tg::WEB,
+                tg::HOST_A,
+                80,
+                port,
+                seq,
+                ack,
+                fl,
+                p,
+            )
+        };
+        let req = format!("GET /f{i}.bin HTTP/1.1\r\nHost: x\r\n\r\n").into_bytes();
+        let mut body = vec![b'M', b'Z'];
+        body.extend((0..65_534u32).map(|k| (k.wrapping_mul(31) ^ u32::from(i)) as u8));
+        let mut resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        )
+        .into_bytes();
+        resp.extend_from_slice(&body);
+
+        pkts.push((t, cli(1000, 0, flags::SYN, b"")));
+        pkts.push((t + 100, srv(5000, 1001, flags::SYN | flags::ACK, b"")));
+        pkts.push((t + 200, cli(1001, 5001, flags::PSH_ACK, &req)));
+        let mut seq = 5001u32;
+        for (k, part) in resp.chunks(1000).enumerate() {
+            pkts.push((t + 300 + k as u64, srv(seq, 1001, flags::PSH_ACK, part)));
+            seq += part.len() as u32;
+        }
+        let cseq = 1001 + req.len() as u32;
+        pkts.push((t + 5_000, srv(seq, cseq, flags::FIN_ACK, b"")));
+        pkts.push((t + 5_100, cli(cseq, seq + 1, flags::FIN_ACK, b"")));
+    }
+    pkts
+}
+
+/// Con un presupuesto de reensamblado pequeño, el tallado temprano de las
+/// conexiones cerradas da los mismos archivos que un presupuesto enorme.
+#[test]
+fn presupuesto_pequeno_talla_lo_mismo_que_uno_enorme() {
+    let path = std::env::temp_dir().join(format!("socshark-budget-{}.pcap", std::process::id()));
+    // 60 × 64 KiB ≈ 3,8 MiB de cuerpos: no caben en 1 MiB a la vez.
+    write_pcap(&path, 1, &descargas_secuenciales(60)).unwrap();
+
+    let carve = |mib: u64, workers: usize, follow: bool| {
+        let cfg = PipelineConfig {
+            file_carving: true,
+            collect_streams: follow,
+            stream_budget_mib: mib,
+            workers,
+            ..PipelineConfig::default()
+        };
+        let out = run_capture(&path, None, true, &cfg).unwrap();
+        let mut files: Vec<(String, String, u64)> = out
+            .flows
+            .iter()
+            .flat_map(|f| {
+                f.extracted_files.iter().map(|x| {
+                    (
+                        f.flow_id.0.clone(),
+                        x.sha256.clone().unwrap_or_default(),
+                        x.size,
+                    )
+                })
+            })
+            .collect();
+        files.sort();
+        (out.flows.len(), files)
+    };
+    let enorme = carve(4096, 1, false);
+    assert_eq!(enorme.0, 60);
+    assert_eq!(enorme.1.len(), 60);
+    assert!(enorme.1.iter().all(|f| f.2 == 65_536));
+    assert_eq!(carve(1, 1, false), enorme);
+    assert_eq!(carve(1, 4, false), enorme);
+    // Sin tallado temprano (con `follow` los streams se guardan enteros) el
+    // mismo presupuesto pierde datos: la prueba de que lo anterior importa.
+    assert_ne!(carve(1, 1, true).1, enorme.1);
+    std::fs::remove_file(&path).ok();
+}

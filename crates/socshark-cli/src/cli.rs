@@ -68,6 +68,10 @@ pub enum Cmd {
         /// streams (hasta 1 MiB por dirección de cada flujo TCP).
         #[arg(long = "carve-files")]
         carve_files: bool,
+        /// Memoria máxima para reensamblar streams TCP, en MiB (todos los
+        /// flujos). Lo que no quepa se marca como perdido.
+        #[arg(long = "stream-budget-mib", default_value_t = 256)]
+        stream_budget_mib: u64,
         /// Lista de IPs/CIDR de C2 tipo Feodo (threat intel offline).
         #[arg(long = "intel-feodo")]
         intel_feodo: Option<PathBuf>,
@@ -197,6 +201,10 @@ pub enum Cmd {
         /// File carving HTTP antes de exportar (añade los archivos tallados).
         #[arg(long = "carve-files")]
         carve_files: bool,
+        /// Memoria máxima para reensamblar streams TCP, en MiB (todos los
+        /// flujos). Lo que no quepa se marca como perdido.
+        #[arg(long = "stream-budget-mib", default_value_t = 256)]
+        stream_budget_mib: u64,
         /// Lista de IPs/CIDR de C2 tipo Feodo (threat intel offline).
         #[arg(long = "intel-feodo")]
         intel_feodo: Option<PathBuf>,

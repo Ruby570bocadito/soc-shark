@@ -52,6 +52,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             top,
             workers,
             carve_files,
+            stream_budget_mib,
             intel_feodo,
             intel_tor,
         } => {
@@ -67,6 +68,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 idle_timeout_secs: idle_timeout,
                 workers,
                 file_carving: carve_files,
+                stream_budget_mib,
                 intel_feodo,
                 intel_tor,
                 ..PipelineConfig::default()
@@ -212,6 +214,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             filter,
             show_noise,
             carve_files,
+            stream_budget_mib,
             intel_feodo,
             intel_tor,
         } => {
@@ -225,6 +228,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             }
             let cfg = PipelineConfig {
                 file_carving: carve_files,
+                stream_budget_mib,
                 intel_feodo,
                 intel_tor,
                 ..PipelineConfig::default()

@@ -81,6 +81,11 @@ pub struct PipelineConfig {
     /// Exige recolectar streams (hasta 1 MiB por dirección), así que va
     /// desactivada por defecto; la CLI la activa con `--carve-files`.
     pub file_carving: bool,
+    /// Presupuesto global de reensamblado TCP en MiB (todos los flujos).
+    /// Con *carving* y sin `follow`, al acercarse al tope se tallan y
+    /// liberan los streams de las conexiones ya cerradas, así que una
+    /// captura grande no agota el presupuesto a mitad.
+    pub stream_budget_mib: u64,
     /// Ruta a una lista de IPs/CIDR de C2 tipo Feodo (threat intel offline,
     /// Fase 4). `None` = sin base Feodo.
     pub intel_feodo: Option<std::path::PathBuf>,
@@ -113,6 +118,7 @@ impl Default for PipelineConfig {
             beacon_jitter_max_cv: 0.30,
             beacon_jitter_max_mad_ratio: 0.35,
             file_carving: false,
+            stream_budget_mib: 256,
             intel_feodo: None,
             intel_tor: None,
         }

@@ -1,11 +1,12 @@
 //! Orquestación del pipeline: captura → dissectors → flujos → SOC → filtro.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use socshark_capture::{CaptureSource, PcapFileReader};
 use socshark_core::config::PipelineConfig;
-use socshark_core::EnrichedFlow;
+use socshark_core::{EnrichedFlow, ExtractedFile, L7Protocol};
 use socshark_dissectors::{DissectionPool, DissectorPipeline};
 use socshark_filter::parse as parse_filter;
 use socshark_flow::{FlowAggregator, PipelineStats, ReassembledStream};
@@ -67,8 +68,16 @@ pub fn run_capture(
     // El file carving necesita los streams TCP reensamblados: si está
     // activo, el agregador recolecta segmentos aunque `follow` no lo pida.
     let collect = cfg.collect_streams || cfg.file_carving;
-    let mut aggregator = FlowAggregator::new(cfg.max_flows, cfg.idle_timeout_secs, collect);
+    let mut aggregator = FlowAggregator::new(cfg.max_flows, cfg.idle_timeout_secs, collect)
+        .with_stream_budget(cfg.stream_budget_mib.saturating_mul(1 << 20));
     let dissectors = DissectorPipeline::new();
+    // Tallado temprano: solo para el carving, nunca con `follow` (que
+    // necesita los streams completos al final).
+    let mut early = if cfg.file_carving {
+        EarlyCarve::new(cfg.collect_streams)
+    } else {
+        None
+    };
 
     eprintln!("[*] Leyendo {} (enlace: {link:?})", pcap_path.display());
 
@@ -89,12 +98,26 @@ pub fn run_capture(
                     meta.push((pkt.ts_micros, pkt.data.len()));
                     chunk.push(pkt);
                     if chunk.len() == POOL_CHUNK {
-                        feed_chunk(&mut pool, link, &mut chunk, &mut meta, &mut aggregator);
+                        feed_chunk(
+                            &mut pool,
+                            link,
+                            &mut chunk,
+                            &mut meta,
+                            &mut aggregator,
+                            early.as_mut(),
+                        );
                     }
                 }
                 None => {
                     if !chunk.is_empty() {
-                        feed_chunk(&mut pool, link, &mut chunk, &mut meta, &mut aggregator);
+                        feed_chunk(
+                            &mut pool,
+                            link,
+                            &mut chunk,
+                            &mut meta,
+                            &mut aggregator,
+                            early.as_mut(),
+                        );
                     }
                     break;
                 }
@@ -107,6 +130,9 @@ pub fn run_capture(
             if let Some(dp) = dissectors.dissect(&pkt, link) {
                 aggregator.on_packet(pkt.ts_micros, pkt.data.len(), &dp);
             }
+            if let Some(e) = early.as_mut() {
+                e.tick(&mut aggregator, pkt.ts_micros);
+            }
         }
     }
 
@@ -118,6 +144,9 @@ pub fn run_capture(
     // capa SOC, para que R6 (T1036) y los resúmenes los vean.
     if cfg.file_carving {
         socshark_soc::carve::carve_all(&mut flows, &streams);
+        if let Some(e) = early.take() {
+            e.apply(&mut flows);
+        }
         let total: usize = flows.iter().map(|f| f.extracted_files.len()).sum();
         eprintln!("[*] File carving: {total} archivos tallados de los streams HTTP");
     }
@@ -180,12 +209,76 @@ fn load_intel(ctx: &mut SocContext, cfg: &PipelineConfig) -> Result<()> {
 
 /// Envía un lote al pool y vuelca los resultados al agregador en el orden
 /// original de los paquetes (determinismo, ADR-010).
+/// Paquetes mínimos entre dos recorridos de la tabla en busca de
+/// conexiones cerradas (mirar el presupuesto, en cambio, es O(1) y se hace
+/// en cada paquete).
+const RELEASE_SCAN_EVERY: usize = 256;
+/// Silencio (tiempo de captura) que se exige a una conexión cerrada antes
+/// de tallarla: absorbe ACK y retransmisiones tardías.
+const RELEASE_QUIET_MICROS: u64 = 5_000_000;
+
+/// Tallado temprano de las conexiones ya cerradas cuando el presupuesto de
+/// reensamblado pasa de la mitad: los archivos se guardan por `flow_id` y se
+/// aplican al final, así que el resultado es el mismo que tallando todo al
+/// final (con un presupuesto infinito), pero con memoria acotada.
+struct EarlyCarve {
+    files: HashMap<String, Vec<ExtractedFile>>,
+    since_check: usize,
+    released: usize,
+}
+
+impl EarlyCarve {
+    /// `None` si hay que conservar los streams completos (`follow`).
+    fn new(keep_streams: bool) -> Option<Self> {
+        (!keep_streams).then(|| Self {
+            files: HashMap::new(),
+            since_check: RELEASE_SCAN_EVERY,
+            released: 0,
+        })
+    }
+
+    fn tick(&mut self, aggregator: &mut FlowAggregator, now_micros: u64) {
+        self.since_check = self.since_check.saturating_add(1);
+        if self.since_check < RELEASE_SCAN_EVERY
+            || aggregator.stream_bytes_used().saturating_mul(2) < aggregator.stream_budget()
+        {
+            return;
+        }
+        self.since_check = 0;
+        for (id, l7, stream) in aggregator.release_closed_streams(now_micros, RELEASE_QUIET_MICROS)
+        {
+            self.released += 1;
+            if l7 == L7Protocol::Http {
+                let files = socshark_soc::carve::carve_http(&stream.client, &stream.server);
+                if !files.is_empty() {
+                    self.files.insert(id.0, files);
+                }
+            }
+        }
+    }
+
+    fn apply(mut self, flows: &mut [EnrichedFlow]) {
+        if self.released > 0 {
+            eprintln!(
+                "[*] Reensamblado: {} conexiones cerradas talladas antes de tiempo para liberar memoria",
+                self.released
+            );
+        }
+        for f in flows.iter_mut() {
+            if let Some(files) = self.files.remove(&f.flow_id.0) {
+                f.extracted_files = files;
+            }
+        }
+    }
+}
+
 fn feed_chunk(
     pool: &mut DissectionPool,
     link: socshark_core::LinkType,
     chunk: &mut Vec<socshark_core::RawPacket>,
     meta: &mut Vec<(u64, usize)>,
     aggregator: &mut FlowAggregator,
+    mut early: Option<&mut EarlyCarve>,
 ) {
     let results = pool.process(link, std::mem::take(chunk));
     debug_assert_eq!(
@@ -196,6 +289,9 @@ fn feed_chunk(
     for (dp, (ts, len)) in results.into_iter().zip(meta.drain(..)) {
         if let Some(dp) = dp {
             aggregator.on_packet(ts, len, &dp);
+        }
+        if let Some(e) = early.as_deref_mut() {
+            e.tick(aggregator, ts);
         }
     }
 }

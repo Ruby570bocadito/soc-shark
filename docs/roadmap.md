@@ -104,8 +104,12 @@ al menos un verdadero positivo real.
       y flujos tallados en paralelo. La etapa pasó de ~0,6 s a ~0,15 s con
       1M paquetes; `dev bench` (500k paquetes, Windows, 12 núcleos) de
       ~350k a ~450-510k paquetes/s
-- [ ] Presupuesto de reensamblado configurable y liberar los streams ya
-      tallados (se agota con 1M paquetes)
+- [x] Presupuesto de reensamblado configurable (`--stream-budget-mib`) y
+      tallado temprano: al pasar de la mitad del presupuesto se tallan y
+      liberan los streams de las conexiones ya cerradas. Con 1M paquetes
+      `dev bench` talla 9 000 archivos en vez de 4 500 (el resto se perdía
+      sin avisar). Siguen faltando ~1 000 en ese caso extremo, con 20 000
+      conexiones abiertas a la vez
 - [ ] GUI y TUI fluidas con 10 000 flujos (lista virtualizada)
 - [ ] Captura en vivo probada a mano en Windows + Npcap, Linux y macOS
 
