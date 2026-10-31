@@ -3,12 +3,40 @@
 // Regla de oro: TODO dato que viene de la captura (dominios, rutas, nombres
 // de archivo…) lo controla quien genera el tráfico. Se pinta siempre como
 // texto (textContent / nodos de texto), nunca con innerHTML.
+//
+// Idioma (ADR-015): los textos se escriben en español y `t()` los pasa al
+// idioma elegido con el diccionario de i18n.js (la clave es el propio
+// texto español). Las frases que cuenta el servidor llegan ya traducidas:
+// cada petición dice el idioma en la cabecera X-Socshark-Lang.
 "use strict";
 
 (() => {
   const TOKEN = document.querySelector('meta[name="socshark-token"]').content;
   const $ = (sel) => document.querySelector(sel);
   const $$ = (sel) => document.querySelectorAll(sel);
+
+  // ------------------------------------------------------------ idioma
+
+  const I18N = window.SOCSHARK_I18N || { en: {}, glossary: {} };
+  const LANGS = ["es", "en"];
+  let LANG = "es";
+  let LOCALE = "es-ES";
+  /** Textos sin traducción vistos en esta sesión (para revisarlos). */
+  const missing = new Set();
+  window.socsharkMissingI18n = missing;
+
+  /** El texto en el idioma elegido; `{nombre}` se sustituye por `vars.nombre`
+   *  (en una sola pasada: lo sustituido no se vuelve a mirar). */
+  function t(es, vars) {
+    let out = es;
+    if (LANG !== "es" && es) {
+      const tr = I18N[LANG] && I18N[LANG][es];
+      if (tr != null) out = tr;
+      else if (/\p{L}/u.test(es)) missing.add(es);
+    }
+    if (vars) out = out.replace(/\{(\w+)\}/g, (m, k) => (k in vars ? String(vars[k]) : m));
+    return out;
+  }
 
   // ------------------------------------------------------------ DOM seguro
 
@@ -58,7 +86,7 @@
   async function api(path, opts = {}) {
     const res = await fetch(path, {
       ...opts,
-      headers: { "X-Socshark-Token": TOKEN, ...(opts.headers || {}) },
+      headers: { "X-Socshark-Token": TOKEN, "X-Socshark-Lang": LANG, ...(opts.headers || {}) },
     });
     let body = null;
     try {
@@ -135,8 +163,8 @@
   };
   const RANK = { ok: 0, raro: 1, peligro: 2 };
   const STATE_ES = { Active: "activa", Idle: "sin cerrar", Closed: "cerrada" };
-  const nf = new Intl.NumberFormat("es-ES");
-  const compact = new Intl.NumberFormat("es-ES", { notation: "compact", maximumFractionDigits: 1 });
+  let nf = new Intl.NumberFormat(LOCALE);
+  let compact = new Intl.NumberFormat(LOCALE, { notation: "compact", maximumFractionDigits: 1 });
 
   function fmtBytes(n) {
     const units = ["B", "KB", "MB", "GB", "TB"];
@@ -146,19 +174,19 @@
       v /= 1024;
       u++;
     }
-    return u === 0 ? `${n} B` : `${v.toLocaleString("es-ES", { maximumFractionDigits: 1 })} ${units[u]}`;
+    return u === 0 ? `${n} B` : `${v.toLocaleString(LOCALE, { maximumFractionDigits: 1 })} ${units[u]}`;
   }
-  const fmtTime = (us) => new Date(us / 1000).toLocaleTimeString("es-ES", { hour12: false });
+  const fmtTime = (us) => new Date(us / 1000).toLocaleTimeString(LOCALE, { hour12: false });
   const fmtDateTime = (us) =>
-    new Date(us / 1000).toLocaleString("es-ES", { dateStyle: "medium", timeStyle: "medium" });
+    new Date(us / 1000).toLocaleString(LOCALE, { dateStyle: "medium", timeStyle: "medium", hour12: false });
   function fmtClock(us) {
     const d = new Date(us / 1000);
-    return `${fmtTime(us)},${String(d.getMilliseconds()).padStart(3, "0")}`;
+    return `${fmtTime(us)}${LANG === "es" ? "," : "."}${String(d.getMilliseconds()).padStart(3, "0")}`;
   }
   function fmtDuration(us) {
     const sec = us / 1e6;
-    if (sec < 1) return `${(sec * 1000).toLocaleString("es-ES", { maximumFractionDigits: 1 })} ms`;
-    if (sec < 120) return `${sec.toLocaleString("es-ES", { maximumFractionDigits: 1 })} s`;
+    if (sec < 1) return `${(sec * 1000).toLocaleString(LOCALE, { maximumFractionDigits: 1 })} ms`;
+    if (sec < 120) return `${sec.toLocaleString(LOCALE, { maximumFractionDigits: 1 })} s`;
     const m = Math.floor(sec / 60);
     if (m < 120) return `${m} min ${Math.round(sec - m * 60)} s`;
     return `${Math.floor(m / 60)} h ${m % 60} min`;
@@ -170,9 +198,9 @@
     const ss = String(t % 60).padStart(2, "0");
     return hh ? `${hh}:${mm}:${ss}` : `${mm}:${ss}`;
   }
-  const fmtRel = (us) => (us / 1e6).toLocaleString("es-ES", { minimumFractionDigits: 6, maximumFractionDigits: 6 });
+  const fmtRel = (us) => (us / 1e6).toLocaleString(LOCALE, { minimumFractionDigits: 6, maximumFractionDigits: 6 });
   const fmtRelShort = (us) =>
-    "+" + (us / 1e6).toLocaleString("es-ES", { minimumFractionDigits: 3, maximumFractionDigits: 3 }) + " s";
+    "+" + (us / 1e6).toLocaleString(LOCALE, { minimumFractionDigits: 3, maximumFractionDigits: 3 }) + " s";
   const endpoint = (ip, port) => (ip.includes(":") ? `[${ip}]:${port}` : `${ip}:${port}`);
   const hasPorts = (f) => f.transport === "Tcp" || f.transport === "Udp";
   const transportName = (f) => (typeof f.transport === "string" ? f.transport.toUpperCase() : "OTRO");
@@ -181,7 +209,7 @@
     side === "src"
       ? hasPorts(f) ? endpoint(f.src_ip, f.src_port) : f.src_ip
       : hasPorts(f) ? endpoint(f.dst_ip, f.dst_port) : f.dst_ip;
-  const plural = (n, one, many) => (n === 1 ? `1 ${one}` : `${nf.format(n)} ${many}`);
+  const plural = (n, one, many) => (n === 1 ? `1 ${t(one)}` : `${nf.format(n)} ${t(many)}`);
 
   // ------------------------------------------------------------ quién es quién
 
@@ -194,11 +222,17 @@
   function hostFacts(hst) {
     if (!hst) return [];
     const out = [];
-    if (hst.nickname && hst.name) out.push(`se presenta como «${hst.name}»`);
-    if (hst.vendor) out.push(hst.vendor_hint ? `marca ${hst.vendor} (suele ser ${hst.vendor_hint})` : `marca ${hst.vendor}`);
-    if (hst.os) out.push(`con ${hst.os}`);
-    if (hst.random_mac) out.push("MAC aleatoria: móvil o portátil con privacidad activada");
-    if (hst.name && hst.name_source && !hst.nickname) out.push(`nombre anunciado por ${hst.name_source}`);
+    if (hst.nickname && hst.name) out.push(t("se presenta como «{name}»", { name: hst.name }));
+    if (hst.vendor) {
+      out.push(
+        hst.vendor_hint
+          ? t("marca {vendor} (suele ser {hint})", { vendor: hst.vendor, hint: hst.vendor_hint })
+          : t("marca {vendor}", { vendor: hst.vendor }),
+      );
+    }
+    if (hst.os) out.push(t("con {os}", { os: hst.os }));
+    if (hst.random_mac) out.push(t("MAC aleatoria: móvil o portátil con privacidad activada"));
+    if (hst.name && hst.name_source && !hst.nickname) out.push(t("nombre anunciado por {source}", { source: hst.name_source }));
     return out;
   }
 
@@ -210,13 +244,13 @@
       {
         class: "btn link",
         type: "button",
-        title: "Ponle un nombre que reconozcas («Portátil de Ana»)",
+        title: t("Ponle un nombre que reconozcas («Portátil de Ana»)"),
         onclick: (e) => {
           e.stopPropagation();
           openNickDialog(ip);
         },
       },
-      hst && hst.nickname ? "Cambiar nombre" : "Ponerle nombre",
+      hst && hst.nickname ? t("Cambiar nombre") : t("Ponerle nombre"),
     );
   }
 
@@ -264,7 +298,7 @@
       $("#nick-dlg").close();
       await refresh(ses);
       renderDetail();
-      toast(name ? `Ahora se llama «${name.trim()}».` : "Nombre quitado.", "info");
+      toast(name ? t("Ahora se llama «{name}».", { name: name.trim() }) : t("Nombre quitado."), "info");
     } catch (e) {
       err.hidden = false;
       err.textContent = e.message;
@@ -273,11 +307,11 @@
 
   function dot(level) {
     const lv = LEVEL[level] ? level : "ok";
-    return h("span", { class: `dot ${lv}`, role: "img", title: LEVEL[lv].label, "aria-label": LEVEL[lv].label }, icon(`lv-${lv}`));
+    return h("span", { class: `dot ${lv}`, role: "img", title: t(LEVEL[lv].label), "aria-label": t(LEVEL[lv].label) }, icon(`lv-${lv}`));
   }
   function badge(level) {
     const lv = LEVEL[level] ? level : "ok";
-    return h("span", { class: `badge ${lv}` }, icon(`lv-${lv}`), LEVEL[lv].label);
+    return h("span", { class: `badge ${lv}` }, icon(`lv-${lv}`), t(LEVEL[lv].label));
   }
   function mitreLink(id) {
     if (!id || !/^T\d{4}(\.\d{3})?$/.test(id)) return null;
@@ -288,7 +322,7 @@
         href: `https://attack.mitre.org/techniques/${id.replace(".", "/")}/`,
         target: "_blank",
         rel: "noopener noreferrer",
-        title: "Técnica de ataque en MITRE ATT&CK (abre en el navegador)",
+        title: t("Técnica de ataque en MITRE ATT&CK (abre en el navegador)"),
       },
       `MITRE ${id}`,
     );
@@ -296,7 +330,7 @@
 
   // ------------------------------------------------------------ glosario
 
-  const GLOSSARY = [
+  const GLOSSARY_ES = [
     ["DNS", "La «guía telefónica» de Internet: traduce nombres como google.com en direcciones IP."],
     ["IP", "La dirección de un equipo en la red, como la dirección postal de una casa."],
     ["IPv4", "La versión clásica de las direcciones IP (por ejemplo 192.168.1.10)."],
@@ -340,21 +374,29 @@
     ["multicast", "Envío a un grupo de equipos a la vez en la red local."],
     ["difusión", "Envío a todos los equipos de la red local a la vez."],
   ];
-  const DEFS = new Map(GLOSSARY.map(([t, d]) => [t.toLowerCase(), [t, d]]));
   const escapeRe = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  // Siglas exactas; palabras con la inicial en cualquier caja.
-  const TERM_RE = new RegExp(
-    "(?<![\\p{L}\\p{N}_-])(" +
-      GLOSSARY.map(([t]) => t)
-        .sort((a, b) => b.length - a.length)
-        .map((t) => {
-          const e = escapeRe(t);
-          return t === t.toUpperCase() || /[A-Z]/.test(t.slice(1)) ? e : `[${t[0].toUpperCase()}${t[0]}]${escapeRe(t.slice(1))}`;
-        })
-        .join("|") +
-      ")(?![\\p{L}\\p{N}_-])",
-    "gu",
-  );
+  let GLOSSARY = GLOSSARY_ES;
+  let DEFS = new Map();
+  let TERM_RE = /(?!)/gu;
+  /** Glosario del idioma elegido y la expresión que marca sus términos. */
+  function buildGlossary() {
+    GLOSSARY = (I18N.glossary && I18N.glossary[LANG]) || GLOSSARY_ES;
+    DEFS = new Map(GLOSSARY.map(([w, d]) => [w.toLowerCase(), [w, d]]));
+    // Siglas exactas; palabras con la inicial en cualquier caja.
+    TERM_RE = new RegExp(
+      "(?<![\\p{L}\\p{N}_-])(" +
+        GLOSSARY.map(([w]) => w)
+          .sort((a, b) => b.length - a.length)
+          .map((w) => {
+            const e = escapeRe(w);
+            return w === w.toUpperCase() || /[A-Z]/.test(w.slice(1)) ? e : `[${w[0].toUpperCase()}${w[0]}]${escapeRe(w.slice(1))}`;
+          })
+          .join("|") +
+        ")(?![\\p{L}\\p{N}_-])",
+      "gu",
+    );
+  }
+  buildGlossary();
 
   /** Texto con los términos del glosario marcados (la primera vez de cada uno). */
   function rich(value) {
@@ -394,8 +436,8 @@
   const hideTip = () => (tooltip.hidden = true);
   for (const ev of ["mouseover", "focusin"]) {
     document.addEventListener(ev, (e) => {
-      const t = e.target.closest && e.target.closest(".term");
-      if (t) showTip(t);
+      const term = e.target.closest && e.target.closest(".term");
+      if (term) showTip(term);
     });
   }
   for (const ev of ["mouseout", "focusout"]) {
@@ -408,10 +450,10 @@
   // ------------------------------------------------------------ avisos
 
   function toast(message, kind = "error") {
-    const t = h("div", { class: `toast ${kind}`, role: "status" }, message);
-    document.body.append(t);
-    setTimeout(() => t.remove(), kind === "error" ? 8000 : 4000);
-    t.addEventListener("click", () => t.remove());
+    const el = h("div", { class: `toast ${kind}`, role: "status" }, message);
+    document.body.append(el);
+    setTimeout(() => el.remove(), kind === "error" ? 8000 : 4000);
+    el.addEventListener("click", () => el.remove());
   }
 
   function busy(text) {
@@ -449,18 +491,18 @@
         h("span", { class: "l" }, label),
       );
     ov.append(
-      stat("peligro", ses.levels.peligro, ses.levels.peligro === 1 ? "peligro" : "peligros"),
-      stat("raro", ses.levels.raro, ses.levels.raro === 1 ? "cosa rara" : "cosas raras"),
-      stat("ok", ses.levels.ok, ses.levels.ok === 1 ? "normal" : "normales"),
+      stat("peligro", ses.levels.peligro, t(ses.levels.peligro === 1 ? "peligro" : "peligros")),
+      stat("raro", ses.levels.raro, t(ses.levels.raro === 1 ? "cosa rara" : "cosas raras")),
+      stat("ok", ses.levels.ok, t(ses.levels.ok === 1 ? "normal" : "normales")),
     );
     const span = ses.first_seen != null && ses.last_seen != null ? ses.last_seen - ses.first_seen : 0;
-    const dur = span > 0 ? ` · ${fmtDuration(span)} de tráfico` : "";
+    const dur = span > 0 ? ` · ${t("{duration} de tráfico", { duration: fmtDuration(span) })}` : "";
     ov.append(
       h(
         "div",
         { class: "meta" },
-        `${plural(ses.flows, "conversación", "conversaciones")} (${nf.format(ses.noise)} de fondo)${dur}`,
-        ses.packets_truncated ? " · captura muy grande: algunos paquetes no muestran su contenido" : "",
+        `${plural(ses.flows, "conversación", "conversaciones")} (${t("{n} de fondo", { n: nf.format(ses.noise) })})${dur}`,
+        ses.packets_truncated ? t(" · captura muy grande: algunos paquetes no muestran su contenido") : "",
       ),
     );
   }
@@ -474,10 +516,10 @@
           "li",
           { class: "all-good" },
           waiting ? h("span", { class: "listening", "aria-hidden": "true" }) : dot("ok"),
-          h("b", null, waiting ? "Escuchando…" : "No hemos visto nada preocupante"),
+          h("b", null, waiting ? t("Escuchando…") : t("No hemos visto nada preocupante")),
           waiting
-            ? "En cuanto pase algo por la red aparecerá aquí, explicado."
-            : "Puedes revisar igualmente las conversaciones si buscas algo concreto.",
+            ? t("En cuanto pase algo por la red aparecerá aquí, explicado.")
+            : t("Puedes revisar igualmente las conversaciones si buscas algo concreto."),
         ),
       );
       return;
@@ -493,14 +535,14 @@
             null,
             dot(st.level),
             h("span", null, st.title),
-            Date.now() - (state.freshStories.get(storyKey(st)) || 0) < 120000 ? h("span", { class: "new-badge" }, "Nuevo") : null,
+            Date.now() - (state.freshStories.get(storyKey(st)) || 0) < 120000 ? h("span", { class: "new-badge" }, t("Nuevo")) : null,
           ),
           h("p", null, rich(st.story)),
           h("p", { class: "todo" }, rich(st.action)),
           h(
             "div",
             { class: "actions" },
-            h("button", { class: "btn small", type: "button", onclick: () => showStory(st) }, n === 1 ? "Ver la conversación" : `Ver las ${n} conversaciones`),
+            h("button", { class: "btn small", type: "button", onclick: () => showStory(st) }, n === 1 ? t("Ver la conversación") : t("Ver las {n} conversaciones", { n })),
             mitreLink(st.mitre),
           ),
         ),
@@ -513,7 +555,10 @@
   const storyKey = (st) => `${st.alert_id}|${st.title}`;
 
   function baseTitle() {
-    return state.session && state.session.loaded ? `${state.session.name} · soc-shark` : "soc-shark";
+    const ses = state.session;
+    if (!ses || !ses.loaded) return "soc-shark";
+    const name = ses.live ? `${t("En vivo")} · ${ifaceLabel(ses.live.iface)}` : ses.name;
+    return `${name} · soc-shark`;
   }
 
   function updateTitle() {
@@ -541,8 +586,8 @@
     if (!important.length || !state.watch || !liveRunning()) return;
     const danger = important.some((st) => st.level === "peligro");
     const head = important.find((st) => st.level === "peligro") || important[0];
-    const more = important.length > 1 ? ` (y ${important.length - 1} más)` : "";
-    toast([dot(danger ? "peligro" : "raro"), h("span", null, `${danger ? "Peligro" : "Algo raro"}: ${head.title}${more}`)], danger ? "error" : "info");
+    const more = important.length > 1 ? t(" (y {n} más)", { n: important.length - 1 }) : "";
+    toast([dot(danger ? "peligro" : "raro"), h("span", null, `${t(danger ? "Peligro" : "Algo raro")}: ${head.title}${more}`)], danger ? "error" : "info");
     if (!document.hasFocus()) {
       state.unseen += important.length;
       updateTitle();
@@ -551,8 +596,8 @@
     if ("Notification" in window && Notification.permission === "granted" && Date.now() - state.lastNotify > 10000) {
       state.lastNotify = Date.now();
       try {
-        const n = new Notification(danger ? "soc-shark: algo peligroso en tu red" : "soc-shark: algo raro en tu red", {
-          body: `${head.title}${more}. Qué hacer: ${head.action}`.slice(0, 300),
+        const n = new Notification(t(danger ? "soc-shark: algo peligroso en tu red" : "soc-shark: algo raro en tu red"), {
+          body: `${head.title}${more}. ${t("Qué hacer")}: ${head.action}`.slice(0, 300),
           tag: "socshark-aviso",
         });
         n.onclick = () => {
@@ -567,7 +612,7 @@
   }
 
   function showStory(story) {
-    state.storyFilter = { title: story.title, idx: new Set(story.flows) };
+    state.storyFilter = { title: story.title, alertId: story.alert_id, idx: new Set(story.flows) };
     // Una historia puede incluir tráfico de fondo o normal: se muestra todo.
     state.show = "todo";
     syncChips();
@@ -583,13 +628,13 @@
     chip.hidden = !state.storyFilter || state.view !== "flows";
     if (chip.hidden) return;
     chip.append(
-      `Mostrando: ${state.storyFilter.title}`,
+      t("Mostrando: {title}", { title: state.storyFilter.title }),
       h(
         "button",
         {
           type: "button",
-          title: "Ver todas las conversaciones",
-          "aria-label": "Quitar",
+          title: t("Ver todas las conversaciones"),
+          "aria-label": t("Quitar"),
           onclick: () => {
             state.storyFilter = null;
             renderStoryChip();
@@ -641,7 +686,7 @@
     return [...list].sort((a, b) => {
       const x = col.sort(a);
       const y = col.sort(b);
-      const c = typeof x === "string" ? x.localeCompare(y, "es") : x - y;
+      const c = typeof x === "string" ? x.localeCompare(y, LOCALE) : x - y;
       return c * dir || a.idx - b.idx;
     });
   }
@@ -703,14 +748,14 @@
               "button",
               {
                 type: "button",
-                title: `Ordenar por ${(c.title || c.label).toLowerCase()}`,
-                "aria-label": c.label ? null : c.title,
+                title: t("Ordenar por {column}", { column: t(c.title || c.label).toLowerCase() }),
+                "aria-label": c.label ? null : t(c.title),
                 onclick: () => {
                   state.sort = on ? { key: c.key, dir: -state.sort.dir } : { key: c.key, dir: c.desc ? -1 : 1 };
                   renderTable();
                 },
               },
-              c.label,
+              t(c.label),
             ),
           );
         }),
@@ -754,7 +799,7 @@
           h(
             "td",
             { colspan: ncols },
-            `Se muestran ${nf.format(state.rowLimit)} de ${nf.format(rows.length)}. `,
+            t("Se muestran {shown} de {total}. ", { shown: nf.format(state.rowLimit), total: nf.format(rows.length) }),
             h(
               "button",
               {
@@ -765,9 +810,9 @@
                   renderTable();
                 },
               },
-              "Mostrar más",
+              t("Mostrar más"),
             ),
-            " o usa un filtro para acotar.",
+            t(" o usa un filtro para acotar."),
           ),
         ),
       );
@@ -776,15 +821,16 @@
 
     state.visibleCount = rows.length;
     const total = state.flows.length;
-    $("#flows-count").textContent = rows.length === total ? `(${nf.format(total)})` : `(${nf.format(rows.length)} de ${nf.format(total)})`;
+    $("#flows-count").textContent =
+      rows.length === total ? `(${nf.format(total)})` : `(${t("{shown} de {total}", { shown: nf.format(rows.length), total: nf.format(total) })})`;
     const empty = $("#flows-empty");
     empty.hidden = rows.length > 0;
     if (!rows.length) {
       empty.textContent = liveRunning() && !state.session.flows
-        ? "Escuchando… las conversaciones aparecerán aquí en cuanto haya tráfico."
+        ? t("Escuchando… las conversaciones aparecerán aquí en cuanto haya tráfico.")
         : state.show === "importante" && !state.storyFilter
-          ? "Nada importante con estos filtros. ¡Buena señal!"
-          : "Ninguna conversación coincide con el filtro.";
+          ? t("Nada importante con estos filtros. ¡Buena señal!")
+          : t("Ninguna conversación coincide con el filtro.");
     }
     renderStatus();
   }
@@ -834,11 +880,11 @@
     const r = selectedRow();
     const pk = $("#tab-packets");
     if (!r) {
-      pk.textContent = "Paquetes";
-      box.append(h("p", { class: "placeholder" }, state.flows.length ? "Elige una conversación de la lista para ver qué pasó." : ""));
+      pk.textContent = t("Paquetes");
+      box.append(h("p", { class: "placeholder" }, state.flows.length ? t("Elige una conversación de la lista para ver qué pasó.") : ""));
       return;
     }
-    pk.textContent = `Paquetes (${nf.format(flowPackets(r))})`;
+    pk.textContent = `${t("Paquetes")} (${nf.format(flowPackets(r))})`;
     state.detailSig = detailSig(r);
     const restore = () => {
       if (!keep) return;
@@ -867,44 +913,49 @@
           { class: `alert-card ${a.level}` },
           h("h3", null, dot(a.level), a.title, mitreLink(a.mitre)),
           h("p", null, rich(a.story)),
-          h("div", { class: "todo" }, h("b", null, "Qué hacer"), rich(a.action)),
+          h("div", { class: "todo" }, h("b", null, t("Qué hacer")), rich(a.action)),
         ),
       );
     }
 
     const facts = [];
     const fact = (k, ...v) => facts.push(h("dt", null, k), h("dd", null, ...v));
-    fact("Quién empezó", ...whoFact(f.src_ip, ep(f, "src")));
+    fact(t("Quién empezó"), ...whoFact(f.src_ip, ep(f, "src")));
     if (f.process_name) {
-      fact("Programa", h("b", null, f.process_name), f.pid != null ? h("span", { class: "sub" }, ` · proceso ${f.pid}`) : null);
+      fact(t("Programa"), h("b", null, f.process_name), f.pid != null ? h("span", { class: "sub" }, t(" · proceso {pid}", { pid: f.pid })) : null);
     }
-    fact("Con quién", ...whoFact(f.dst_ip, ep(f, "dst"), hostOf(f.dst_ip) && hostOf(f.dst_ip).short ? null : f.resolved_domain));
-    fact("Protocolo", rich(TRANSPORTS.includes(r.proto) ? r.proto : `${r.proto} sobre ${transportName(f)}`));
-    fact("Cuándo", `${fmtDateTime(f.first_seen_micros)} · duró ${fmtDuration(f.duration_micros)}`);
+    fact(t("Con quién"), ...whoFact(f.dst_ip, ep(f, "dst"), hostOf(f.dst_ip) && hostOf(f.dst_ip).short ? null : f.resolved_domain));
+    fact(t("Protocolo"), rich(TRANSPORTS.includes(r.proto) ? r.proto : t("{proto} sobre {transport}", { proto: r.proto, transport: transportName(f) })));
+    fact(t("Cuándo"), `${fmtDateTime(f.first_seen_micros)} · ${t("duró {duration}", { duration: fmtDuration(f.duration_micros) })}`);
     fact(
-      "Volumen",
-      `ida: ${plural(f.packets, "paquete", "paquetes")} (${fmtBytes(f.bytes)}) · vuelta: ${plural(f.packets_rev, "paquete", "paquetes")} (${fmtBytes(f.bytes_rev)})`,
+      t("Volumen"),
+      t("ida: {out} ({out_bytes}) · vuelta: {back} ({back_bytes})", {
+        out: plural(f.packets, "paquete", "paquetes"),
+        out_bytes: fmtBytes(f.bytes),
+        back: plural(f.packets_rev, "paquete", "paquetes"),
+        back_bytes: fmtBytes(f.bytes_rev),
+      }),
     );
-    fact("Estado", STATE_ES[f.state] || f.state);
-    if (f.tls_sni) fact(h("span", { class: "term", tabindex: "0", "data-term": "sni" }, "Web pedida (SNI)"), f.tls_sni);
-    if (f.ja4_fingerprint) fact(h("span", { class: "term", tabindex: "0", "data-term": "ja4" }, "Huella JA4"), h("span", { class: "mono" }, f.ja4_fingerprint));
+    fact(t("Estado"), STATE_ES[f.state] ? t(STATE_ES[f.state]) : f.state);
+    if (f.tls_sni) fact(h("span", { class: "term", tabindex: "0", "data-term": "sni" }, t("Web pedida (SNI)")), f.tls_sni);
+    if (f.ja4_fingerprint) fact(h("span", { class: "term", tabindex: "0", "data-term": "ja4" }, t("Huella JA4")), h("span", { class: "mono" }, f.ja4_fingerprint));
     for (const file of f.extracted_files || []) {
       fact(
-        "Archivo",
-        `${file.name} · ${fmtBytes(file.size)}${file.magic ? ` · tipo real: ${file.magic}` : ""}`,
+        t("Archivo"),
+        `${file.name} · ${fmtBytes(file.size)}${file.magic ? ` · ${t("tipo real: {magic}", { magic: file.magic })}` : ""}`,
         file.sha256 ? h("div", { class: "mono sub" }, `SHA-256 ${file.sha256}`) : null,
       );
     }
-    if ((f.threat_intel || []).length) fact("Listas de amenazas", f.threat_intel.join(", "));
-    fact("Riesgo", `${f.risk_score} / 100`);
+    if ((f.threat_intel || []).length) fact(t("Listas de amenazas"), f.threat_intel.join(", "));
+    fact(t("Riesgo"), `${f.risk_score} / 100`);
     box.append(h("dl", { class: "facts" }, facts));
     box.append(
       h(
         "div",
         { class: "detail-actions" },
-        h("button", { class: "btn small", type: "button", onclick: () => setTab("stream") }, "Ver lo que se dijeron"),
-        h("button", { class: "btn small", type: "button", onclick: () => applyAsFilter(exprConv(f)) }, "Filtrar esta conversación"),
-        h("button", { class: "btn small", type: "button", onclick: () => applyAsFilter(exprHost(f.src_ip)) }, `Todo de ${f.src_ip}`),
+        h("button", { class: "btn small", type: "button", onclick: () => setTab("stream") }, t("Ver lo que se dijeron")),
+        h("button", { class: "btn small", type: "button", onclick: () => applyAsFilter(exprConv(f)) }, t("Filtrar esta conversación")),
+        h("button", { class: "btn small", type: "button", onclick: () => applyAsFilter(exprHost(f.src_ip)) }, t("Todo de {ip}", { ip: f.src_ip })),
       ),
     );
   }
@@ -925,13 +976,13 @@
     try {
       data = await cached("packets", r.idx, `/api/flows/${r.idx}/packets`);
     } catch (err) {
-      clear(box).append(h("p", { class: "placeholder" }, `No se pudieron cargar los paquetes: ${err.message}`));
+      clear(box).append(h("p", { class: "placeholder" }, t("No se pudieron cargar los paquetes: {error}", { error: err.message })));
       return;
     }
     if (state.selectedKey !== key || state.tab !== "packets") return; // el usuario ya cambió
     clear(box);
     if (!data.packets.length) {
-      box.append(h("p", { class: "placeholder" }, "Esta conversación no tiene paquetes que mostrar."));
+      box.append(h("p", { class: "placeholder" }, t("Esta conversación no tiene paquetes que mostrar.")));
       return;
     }
     const side = h("div", { class: "pkt-side" });
@@ -942,7 +993,7 @@
       h(
         "table",
         { class: "grid" },
-        h("thead", null, h("tr", null, ["N.º", "Tiempo", "", "Tamaño", "Qué hace"].map((c) => h("th", null, h("span", null, c))))),
+        h("thead", null, h("tr", null, ["N.º", "Tiempo", "", "Tamaño", "Qué hace"].map((c) => h("th", null, h("span", null, t(c)))))),
         tbody,
       ),
     );
@@ -953,13 +1004,13 @@
           { "data-n": p.n, "aria-selected": "false", onclick: () => pickFlowPacket(p.n, tbody, side) },
           h("td", { class: "num" }, p.n),
           h("td", { class: "num" }, fmtRelShort(p.rel_micros)),
-          h("td", { class: `dir ${p.outbound ? "out" : "in"}`, title: p.outbound ? "de quien empezó hacia el otro lado" : "respuesta" }, p.outbound ? "→" : "←"),
+          h("td", { class: `dir ${p.outbound ? "out" : "in"}`, title: t(p.outbound ? "de quien empezó hacia el otro lado" : "respuesta") }, p.outbound ? "→" : "←"),
           h("td", { class: "num" }, fmtBytes(p.len)),
           h("td", null, p.summary),
         ),
       );
     }
-    if (data.more) tbody.append(h("tr", { class: "more" }, h("td", { colspan: "5" }, "Solo se muestran los primeros 5.000 paquetes de esta conversación.")));
+    if (data.more) tbody.append(h("tr", { class: "more" }, h("td", { colspan: "5" }, t("Solo se muestran los primeros {n} paquetes de esta conversación.", { n: nf.format(5000) }))));
     box.append(h("div", { class: "packets" }, list, side));
     const keepN = data.packets.some((p) => p.n === state.packetSel) ? state.packetSel : data.packets[0].n;
     await pickFlowPacket(keepN, tbody, side);
@@ -983,7 +1034,7 @@
   /** Capas (explicadas) + volcado hexadecimal enlazados entre sí. */
   function buildPacketDetail(d) {
     const layersBox = h("div", { class: "layers" });
-    const hexBox = h("div", { class: "hex", "aria-label": "Bytes del paquete" });
+    const hexBox = h("div", { class: "hex", "aria-label": t("Bytes del paquete") });
     const spans = renderHex(hexBox, d.hex);
     const half = spans.length / 2;
     const layerEls = [];
@@ -1027,11 +1078,11 @@
       layerEls.forEach((el) => el.classList.remove("active"));
       highlight(null);
     });
-    const cut = d.captured < d.len ? ` (capturados ${nf.format(d.captured)} de ${nf.format(d.len)} bytes)` : "";
+    const cut = d.captured < d.len ? t(" (capturados {captured} de {len} bytes)", { captured: nf.format(d.captured), len: nf.format(d.len) }) : "";
     return {
       layers: layersBox,
       hex: hexBox,
-      hexTitle: h("div", { class: "hex-title" }, `Bytes del paquete n.º ${d.n}${cut} · pasa el ratón para ver a qué capa pertenecen`),
+      hexTitle: h("div", { class: "hex-title" }, t("Bytes del paquete n.º {n}{cut} · pasa el ratón para ver a qué capa pertenecen", { n: d.n, cut })),
     };
   }
 
@@ -1057,8 +1108,8 @@
       line.append(" ".repeat((16 - Math.min(16, n - off)) * 3), asc);
       frag.append(line);
     }
-    if (hex.length / 2 > MAX) frag.append(h("div", { class: "sub" }, `… se muestran los primeros ${nf.format(MAX)} bytes`));
-    if (!n) frag.append(h("div", { class: "sub" }, "El contenido de este paquete no se guardó (captura muy grande)."));
+    if (hex.length / 2 > MAX) frag.append(h("div", { class: "sub" }, t("… se muestran los primeros {n} bytes", { n: nf.format(MAX) })));
+    if (!n) frag.append(h("div", { class: "sub" }, t("El contenido de este paquete no se guardó (captura muy grande).")));
     box.append(frag);
     return hexSpans.concat(ascSpans);
   }
@@ -1099,7 +1150,7 @@
     try {
       v = await cached("stream", r.idx, `/api/flows/${r.idx}/stream`);
     } catch (err) {
-      clear(box).append(h("p", { class: "placeholder" }, `No se pudo reconstruir la conversación: ${err.message}`));
+      clear(box).append(h("p", { class: "placeholder" }, t("No se pudo reconstruir la conversación: {error}", { error: err.message })));
       return;
     }
     if (state.selectedKey !== key || state.tab !== "stream") return;
@@ -1110,7 +1161,7 @@
     const asText = (c) => (mode === "hex" ? bytesToHexdump(c.bytes) : bytesToText(c.bytes));
     const seg = h(
       "div",
-      { class: "segmented small", role: "group", "aria-label": "Formato" },
+      { class: "segmented small", role: "group", "aria-label": t("Formato") },
       [
         ["text", "Texto"],
         ["hex", "Hex"],
@@ -1125,7 +1176,7 @@
               renderDetail();
             },
           },
-          label,
+          t(label),
         ),
       ),
     );
@@ -1138,20 +1189,20 @@
         onclick: async () => {
           try {
             await navigator.clipboard.writeText(chunks.map(asText).join("\n"));
-            toast("Contenido copiado al portapapeles.", "info");
+            toast(t("Contenido copiado al portapapeles."), "info");
           } catch {
-            toast("No se pudo copiar al portapapeles.");
+            toast(t("No se pudo copiar al portapapeles."));
           }
         },
       },
-      "Copiar",
+      t("Copiar"),
     );
     box.append(
       h(
         "div",
         { class: "stream-head" },
-        h("span", { class: "who out" }, h("i"), `${ep(f, "src")} (empezó) · ${fmtBytes(v.client_bytes)}`),
-        h("span", { class: "who in" }, h("i"), `${ep(f, "dst")} (respondió) · ${fmtBytes(v.server_bytes)}`),
+        h("span", { class: "who out" }, h("i"), `${ep(f, "src")} (${t("empezó")}) · ${fmtBytes(v.client_bytes)}`),
+        h("span", { class: "who in" }, h("i"), `${ep(f, "dst")} (${t("respondió")}) · ${fmtBytes(v.server_bytes)}`),
         h("span", { class: "spacer" }),
         seg,
         copy,
@@ -1159,19 +1210,19 @@
     );
     const notes = [];
     const encrypted = r.proto === "TLS" || r.proto === "SSH" || (f.transport === "Udp" && f.dst_port === 443);
-    if (!chunks.length) notes.push("Esta conversación no lleva datos: solo mensajes de control (abrir, confirmar, cerrar).");
-    else if (encrypted) notes.push("Va cifrada: lo que ves son datos sin sentido. Es buena señal: nadie en la red puede leerla.");
-    else notes.push("Esto es lo que se dijeron, tal cual viajó por la red. Si ves contraseñas o datos personales, cualquiera en la red podía verlos.");
-    if (v.gaps) notes.push("Faltan trozos: la captura no vio algunos paquetes.");
-    if (v.truncated) notes.push("Solo se muestra el primer mega.");
+    if (!chunks.length) notes.push(t("Esta conversación no lleva datos: solo mensajes de control (abrir, confirmar, cerrar)."));
+    else if (encrypted) notes.push(t("Va cifrada: lo que ves son datos sin sentido. Es buena señal: nadie en la red puede leerla."));
+    else notes.push(t("Esto es lo que se dijeron, tal cual viajó por la red. Si ves contraseñas o datos personales, cualquiera en la red podía verlos."));
+    if (v.gaps) notes.push(t("Faltan trozos: la captura no vio algunos paquetes."));
+    if (v.truncated) notes.push(t("Solo se muestra el primer mega."));
     box.append(h("p", { class: "stream-note" }, rich(notes.join(" "))));
     if (!chunks.length) return;
-    const pre = h("div", { class: "stream", tabindex: "0", "aria-label": "Contenido de la conversación" });
+    const pre = h("div", { class: "stream", tabindex: "0", "aria-label": t("Contenido de la conversación") });
     for (const c of chunks) {
       pre.append(
         h(
           "pre",
-          { class: `chunk ${c.outbound ? "out" : "in"}${mode === "hex" ? " hexmode" : ""}`, title: `paquete n.º ${c.n} · ${c.outbound ? "enviado por quien empezó" : "respuesta"}` },
+          { class: `chunk ${c.outbound ? "out" : "in"}${mode === "hex" ? " hexmode" : ""}`, title: `${t("paquete n.º {n}", { n: c.n })} · ${t(c.outbound ? "enviado por quien empezó" : "respuesta")}` },
           asText(c),
         ),
       );
@@ -1217,7 +1268,7 @@
       if (changed && pk.follow && liveRunning()) scrollToEnd();
       pkRender();
     } catch (err) {
-      if (pk.key === key) toast(`No se pudieron cargar los paquetes: ${err.message}`);
+      if (pk.key === key) toast(t("No se pudieron cargar los paquetes: {error}", { error: err.message }));
     } finally {
       pk.pending.delete(tag);
     }
@@ -1241,7 +1292,7 @@
     empty.hidden = pk.total > 0;
     box.hidden = pk.total === 0;
     if (!pk.total) {
-      empty.textContent = liveRunning() ? "Escuchando… los paquetes aparecerán aquí." : "Ningún paquete coincide con el filtro.";
+      empty.textContent = liveRunning() ? t("Escuchando… los paquetes aparecerán aquí.") : t("Ningún paquete coincide con el filtro.");
     }
     const first = Math.max(0, Math.floor(box.scrollTop / ROW_H) - 8);
     const last = Math.min(pk.total, Math.ceil((box.scrollTop + box.clientHeight) / ROW_H) + 8);
@@ -1296,6 +1347,7 @@
     const pk = state.pk;
     pk.sel = row.n;
     pk.selPos = pos;
+    pk.selRow = row;
     for (const el of $("#vlist-sizer").children) el.setAttribute("aria-selected", String(Number(el.dataset.pos) === pos));
     showGlobalPacket(row);
   }
@@ -1316,9 +1368,9 @@
       "div",
       { class: "pk-title" },
       row.level ? dot(row.level) : null,
-      h("b", null, `Paquete n.º ${d.n}`),
+      h("b", null, t("Paquete n.º {n}", { n: d.n })),
       h("span", { class: "sub" }, `${fmtClock(d.ts_micros)} · ${nf.format(d.len)} bytes`),
-      flow ? h("button", { class: "btn small", type: "button", onclick: () => goToFlow(row.flow) }, "Ir a su conversación") : null,
+      flow ? h("button", { class: "btn small", type: "button", onclick: () => goToFlow(row.flow) }, t("Ir a su conversación")) : null,
     );
     clear(box).append(
       h("div", { class: "layers" }, title, flow ? h("p", { class: "sub" }, flow.explain.headline) : null, view.layers),
@@ -1340,7 +1392,7 @@
 
   function goToFlow(idx) {
     if (idx == null || !state.byIdx.has(idx)) {
-      toast("Este paquete no pertenece a ninguna conversación reconocida.", "info");
+      toast(t("Este paquete no pertenece a ninguna conversación reconocida."), "info");
       return;
     }
     state.storyFilter = null;
@@ -1384,7 +1436,7 @@
       [st, tl] = await Promise.all([api(`/api/stats${q ? "?" + q : ""}`), api(`/api/timeline${q ? "?" + q : ""}`)]);
     } catch (err) {
       box.style.opacity = "";
-      if (!quiet) toast(`No se pudieron calcular las estadísticas: ${err.message}`);
+      if (!quiet) toast(t("No se pudieron calcular las estadísticas: {error}", { error: err.message }));
       return;
     }
     box.style.opacity = "";
@@ -1404,12 +1456,12 @@
       h(
         "div",
         { class: "tiles" },
-        tile("Paquetes", nf.format(st.total.packets), filtered ? "con los filtros actuales" : null),
-        tile("Datos", fmtBytes(st.total.bytes)),
-        tile("Conversaciones", nf.format(st.total.flows)),
-        tile("Equipos", nf.format(st.endpoints_total), "direcciones distintas"),
-        tile("Servicios", nf.format(st.services_total), "puertos de destino"),
-        tile("Duración", span > 0 ? fmtDuration(span) : "—"),
+        tile(t("Paquetes"), nf.format(st.total.packets), filtered ? t("con los filtros actuales") : null),
+        tile(t("Datos"), fmtBytes(st.total.bytes)),
+        tile(t("Conversaciones"), nf.format(st.total.flows)),
+        tile(t("Equipos"), nf.format(st.endpoints_total), t("direcciones distintas")),
+        tile(t("Servicios"), nf.format(st.services_total), t("puertos de destino")),
+        tile(t("Duración"), span > 0 ? fmtDuration(span) : "—"),
       ),
     );
 
@@ -1419,10 +1471,10 @@
     const chartBox = h("div", { class: "card-body" });
     const seg = h(
       "div",
-      { class: "segmented small", role: "group", "aria-label": "Qué medir" },
+      { class: "segmented small", role: "group", "aria-label": t("Qué medir") },
       [
-        ["packets", "Paquetes"],
-        ["bytes", "Datos"],
+        ["packets", t("Paquetes")],
+        ["bytes", t("Datos")],
       ].map(([m, label]) =>
         h(
           "button",
@@ -1446,8 +1498,8 @@
         h(
           "div",
           { class: "card-head" },
-          h("h2", null, measure === "bytes" ? "Datos en el tiempo" : "Paquetes en el tiempo"),
-          h("span", { class: "sub" }, tl.packets.length ? `Cada barra son ${fmtDuration(tl.bucket_micros)}. Los picos son ráfagas de actividad.` : ""),
+          h("h2", null, measure === "bytes" ? t("Datos en el tiempo") : t("Paquetes en el tiempo")),
+          h("span", { class: "sub" }, tl.packets.length ? t("Cada barra son {duration}. Los picos son ráfagas de actividad.", { duration: fmtDuration(tl.bucket_micros) }) : ""),
           seg,
         ),
         chartBox,
@@ -1466,11 +1518,11 @@
         h(
           "details",
           { class: "as-table" },
-          h("summary", null, "Ver los datos como tabla"),
+          h("summary", null, t("Ver los datos como tabla")),
           h(
             "table",
             { class: "grid" },
-            h("thead", null, h("tr", null, h("th", null, h("span", null, "Desde")), h("th", null, h("span", null, "Hasta")), h("th", { class: "num" }, h("span", null, measure === "bytes" ? "Datos" : "Paquetes")))),
+            h("thead", null, h("tr", null, h("th", null, h("span", null, t("Desde"))), h("th", null, h("span", null, t("Hasta"))), h("th", { class: "num" }, h("span", null, measure === "bytes" ? t("Datos") : t("Paquetes"))))),
             h(
               "tbody",
               null,
@@ -1480,7 +1532,7 @@
               }),
             ),
           ),
-          values.filter((v) => v > 0).length > busiest.length ? h("p", { class: "sub" }, "Solo los 50 intervalos con más actividad.") : null,
+          values.filter((v) => v > 0).length > busiest.length ? h("p", { class: "sub" }, t("Solo los 50 intervalos con más actividad.")) : null,
         ),
       );
     }
@@ -1489,7 +1541,7 @@
     const maxP = Math.max(1, ...st.protocols.map((p) => p.bytes));
     const bars = h("div", { class: "hbars" });
     for (const p of st.protocols) {
-      const about = PROTO_ABOUT[p.name] || "";
+      const about = t(PROTO_ABOUT[p.name] || "");
       const pct = st.total.bytes ? Math.round((p.bytes / st.total.bytes) * 100) : 0;
       bars.append(
         h(
@@ -1498,15 +1550,15 @@
             class: "hbar",
             tabindex: "0",
             role: "button",
-            title: `${p.name}: ${about}. Pulsa para ver solo esto.`,
+            title: `${p.name}: ${about}. ${t("Pulsa para ver solo esto.")}`,
             onclick: () => applyAsFilter(exprProto(p.name)),
             onkeydown: (e) => e.key === "Enter" && applyAsFilter(exprProto(p.name)),
             oncontextmenu: (e) => {
               e.preventDefault();
               openMenu(e.clientX, e.clientY, [
                 { title: p.name },
-                { label: `Ver solo ${p.name}`, expr: exprProto(p.name) },
-                { label: `Ocultar ${p.name}`, expr: `!(${exprProto(p.name)})` },
+                { label: t("Ver solo {what}", { what: p.name }), expr: exprProto(p.name) },
+                { label: t("Ocultar {what}", { what: p.name }), expr: `!(${exprProto(p.name)})` },
               ]);
             },
           },
@@ -1520,8 +1572,8 @@
       h(
         "section",
         { class: "card" },
-        h("div", { class: "card-head" }, h("h2", null, "Protocolos"), h("span", { class: "sub" }, "Qué tipo de tráfico hay, por volumen de datos")),
-        h("div", { class: "card-body" }, st.protocols.length ? bars : h("p", { class: "chart-empty" }, "Sin datos")),
+        h("div", { class: "card-head" }, h("h2", null, t("Protocolos")), h("span", { class: "sub" }, t("Qué tipo de tráfico hay, por volumen de datos"))),
+        h("div", { class: "card-body" }, st.protocols.length ? bars : h("p", { class: "chart-empty" }, t("Sin datos"))),
       ),
     );
 
@@ -1534,20 +1586,20 @@
           "tr",
           {
             class: sv.level !== "ok" ? sv.level : null,
-            title: "Pulsa para ver solo este servicio",
+            title: t("Pulsa para ver solo este servicio"),
             onclick: () => applyAsFilter(expr),
             oncontextmenu: (e) => {
               e.preventDefault();
               openMenu(e.clientX, e.clientY, [
-                { title: `Puerto ${sv.port}/${sv.transport}` },
-                { label: "Ver solo este servicio", expr },
-                { label: "Ocultar este servicio", expr: `!(${expr})` },
+                { title: t("Puerto {port}", { port: `${sv.port}/${sv.transport}` }) },
+                { label: t("Ver solo este servicio"), expr },
+                { label: t("Ocultar este servicio"), expr: `!(${expr})` },
               ]);
             },
           },
           h("td", null, dot(sv.level)),
           h("td", { class: "mono" }, `${sv.port}/${sv.transport.toLowerCase()}`),
-          h("td", null, sv.about ? rich(sv.about) : h("span", { class: "sub" }, "desconocido")),
+          h("td", null, sv.about ? rich(sv.about) : h("span", { class: "sub" }, t("desconocido"))),
           h("td", { class: "num" }, nf.format(sv.flows)),
           h("td", { class: "num" }, fmtBytes(sv.bytes)),
         ),
@@ -1560,13 +1612,19 @@
         h(
           "div",
           { class: "card-head" },
-          h("h2", null, "Servicios"),
-          h("span", { class: "sub" }, st.services_total > st.services.length ? `Los ${st.services.length} más usados de ${nf.format(st.services_total)}` : "A qué puertos se conectan los equipos"),
+          h("h2", null, t("Servicios")),
+          h(
+            "span",
+            { class: "sub" },
+            st.services_total > st.services.length
+              ? t("Los {n} más usados de {total}", { n: st.services.length, total: nf.format(st.services_total) })
+              : t("A qué puertos se conectan los equipos"),
+          ),
         ),
         h(
           "div",
           { class: "card-body flush" },
-          h("table", { class: "grid" }, h("thead", null, h("tr", null, ["", "Puerto", "Qué es", "Conv.", "Datos"].map((c, i) => h("th", { class: i >= 3 ? "num" : null }, h("span", null, c))))), svc),
+          h("table", { class: "grid" }, h("thead", null, h("tr", null, ["", "Puerto", "Qué es", "Conv.", "Datos"].map((c, i) => h("th", { class: i >= 3 ? "num" : null }, h("span", null, t(c)))))), svc),
         ),
       ),
     );
@@ -1581,7 +1639,7 @@
           "tr",
           {
             class: e.level !== "ok" ? e.level : null,
-            title: "Pulsa para ver solo lo de este equipo",
+            title: t("Pulsa para ver solo lo de este equipo"),
             onclick: () => applyAsFilter(exprHost(e.ip)),
             oncontextmenu: (ev) => {
               ev.preventDefault();
@@ -1600,7 +1658,7 @@
                 ? h("div", { class: "sub", title: e.domain }, e.domain)
                 : null,
           ),
-          h("td", null, h("span", { class: `scope ${e.scope}` }, SCOPE_ES[e.scope] || e.scope)),
+          h("td", null, h("span", { class: `scope ${e.scope}` }, SCOPE_ES[e.scope] ? t(SCOPE_ES[e.scope]) : e.scope)),
           h("td", { class: "num" }, nf.format(e.flows)),
           h("td", { class: "num" }, nf.format(e.peers)),
           h("td", { class: "num" }, fmtBytes(e.bytes_out)),
@@ -1617,13 +1675,19 @@
         h(
           "div",
           { class: "card-head" },
-          h("h2", null, "Equipos que más hablan"),
-          h("span", { class: "sub" }, st.endpoints_total > st.endpoints.length ? `Los ${st.endpoints.length} primeros de ${nf.format(st.endpoints_total)}` : "Ordenados por datos enviados y recibidos"),
+          h("h2", null, t("Equipos que más hablan")),
+          h(
+            "span",
+            { class: "sub" },
+            st.endpoints_total > st.endpoints.length
+              ? t("Los {n} primeros de {total}", { n: st.endpoints.length, total: nf.format(st.endpoints_total) })
+              : t("Ordenados por datos enviados y recibidos"),
+          ),
         ),
         h(
           "div",
           { class: "card-body flush" },
-          h("table", { class: "grid" }, h("thead", null, h("tr", null, epHead.map((c, i) => h("th", { class: i >= 3 ? "num" : null }, h("span", null, c))))), eps),
+          h("table", { class: "grid" }, h("thead", null, h("tr", null, epHead.map((c, i) => h("th", { class: i >= 3 ? "num" : null }, h("span", null, t(c)))))), eps),
         ),
       ),
     );
@@ -1632,7 +1696,7 @@
   /** Gráfica de columnas de una serie, con tooltip por barra. */
   function drawColumns(box, values, tl, fmtVal) {
     if (!values.length || values.every((v) => v === 0)) {
-      box.append(h("p", { class: "chart-empty" }, "Sin actividad que mostrar."));
+      box.append(h("p", { class: "chart-empty" }, t("Sin actividad que mostrar.")));
       return;
     }
     const W = Math.max(320, box.clientWidth - 28 || 800);
@@ -1645,7 +1709,7 @@
     const top = Math.max(step, Math.ceil(maxV / step) * step);
     const y = (v) => pad.t + ih - (v / top) * ih;
     const fmtTick = fmtVal === fmtBytes ? fmtBytes : (v) => compact.format(v);
-    const svg = s("svg", { class: "chart", viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "Actividad en el tiempo" });
+    const svg = s("svg", { class: "chart", viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": t("Actividad en el tiempo") });
     for (let v = 0; v <= top + 1e-9; v += step) {
       svg.append(
         s("line", { class: v === 0 ? "baseline" : "gridline", x1: pad.l, x2: W - pad.r, y1: y(v), y2: y(v) }),
@@ -1711,7 +1775,7 @@
       data = await api(`/api/map${q ? "?" + q : ""}`);
     } catch (err) {
       box.style.opacity = "";
-      if (!quiet) toast(`No se pudo dibujar el mapa: ${err.message}`);
+      if (!quiet) toast(t("No se pudo dibujar el mapa: {error}", { error: err.message }));
       return;
     }
     box.style.opacity = "";
@@ -1720,7 +1784,7 @@
     box.scrollTop = top;
   }
 
-  const levelLabel = (lv) => (lv && lv !== "ok" ? LEVEL[lv].label.toLowerCase() : null);
+  const levelLabel = (lv) => (lv && lv !== "ok" ? t(LEVEL[lv].label).toLowerCase() : null);
 
   function renderMap(box, data) {
     clear(box);
@@ -1728,17 +1792,17 @@
       h(
         "div",
         { class: "map-head" },
-        h("h2", null, "Mapa de la red"),
+        h("h2", null, t("Mapa de la red")),
         h(
           "p",
           { class: "sub" },
-          "A la izquierda, los equipos de tu red; en el centro, el router (la puerta a Internet); a la derecha, los sitios de Internet. ",
-          "Cuanto más gruesa la línea, más datos. Pulsa un equipo para ver solo lo suyo.",
+          t("A la izquierda, los equipos de tu red; en el centro, el router (la puerta a Internet); a la derecha, los sitios de Internet. "),
+          t("Cuanto más gruesa la línea, más datos. Pulsa un equipo para ver solo lo suyo."),
         ),
       ),
     );
     if (!data.nodes.length) {
-      box.append(h("p", { class: "chart-empty" }, liveRunning() ? "Escuchando… el mapa se dibuja en cuanto haya tráfico." : "No hay conversaciones que dibujar con estos filtros."));
+      box.append(h("p", { class: "chart-empty" }, liveRunning() ? t("Escuchando… el mapa se dibuja en cuanto haya tráfico.") : t("No hay conversaciones que dibujar con estos filtros.")));
       return;
     }
     const byId = new Map(data.nodes.map((n) => [n.id, n]));
@@ -1804,9 +1868,9 @@
     const maxB = Math.max(1, ...[...edges.values()].map((e) => e.bytes));
     const where = (id) => (id === "__gw" ? gw : pos.get(id));
 
-    const svg = s("svg", { class: "map-svg", viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: "img", "aria-label": "Mapa de la red" });
+    const svg = s("svg", { class: "map-svg", viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: "img", "aria-label": t("Mapa de la red") });
     const colTitle = (x, text, anchor) => s("text", { class: "col-title", x, y: 22, "text-anchor": anchor }, text);
-    svg.append(colTitle(xL + 20, "Tu red", "end"), colTitle(xC, needsGateway || routerNode ? "Router" : "", "middle"), colTitle(xR - 20, "Internet", "start"));
+    svg.append(colTitle(xL + 20, t("Tu red"), "end"), colTitle(xC, needsGateway || routerNode ? t("Router") : "", "middle"), colTitle(xR - 20, "Internet", "start"));
     const edgeLayer = s("g");
     const nodeLayer = s("g");
     svg.append(edgeLayer, nodeLayer);
@@ -1829,7 +1893,7 @@
       const width = 1.5 + 6.5 * Math.sqrt(e.bytes / maxB);
       const path = s("path", { class: `edge ${e.level}`, d, "stroke-width": width.toFixed(1) });
       const hit = s("path", { class: "edge-hit", d });
-      const name = (id) => (id === "__gw" ? "la salida a Internet" : byId.get(id)?.label || id);
+      const name = (id) => (id === "__gw" ? t("la salida a Internet") : byId.get(id)?.label || id);
       const tip = () => {
         const lv = levelLabel(e.level);
         showTipAt(
@@ -1885,7 +1949,12 @@
         showTipAt(
           r,
           h("b", null, n.label),
-          [n.ip && n.ip !== n.label ? n.ip : null, `${fmtBytes(n.bytes)} en ${plural(n.flows, "conversación", "conversaciones")}`, levelLabel(n.level) ? `hay algo ${levelLabel(n.level) === "peligro" ? "peligroso" : "raro"}` : null, ...facts]
+          [
+            n.ip && n.ip !== n.label ? n.ip : null,
+            t("{bytes} en {flows}", { bytes: fmtBytes(n.bytes), flows: plural(n.flows, "conversación", "conversaciones") }),
+            n.level && n.level !== "ok" ? t(n.level === "peligro" ? "hay algo peligroso" : "hay algo raro") : null,
+            ...facts,
+          ]
             .filter(Boolean)
             .join(" · "),
         );
@@ -1911,7 +1980,7 @@
     if (routerNode) drawNode(routerNode, gw, "below");
     else if (needsGateway) {
       const g = s("g", { class: "node gateway", transform: `translate(${gw.x},${gw.y})` });
-      g.append(s("circle", { class: "body", r: 9 }), s("text", { class: "lbl-sub", x: 0, y: 26, "text-anchor": "middle" }, "salida a Internet"));
+      g.append(s("circle", { class: "body", r: 9 }), s("text", { class: "lbl-sub", x: 0, y: 26, "text-anchor": "middle" }, t("salida a Internet")));
       nodeLayer.append(g);
       nodeEls.set("__gw", g);
     }
@@ -1922,19 +1991,19 @@
       h(
         "div",
         { class: "map-legend" },
-        h("span", null, h("i", { class: "lg-line" }), "más grosor = más datos"),
-        h("span", null, dot("peligro"), "peligro"),
-        h("span", null, dot("raro"), "raro"),
-        h("span", { class: "sub" }, "Pasa el ratón por un equipo para ver con quién habla."),
+        h("span", null, h("i", { class: "lg-line" }), t("más grosor = más datos")),
+        h("span", null, dot("peligro"), t("peligro")),
+        h("span", null, dot("raro"), t("raro")),
+        h("span", { class: "sub" }, t("Pasa el ratón por un equipo para ver con quién habla.")),
       ),
       h(
         "details",
         { class: "as-table" },
-        h("summary", null, "Ver como lista"),
+        h("summary", null, t("Ver como lista")),
         h(
           "table",
           { class: "grid" },
-          h("thead", null, h("tr", null, ["Quién", "Con quién", "Conversaciones", "Datos", ""].map((c, i) => h("th", { class: i >= 2 && i < 4 ? "num" : null }, h("span", null, c))))),
+          h("thead", null, h("tr", null, ["Quién", "Con quién", "Conversaciones", "Datos", ""].map((c, i) => h("th", { class: i >= 2 && i < 4 ? "num" : null }, h("span", null, t(c)))))),
           h(
             "tbody",
             null,
@@ -1993,7 +2062,7 @@
         },
       });
       cb.checked = state.combine;
-      menu.append(h("hr"), h("label", { title: "Si está marcado, se suma al filtro que ya tienes (con «y»)" }, cb, "Añadir al filtro actual"));
+      menu.append(h("hr"), h("label", { title: t("Si está marcado, se suma al filtro que ya tienes (con «y»)") }, cb, t("Añadir al filtro actual")));
     }
     menu.hidden = false;
     const mw = menu.offsetWidth;
@@ -2011,9 +2080,9 @@
   async function copy(text) {
     try {
       await navigator.clipboard.writeText(text);
-      toast(`Copiado: ${text.length > 60 ? text.slice(0, 60) + "…" : text}`, "info");
+      toast(t("Copiado: {text}", { text: text.length > 60 ? text.slice(0, 60) + "…" : text }), "info");
     } catch {
-      toast("No se pudo copiar al portapapeles.");
+      toast(t("No se pudo copiar al portapapeles."));
     }
   }
 
@@ -2021,53 +2090,53 @@
     const hst = hostOf(ip);
     const items = [
       { title: [hst && hst.short, ip, domain].filter(Boolean).join(" · ") },
-      { label: "Ver solo este equipo", expr: exprHost(ip) },
-      { label: "Ocultar este equipo", expr: exprNotHost(ip) },
+      { label: t("Ver solo este equipo"), expr: exprHost(ip) },
+      { label: t("Ocultar este equipo"), expr: exprNotHost(ip) },
       "-",
     ];
-    if (isLanIp(ip)) items.push({ label: hst && hst.nickname ? "Cambiar su nombre…" : "Ponerle nombre…", action: () => openNickDialog(ip) });
-    items.push({ label: "Copiar la dirección", action: () => copy(ip) });
+    if (isLanIp(ip)) items.push({ label: t(hst && hst.nickname ? "Cambiar su nombre…" : "Ponerle nombre…"), action: () => openNickDialog(ip) });
+    items.push({ label: t("Copiar la dirección"), action: () => copy(ip) });
     return items;
   }
 
   function flowMenu(r) {
     const f = r.flow;
     const items = [
-      { title: "Filtrar" },
-      { label: "Ver solo esta conversación", expr: exprConv(f) },
-      { label: `Ver solo ${f.src_ip}`, hint: "origen", expr: exprHost(f.src_ip) },
-      { label: `Ver solo ${f.dst_ip}`, hint: f.resolved_domain ? f.resolved_domain.slice(0, 28) : "destino", expr: exprHost(f.dst_ip) },
-      { label: `Ocultar ${f.src_ip}`, expr: exprNotHost(f.src_ip) },
-      { label: `Ocultar ${f.dst_ip}`, expr: exprNotHost(f.dst_ip) },
+      { title: t("Filtrar") },
+      { label: t("Ver solo esta conversación"), expr: exprConv(f) },
+      { label: t("Ver solo {what}", { what: f.src_ip }), hint: t("origen"), expr: exprHost(f.src_ip) },
+      { label: t("Ver solo {what}", { what: f.dst_ip }), hint: f.resolved_domain ? f.resolved_domain.slice(0, 28) : t("destino"), expr: exprHost(f.dst_ip) },
+      { label: t("Ocultar {what}", { what: f.src_ip }), expr: exprNotHost(f.src_ip) },
+      { label: t("Ocultar {what}", { what: f.dst_ip }), expr: exprNotHost(f.dst_ip) },
     ];
-    if (hasPorts(f)) items.push({ label: `Ver solo conexiones al puerto ${f.dst_port}`, expr: exprService(f.dst_port, transportName(f)) });
-    if (r.proto !== "TCP" && r.proto !== "UDP") items.push({ label: `Ver solo ${r.proto}`, expr: exprProto(r.proto) });
+    if (hasPorts(f)) items.push({ label: t("Ver solo conexiones al puerto {port}", { port: f.dst_port }), expr: exprService(f.dst_port, transportName(f)) });
+    if (r.proto !== "TCP" && r.proto !== "UDP") items.push({ label: t("Ver solo {what}", { what: r.proto }), expr: exprProto(r.proto) });
     items.push(
       "-",
-      { label: "Ver sus paquetes", action: () => (switchView("flows"), select(r.idx), setTab("packets")) },
-      { label: "Ver lo que se dijeron", action: () => (switchView("flows"), select(r.idx), setTab("stream")) },
+      { label: t("Ver sus paquetes"), action: () => (switchView("flows"), select(r.idx), setTab("packets")) },
+      { label: t("Ver lo que se dijeron"), action: () => (switchView("flows"), select(r.idx), setTab("stream")) },
       "-",
     );
     for (const ip of [f.src_ip, f.dst_ip]) {
-      if (isLanIp(ip)) items.push({ label: `Ponerle nombre a ${(hostOf(ip) && hostOf(ip).short) || ip}…`, action: () => openNickDialog(ip) });
+      if (isLanIp(ip)) items.push({ label: t("Ponerle nombre a {name}…", { name: (hostOf(ip) && hostOf(ip).short) || ip }), action: () => openNickDialog(ip) });
     }
     items.push(
       "-",
-      { label: "Copiar origen", hint: ep(f, "src"), action: () => copy(ep(f, "src")) },
-      { label: "Copiar destino", hint: ep(f, "dst"), action: () => copy(ep(f, "dst")) },
-      { label: "Copiar como filtro", action: () => copy(exprConv(f)) },
+      { label: t("Copiar origen"), hint: ep(f, "src"), action: () => copy(ep(f, "src")) },
+      { label: t("Copiar destino"), hint: ep(f, "dst"), action: () => copy(ep(f, "dst")) },
+      { label: t("Copiar como filtro"), action: () => copy(exprConv(f)) },
     );
     return items;
   }
 
   function packetMenu(row) {
     const r = row.flow != null ? state.byIdx.get(row.flow) : null;
-    const items = [{ title: `Paquete n.º ${row.n}` }];
+    const items = [{ title: t("Paquete n.º {n}", { n: row.n }) }];
     if (r) {
-      items.push({ label: "Ir a su conversación", action: () => goToFlow(row.flow) }, "-");
+      items.push({ label: t("Ir a su conversación"), action: () => goToFlow(row.flow) }, "-");
       items.push(...flowMenu(r).filter((it) => it === "-" || it.expr || it.title));
     }
-    items.push("-", { label: "Copiar el resumen", action: () => copy(`${row.n}\t${row.src}\t${row.dst}\t${row.protocol}\t${row.len}\t${row.summary}`) });
+    items.push("-", { label: t("Copiar el resumen"), action: () => copy(`${row.n}\t${row.src}\t${row.dst}\t${row.protocol}\t${row.len}\t${row.summary}`) });
     return items;
   }
 
@@ -2113,7 +2182,7 @@
     state.seenStories = new Set(stories.map(storyKey));
     state.freshStories = new Map();
     state.unseen = 0;
-    if (data.truncated) toast(`Hay ${nf.format(data.total)} conversaciones: se muestran las primeras 10.000. Usa un filtro para acotar.`, "info");
+    if (data.truncated) toast(t("Hay {n} conversaciones: se muestran las primeras {max}. Usa un filtro para acotar.", { n: nf.format(data.total), max: nf.format(10000) }), "info");
     updateTitle();
     renderOverview();
     renderStories();
@@ -2122,7 +2191,7 @@
     const first = state.stories.length ? state.stories[0].flows[0] : visibleFlows()[0] && visibleFlows()[0].idx;
     if (first != null) select(first);
     else renderDetail();
-    clear($("#pk-detail")).append(h("p", { class: "placeholder" }, "Elige un paquete para ver sus capas y sus bytes."));
+    clear($("#pk-detail")).append(h("p", { class: "placeholder" }, t("Elige un paquete para ver sus capas y sus bytes.")));
     if (state.view !== "flows") renderView();
     if (liveRunning()) startPolling();
   }
@@ -2180,7 +2249,7 @@
       }
       renderStatus();
     } catch (err) {
-      if (err.status !== 400) toast(`No se pudo actualizar: ${err.message}`);
+      if (err.status !== 400) toast(t("No se pudo actualizar: {error}", { error: err.message }));
     }
   }
 
@@ -2226,8 +2295,8 @@
     } catch (err) {
       if (err.status === 400 && err.body) {
         const pos = err.body.pos;
-        const where = pos >= expr.length ? "al final" : `en la posición ${pos + 1} («${expr.slice(pos, pos + 12)}»)`;
-        setFilterError(`El filtro tiene un error ${where}: ${err.body.error}. Pulsa F1 para ver ejemplos.`);
+        const where = pos >= expr.length ? t("al final") : t("en la posición {pos} («{near}»)", { pos: pos + 1, near: expr.slice(pos, pos + 12) });
+        setFilterError(t("El filtro tiene un error {where}: {error}. Pulsa F1 para ver ejemplos.", { where, error: err.body.error }));
         const input = $("#filter-input");
         input.focus();
         input.setSelectionRange(Math.min(pos, expr.length), expr.length);
@@ -2237,13 +2306,13 @@
 
   async function openFile(file) {
     if (!file) return;
-    busy(`Analizando «${file.name}»…`);
+    busy(t("Analizando «{name}»…", { name: file.name }));
     try {
       stopPolling();
       await api(`/api/open?name=${encodeURIComponent(file.name)}`, { method: "POST", body: file });
       await loadAll();
     } catch (err) {
-      toast(`No se pudo abrir «${file.name}»: ${err.message}`);
+      toast(t("No se pudo abrir «{name}»: {error}", { name: file.name, error: err.message }));
     } finally {
       busy(null);
       $("#file-input").value = "";
@@ -2266,7 +2335,7 @@
   }
   const ifaceActive = (i) => (i.up || !("up" in i)) && i.connected !== false;
   function ifaceTitle(i) {
-    if (i.name === "any") return "Todas las interfaces a la vez";
+    if (i.name === "any") return t("Todas las interfaces a la vez");
     return i.description || i.name;
   }
   function ifaceLabel(name) {
@@ -2283,7 +2352,7 @@
     $("#live-replace").hidden = !(state.session && state.session.loaded && !liveRunning());
     $("#bpf-input").value = pref("bpf") || "";
     $("#live-watch").checked = state.watch;
-    list.append(h("p", { class: "muted" }, "Buscando interfaces…"));
+    list.append(h("p", { class: "muted" }, t("Buscando interfaces…")));
     if (!dlg.open) dlg.showModal();
     let ifaces;
     try {
@@ -2291,14 +2360,17 @@
     } catch (e) {
       clear(list);
       err.hidden = false;
-      err.textContent = `No se puede capturar en vivo en este equipo: ${e.message}`;
+      err.textContent = t("No se puede capturar en vivo en este equipo: {error}", { error: e.message });
       return;
     }
     state.ifaces = ifaces;
     clear(list);
     if (!ifaces.length) {
       err.hidden = false;
-      err.textContent = "No se encontró ninguna interfaz. En Windows instala Npcap (npcap.com). En Linux da el permiso de captura una vez: sudo setcap cap_net_raw,cap_net_admin=eip \"$(command -v socshark)\" (el instalador ya lo hace), o ejecútalo con sudo.";
+      err.textContent = t(
+        "No se encontró ninguna interfaz. En Windows instala Npcap (npcap.com). En Linux da el permiso de captura una vez: {cmd} (el instalador ya lo hace), o ejecútalo con sudo.",
+        { cmd: 'sudo setcap cap_net_raw,cap_net_admin=eip "$(command -v socshark)"' },
+      );
       return;
     }
     // Tu red primero (las conectadas y con dirección, arriba); después este
@@ -2315,11 +2387,11 @@
       radio.checked = i === pick;
       const off = !ifaceActive(i);
       const facts = [];
-      if (i.wireless) facts.push("inalámbrica");
-      if (off) facts.push("sin conexión");
-      else if (i.connected === true) facts.push("conectada");
+      if (i.wireless) facts.push(t("inalámbrica"));
+      if (off) facts.push(t("sin conexión"));
+      else if (i.connected === true) facts.push(t("conectada"));
       facts.push(...(i.addresses || []).slice(0, 2));
-      if (isLoopback(i)) facts.push("programas que hablan entre sí dentro del equipo");
+      if (isLoopback(i)) facts.push(t("programas que hablan entre sí dentro del equipo"));
       return h(
         "label",
         { class: `iface${off ? " off" : ""}`, title: i.name },
@@ -2329,15 +2401,15 @@
       );
     };
     const section = (title, items) => [h("div", { class: "iface-group" }, title), items.map(row)];
-    if (groups.main.length) list.append(...section("Tu red", groups.main).flat());
-    else list.append(h("p", { class: "muted" }, "No se ve ninguna tarjeta de red (Wi-Fi o cable). Revisa las de «Otras»."));
-    if (groups.loopback.length) list.append(...section("Este mismo equipo", groups.loopback).flat());
+    if (groups.main.length) list.append(...section(t("Tu red"), groups.main).flat());
+    else list.append(h("p", { class: "muted" }, t("No se ve ninguna tarjeta de red (Wi-Fi o cable). Revisa las de «Otras».")));
+    if (groups.loopback.length) list.append(...section(t("Este mismo equipo"), groups.loopback).flat());
     if (groups.other.length) {
       list.append(
         h(
           "details",
           { class: "iface-more", open: groups.other.includes(pick) ? true : null },
-          h("summary", null, `Otras interfaces (${groups.other.length}) · avanzado`),
+          h("summary", null, t("Otras interfaces ({n}) · avanzado", { n: groups.other.length })),
           groups.other.map(row),
         ),
       );
@@ -2378,9 +2450,9 @@
       stopPolling();
       const ses = await api("/api/live/stop", { method: "POST" });
       await refresh(ses);
-      toast("Captura detenida. Puedes revisarla con calma o guardarla como .pcap.", "info");
+      toast(t("Captura detenida. Puedes revisarla con calma o guardarla como .pcap."), "info");
     } catch (e) {
-      toast(`No se pudo detener: ${e.message}`);
+      toast(t("No se pudo detener: {error}", { error: e.message }));
     } finally {
       $("#stop-btn").disabled = false;
       renderToolbar();
@@ -2418,7 +2490,7 @@
     await refresh(ses);
     if (!ses.live.running) {
       stopPolling();
-      if (ses.live.error) toast(`La captura en vivo se detuvo: ${ses.live.error}`);
+      if (ses.live.error) toast(t("La captura en vivo se detuvo: {error}", { error: ses.live.error }));
     }
   }
 
@@ -2428,10 +2500,10 @@
   async function download(path, fallback) {
     let res;
     try {
-      res = await fetch(path, { headers: { "X-Socshark-Token": TOKEN } });
+      res = await fetch(path, { headers: { "X-Socshark-Token": TOKEN, "X-Socshark-Lang": LANG } });
       if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || `Error ${res.status}`);
     } catch (e) {
-      toast(`No se pudo descargar: ${e.message}`);
+      toast(t("No se pudo descargar: {error}", { error: e.message }));
       return null;
     }
     const blob = await res.blob();
@@ -2449,15 +2521,15 @@
   async function save() {
     if (!state.session || !state.session.loaded || !state.session.packets) return;
     const got = await download("/api/save.pcap", "captura.pcap");
-    if (got) toast(`Guardado «${got.name}» (${fmtBytes(got.size)}) en tu carpeta de descargas. Se abre también con Wireshark.`, "info");
+    if (got) toast(t("Guardado «{name}» ({size}) en tu carpeta de descargas. Se abre también con Wireshark.", { name: got.name, size: fmtBytes(got.size) }), "info");
   }
 
   async function report() {
     if (!state.session || !state.session.loaded) return;
     // Minutos respecto a UTC, para poner las horas como en tu reloj.
     const tz = -new Date().getTimezoneOffset();
-    const got = await download(`/api/report.html?tz=${tz}`, "informe.html");
-    if (got) toast(`Informe «${got.name}» guardado en tu carpeta de descargas: ábrelo con doble clic, imprímelo o envíalo.`, "info");
+    const got = await download(`/api/report.html?tz=${tz}`, t("informe.html"));
+    if (got) toast(t("Informe «{name}» guardado en tu carpeta de descargas: ábrelo con doble clic, imprímelo o envíalo.", { name: got.name }), "info");
   }
 
   // ------------------------------------------------------------ barra de herramientas y de estado
@@ -2477,36 +2549,36 @@
     const ses = state.session;
     const item = (...kids) => h("span", null, ...kids);
     if (!ses || !ses.loaded) {
-      bar.append(item("Sin captura · abre un archivo o empieza a capturar en vivo"), item(`soc-shark ${ses ? ses.version : ""}`));
+      bar.append(item(t("Sin captura · abre un archivo o empieza a capturar en vivo")), item(`soc-shark ${ses ? ses.version : ""}`));
       return;
     }
     const live = ses.live;
     if (live) {
       const name = ifaceLabel(live.iface);
       if (live.running) {
-        bar.append(item(h("i", { class: "live-dot" }), h("b", null, "En vivo"), ` · ${name} · ${fmtElapsed(Date.now() * 1000 - live.started_micros)}`));
+        bar.append(item(h("i", { class: "live-dot" }), h("b", null, t("En vivo")), ` · ${name} · ${fmtElapsed(Date.now() * 1000 - live.started_micros)}`));
       } else if (live.error) {
-        bar.append(item({ class: "err" }, h("i", { class: "live-dot off" }), `Captura detenida por un error · ${name}`));
+        bar.append(item({ class: "err" }, h("i", { class: "live-dot off" }), t("Captura detenida por un error · {name}", { name })));
       } else {
-        bar.append(item(h("i", { class: "live-dot off" }), `Captura en vivo detenida · ${name}`));
+        bar.append(item(h("i", { class: "live-dot off" }), t("Captura en vivo detenida · {name}", { name })));
       }
     } else {
-      bar.append(item("Archivo: ", h("b", null, ses.name)));
+      bar.append(item(t("Archivo: "), h("b", null, ses.name)));
     }
-    bar.append(item("Paquetes: ", h("b", null, nf.format(ses.packets))));
-    if (state.view === "packets") bar.append(item("Mostrados: ", h("b", null, nf.format(state.pk.total))));
-    else bar.append(item("Conversaciones: ", h("b", null, nf.format(state.visibleCount)), ` de ${nf.format(ses.flows)}`));
+    bar.append(item(t("Paquetes: "), h("b", null, nf.format(ses.packets))));
+    if (state.view === "packets") bar.append(item(t("Mostrados: "), h("b", null, nf.format(state.pk.total))));
+    else bar.append(item(t("Conversaciones: "), h("b", null, nf.format(state.visibleCount)), t(" de {total}", { total: nf.format(ses.flows) })));
     if (live && live.kernel_drop > 0) {
       bar.append(
         h(
           "span",
-          { class: "warn", title: "El equipo no dio abasto y el sistema descartó paquetes antes de que soc-shark los viera. Un filtro de captura ayuda." },
-          `Perdidos por el sistema: ${nf.format(live.kernel_drop)}`,
+          { class: "warn", title: t("El equipo no dio abasto y el sistema descartó paquetes antes de que soc-shark los viera. Un filtro de captura ayuda.") },
+          t("Perdidos por el sistema: {n}", { n: nf.format(live.kernel_drop) }),
         ),
       );
     }
-    if (live && live.bpf) bar.append(item("Captura: ", h("code", null, live.bpf)));
-    bar.append(item("Filtro: ", state.filter ? h("code", null, state.filter) : "ninguno"));
+    if (live && live.bpf) bar.append(item(t("Captura: "), h("code", null, live.bpf)));
+    bar.append(item(t("Filtro: "), state.filter ? h("code", null, state.filter) : t("ninguno")));
     bar.append(item(`soc-shark ${ses.version}`));
   }
 
@@ -2613,7 +2685,7 @@
   function setMode(mode) {
     state.mode = mode;
     pref("mode", mode);
-    for (const b of $$(".segmented[aria-label='Nivel de detalle'] button")) b.setAttribute("aria-pressed", String(b.dataset.mode === mode));
+    for (const b of $$("#mode-seg button")) b.setAttribute("aria-pressed", String(b.dataset.mode === mode));
     if (!COLUMNS[mode === "experto" ? "experto" : "simple"].some((c) => c.key === state.sort.key)) state.sort = { key: "time", dir: 1 };
     renderTable();
   }
@@ -2623,9 +2695,123 @@
   }
 
   function effectiveTheme() {
-    const t = document.documentElement.dataset.theme;
-    if (t) return t;
+    const theme = document.documentElement.dataset.theme;
+    if (theme) return theme;
     return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  }
+
+  // ------------------------------------------------------------ idioma
+
+  /** Textos y atributos fijos de index.html con su original en español. Se
+   *  recogen una vez al arrancar, antes de pintar nada, y al cambiar de
+   *  idioma se reescriben como texto (nodeValue / setAttribute). */
+  let staticTexts = null;
+  function collectStatic() {
+    const texts = [];
+    const attrs = [];
+    const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+      acceptNode: (n) =>
+        /\p{L}/u.test(n.nodeValue) && !n.parentElement.closest("code, kbd, svg, [data-i18n-skip]")
+          ? NodeFilter.FILTER_ACCEPT
+          : NodeFilter.FILTER_REJECT,
+    });
+    for (let n = walk.nextNode(); n; n = walk.nextNode()) {
+      const m = /^(\s*)([\s\S]*?)(\s*)$/.exec(n.nodeValue);
+      texts.push({ node: n, pre: m[1], key: m[2].replace(/\s+/g, " "), post: m[3] });
+    }
+    for (const el of document.body.querySelectorAll("[title], [aria-label], [placeholder]")) {
+      if (el.closest("[data-i18n-skip]")) continue;
+      for (const a of ["title", "aria-label", "placeholder"]) {
+        if (el.hasAttribute(a)) attrs.push({ el, a, key: el.getAttribute(a) });
+      }
+    }
+    staticTexts = { texts, attrs };
+  }
+
+  function applyStatic() {
+    if (!staticTexts) collectStatic();
+    for (const x of staticTexts.texts) x.node.nodeValue = x.pre + t(x.key) + x.post;
+    for (const x of staticTexts.attrs) x.el.setAttribute(x.a, t(x.key));
+  }
+
+  /** Fija el idioma: formatos, glosario, textos fijos y ayuda. */
+  function setLang(lang, { save = true } = {}) {
+    LANG = LANGS.includes(lang) ? lang : "es";
+    LOCALE = LANG === "en" ? "en-US" : "es-ES";
+    if (save) pref("lang", LANG);
+    nf = new Intl.NumberFormat(LOCALE);
+    compact = new Intl.NumberFormat(LOCALE, { notation: "compact", maximumFractionDigits: 1 });
+    document.documentElement.lang = LANG;
+    for (const b of $$("#lang-seg button")) b.setAttribute("aria-pressed", String(b.dataset.lang === LANG));
+    buildGlossary();
+    applyStatic();
+    buildHelp();
+  }
+
+  /** Idioma guardado o, la primera vez, el del navegador si es inglés. */
+  function initialLang() {
+    const saved = pref("lang");
+    if (LANGS.includes(saved)) return saved;
+    const nav = (navigator.languages && navigator.languages[0]) || navigator.language || "";
+    return /^en\b/i.test(nav) ? "en" : "es";
+  }
+
+  /** Cambia de idioma sin volver a abrir la captura: se repinta lo fijo y se
+   *  piden otra vez al servidor las frases (en la misma cola que los
+   *  refrescos en vivo, para que no se mezclen idiomas). */
+  function switchLang(lang) {
+    if (lang === LANG) return;
+    setLang(lang);
+    hideTip();
+    closeMenu();
+    updateTitle();
+    renderStatus();
+    if (!state.session || !state.session.loaded) return;
+    pendingRefreshes++;
+    state.refreshing = true;
+    refreshChain = refreshChain
+      .then(reloadTexts)
+      .finally(() => {
+        if (--pendingRefreshes === 0) state.refreshing = false;
+      });
+  }
+
+  async function reloadTexts() {
+    state.cache.clear();
+    state.pk.key = null; // la lista de paquetes se vuelve a pedir
+    try {
+      const old = state.stories;
+      const [stories] = await Promise.all([api("/api/stories"), loadFlows(state.filter), loadHosts()]);
+      // La clave de una historia lleva su título: se traduce la marca
+      // «Nuevo» y no se avisa de nada (no hay nada nuevo, solo otro idioma).
+      const sameStory = (a, b) => a.alert_id === b.alert_id && a.flows[0] === b.flows[0];
+      const fresh = new Map();
+      for (const st of stories) {
+        const before = old.find((o) => sameStory(o, st));
+        const when = before && state.freshStories.get(storyKey(before));
+        if (when) fresh.set(storyKey(st), when);
+      }
+      state.stories = stories;
+      state.seenStories = new Set(stories.map(storyKey));
+      state.freshStories = fresh;
+      if (state.storyFilter) {
+        const sf = state.storyFilter;
+        const again = stories.find((st) => st.alert_id === sf.alertId && st.flows.some((i) => sf.idx.has(i)));
+        if (again) sf.title = again.title;
+      }
+    } catch (err) {
+      toast(err.message);
+    }
+    renderToolbar();
+    renderOverview();
+    renderStories();
+    renderStoryChip();
+    if (state.view === "flows") renderTable();
+    renderDetail();
+    if (state.view !== "flows") renderView();
+    if (state.view === "packets" && state.pk.selRow) showGlobalPacket(state.pk.selRow);
+    else if (state.pk.sel == null) clear($("#pk-detail")).append(h("p", { class: "placeholder" }, t("Elige un paquete para ver sus capas y sus bytes.")));
+    renderStatus();
   }
 
   // ------------------------------------------------------------ ayuda
@@ -2661,14 +2847,14 @@
             },
             expr,
           ),
-          h("span", null, what),
+          h("span", null, t(what)),
         ),
       );
     }
     const gl = clear($("#glossary"));
-    for (const [t, d] of GLOSSARY) {
-      if (t.endsWith("s") && DEFS.has(t.slice(0, -1).toLowerCase())) continue; // plurales
-      gl.append(h("dt", null, t), h("dd", null, d));
+    for (const [w, d] of GLOSSARY) {
+      if (w.endsWith("s") && DEFS.has(w.slice(0, -1).toLowerCase())) continue; // plurales
+      gl.append(h("dt", null, w), h("dd", null, d));
     }
   }
 
@@ -2725,7 +2911,8 @@
       });
     }
     for (const b of $$(".views [role=tab]")) b.addEventListener("click", () => switchView(b.dataset.view));
-    for (const b of $$(".segmented[aria-label='Nivel de detalle'] button")) b.addEventListener("click", () => setMode(b.dataset.mode));
+    for (const b of $$("#lang-seg button")) b.addEventListener("click", () => switchLang(b.dataset.lang));
+    for (const b of $$("#mode-seg button")) b.addEventListener("click", () => setMode(b.dataset.mode));
     for (const b of $$(".tabs [role=tab]")) b.addEventListener("click", () => setTab(b.dataset.tab));
     $("#theme-btn").addEventListener("click", () => {
       const next = effectiveTheme() === "dark" ? "light" : "dark";
@@ -2868,7 +3055,7 @@
     const theme = pref("theme");
     if (theme === "light" || theme === "dark") document.documentElement.dataset.theme = theme;
     state.mode = pref("mode") === "experto" ? "experto" : "simple";
-    for (const b of $$(".segmented[aria-label='Nivel de detalle'] button")) b.setAttribute("aria-pressed", String(b.dataset.mode === state.mode));
+    for (const b of $$("#mode-seg button")) b.setAttribute("aria-pressed", String(b.dataset.mode === state.mode));
     state.showNoise = pref("noise") === "1";
     state.watch = pref("watch") === "1";
     $("#watch-btn").setAttribute("aria-pressed", String(state.watch));
@@ -2893,16 +3080,17 @@
   }
 
   async function start() {
+    collectStatic();
+    setLang(initialLang(), { save: false });
     restorePrefs();
     bind();
     initSplitters();
-    buildHelp();
     renderStatus();
-    busy("Cargando…");
+    busy(t("Cargando…"));
     try {
       await loadAll();
     } catch (err) {
-      toast(`No se pudo conectar con soc-shark: ${err.message}`);
+      toast(t("No se pudo conectar con soc-shark: {error}", { error: err.message }));
     } finally {
       busy(null);
     }

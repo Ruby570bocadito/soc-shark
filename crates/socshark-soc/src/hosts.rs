@@ -19,6 +19,7 @@ use socshark_core::Transport;
 use socshark_dissectors::{clean_name, parse_dhcp, parse_nbns, DissectedPacket};
 
 use crate::oui_data::{BRANDS, OUI};
+use crate::{tr, Lang};
 
 // ------------------------------------------------------------ fabricante
 
@@ -96,6 +97,56 @@ fn kind_from_service(service: &str) -> Option<&'static str> {
         "_workstation" => "el ordenador",
         _ => return None,
     })
+}
+
+/// Una palabra de este módulo (a qué suele corresponder una marca, qué es
+/// un equipo, su sistema) en el idioma dado. Los valores guardados son los
+/// españoles (la GUI decide iconos con ellos); esto es solo para mostrarlos.
+pub fn term_in(term: &'static str, lang: Lang) -> &'static str {
+    if lang == Lang::Es {
+        return term;
+    }
+    match term {
+        // A qué suele corresponder la marca (registro del IEEE).
+        "máquina virtual" => "virtual machine",
+        "contenedor" => "container",
+        "equipo de red" => "network device",
+        "router de operadora" => "ISP router",
+        "móvil" => "phone",
+        "tarjeta de red de ordenador" => "computer network card",
+        "dispositivo inteligente (enchufe, bombilla, sensor…)" => {
+            "smart device (plug, bulb, sensor…)"
+        }
+        "dispositivo inteligente" => "smart device",
+        "videoconsola" => "games console",
+        "cortafuegos" => "firewall",
+        "cámara de vigilancia" => "security camera",
+        "ordenador" => "computer",
+        "router o Wi-Fi" => "router or Wi-Fi",
+        "miniordenador" => "mini computer",
+        "impresora" => "printer",
+        "impresora o cámara" => "printer or camera",
+        "televisión" => "TV",
+        "domótica" => "home automation",
+        "disco en red (NAS)" => "network drive (NAS)",
+        "altavoz" => "speaker",
+        "pulsera" => "fitness band",
+        "iluminación inteligente" => "smart lighting",
+        "coche" => "car",
+        "Wi-Fi de empresa" => "business Wi-Fi",
+        // Qué es, por los servicios que anuncia.
+        "la impresora" => "the printer",
+        "el Chromecast" => "the Chromecast",
+        "el dispositivo AirPlay" => "the AirPlay device",
+        "el altavoz" => "the speaker",
+        "el dispositivo de domótica" => "the smart-home device",
+        "el Fire TV" => "the Fire TV",
+        "el ordenador" => "the computer",
+        // Sistema operativo según DHCP.
+        "Linux o Android" => "Linux or Android",
+        "Linux (dispositivo)" => "Linux (device)",
+        other => other,
+    }
 }
 
 // ------------------------------------------------------------ aprendizaje
@@ -450,46 +501,71 @@ impl HostInfo {
 
     /// Nombre corto para tablas y mapas (sin la IP).
     pub fn short(&self) -> Option<String> {
+        self.short_in(Lang::Es)
+    }
+
+    /// Como [`HostInfo::short`], en el idioma dado.
+    pub fn short_in(&self, lang: Lang) -> Option<String> {
         if let Some(n) = &self.nickname {
             return Some(n.clone());
         }
         match self.role {
             Some(Role::Router) => return Some("Router".into()),
-            Some(Role::ThisComputer) => return Some("Este ordenador".into()),
+            Some(Role::ThisComputer) => {
+                return Some(lang.pick("Este ordenador", "This computer").into())
+            }
             None => {}
         }
         if let Some(n) = &self.name {
             return Some(n.clone());
         }
-        let kind = self
-            .kind
-            .map(|k| capital(k.split_once(' ').map_or(k, |x| x.1)));
-        match (kind, self.vendor) {
-            (Some(k), Some(v)) => Some(format!("{k} {v}")),
-            (Some(k), None) => Some(k),
-            (None, Some(v)) => Some(format!("Equipo {v}")),
-            (None, None) => None,
+        // Sin el artículo: «la impresora» → «Impresora»; «the printer» → «printer».
+        let kind = self.kind.map(|k| {
+            let k = term_in(k, lang);
+            k.split_once(' ').map_or(k, |x| x.1)
+        });
+        match (lang, kind, self.vendor) {
+            (Lang::Es, Some(k), Some(v)) => Some(format!("{} {v}", capital(k))),
+            (Lang::En, Some(k), Some(v)) => Some(format!("{v} {k}")),
+            (_, Some(k), None) => Some(capital(k)),
+            (_, None, Some(v)) => Some(tr!(lang, "Equipo {v}", "{v} device")),
+            (_, None, None) => None,
         }
     }
 
     /// El equipo en una frase: «el equipo «iPhone-de-Ana» (192.168.1.30)».
     pub fn noun(&self) -> String {
+        self.noun_in(Lang::Es)
+    }
+
+    /// Como [`HostInfo::noun`], en el idioma dado: «the device “iPhone-de-Ana”
+    /// (192.168.1.30)».
+    pub fn noun_in(&self, lang: Lang) -> String {
         let ip = self.ip;
         if let Some(n) = &self.nickname {
-            return format!("«{n}» ({ip})");
+            return tr!(lang, "«{n}» ({ip})", "“{n}” ({ip})");
         }
         match self.role {
-            Some(Role::Router) => return format!("el router ({ip})"),
-            Some(Role::ThisComputer) => return format!("este ordenador ({ip})"),
+            Some(Role::Router) => return tr!(lang, "el router ({ip})", "the router ({ip})"),
+            Some(Role::ThisComputer) => {
+                return tr!(lang, "este ordenador ({ip})", "this computer ({ip})")
+            }
             None => {}
         }
-        match (&self.name, self.kind, self.vendor) {
-            (Some(n), Some(k), _) => format!("{k} «{n}» ({ip})"),
-            (Some(n), None, _) => format!("el equipo «{n}» ({ip})"),
-            (None, Some(k), Some(v)) => format!("{k} {v} ({ip})"),
-            (None, Some(k), None) => format!("{k} {ip}"),
-            (None, None, Some(v)) => format!("el equipo {v} ({ip})"),
-            (None, None, None) => crate::explain::host_name(ip),
+        let kind = self.kind.map(|k| term_in(k, lang));
+        match (lang, &self.name, kind, self.vendor) {
+            (Lang::Es, Some(n), Some(k), _) => format!("{k} «{n}» ({ip})"),
+            (Lang::En, Some(n), Some(k), _) => format!("{k} “{n}” ({ip})"),
+            (_, Some(n), None, _) => tr!(lang, "el equipo «{n}» ({ip})", "the device “{n}” ({ip})"),
+            (Lang::Es, None, Some(k), Some(v)) => format!("{k} {v} ({ip})"),
+            // «the printer» + HP → «the HP printer».
+            (Lang::En, None, Some(k), Some(v)) => match k.split_once(' ') {
+                Some((art, rest)) => format!("{art} {v} {rest} ({ip})"),
+                None => format!("{k} {v} ({ip})"),
+            },
+            (_, None, Some(k), None) => format!("{k} {ip}"),
+            (_, None, None, Some(v)) => tr!(lang, "el equipo {v} ({ip})", "the {v} device ({ip})"),
+            (_, None, None, None) => crate::explain::host_name_in(ip, lang),
         }
     }
 }
@@ -536,9 +612,14 @@ impl HostDirectory {
 
     /// El equipo en una frase; sin datos, como siempre («el equipo 192.168.1.30»).
     pub fn host_name(&self, ip: IpAddr) -> String {
+        self.host_name_in(ip, Lang::Es)
+    }
+
+    /// Como [`HostDirectory::host_name`], en el idioma dado.
+    pub fn host_name_in(&self, ip: IpAddr, lang: Lang) -> String {
         match self.get(ip) {
-            Some(h) => h.noun(),
-            None => crate::explain::host_name(ip),
+            Some(h) => h.noun_in(lang),
+            None => crate::explain::host_name_in(ip, lang),
         }
     }
 
@@ -711,5 +792,49 @@ mod tests {
         );
         assert!(HostDirectory::valid_key("mac:zz").is_none());
         assert!(HostDirectory::valid_key("ip:../etc").is_none());
+    }
+
+    #[test]
+    fn quien_es_quien_en_ingles() {
+        // Todas las pistas del registro de fabricantes tienen traducción.
+        for (_, hint) in BRANDS {
+            if let Some(h) = hint {
+                assert!(*h == "router" || term_in(h, Lang::En) != *h, "{h}");
+            }
+        }
+        let mut book = HostBook::new();
+        feed(&mut book, &tg::home_network_frames());
+        let dir = book.directory();
+        let phone = dir.get(tg::HOME_PHONE_IP.parse().unwrap()).unwrap();
+        assert_eq!(
+            phone.noun_in(Lang::En),
+            format!("the device “iPhone-de-Ana” ({})", tg::HOME_PHONE_IP)
+        );
+        let printer = dir.get(tg::HOME_PRINTER_IP.parse().unwrap()).unwrap();
+        assert!(
+            printer
+                .noun_in(Lang::En)
+                .starts_with("the printer “HP OfficeJet"),
+            "{}",
+            printer.noun_in(Lang::En)
+        );
+        let router = dir.get(tg::HOME_ROUTER_IP.parse().unwrap()).unwrap();
+        assert_eq!(
+            router.noun_in(Lang::En),
+            format!("the router ({})", tg::HOME_ROUTER_IP)
+        );
+        assert_eq!(
+            dir.host_name_in("8.8.8.8".parse().unwrap(), Lang::En),
+            "the Google DNS (8.8.8.8)"
+        );
+        // Sin nombre: marca y tipo en el orden del inglés.
+        let mut bare = HostInfo::bare("192.168.1.77".parse().unwrap(), None);
+        bare.kind = Some("la impresora");
+        bare.vendor = Some("HP");
+        assert_eq!(bare.noun_in(Lang::En), "the HP printer (192.168.1.77)");
+        assert_eq!(bare.short_in(Lang::En).as_deref(), Some("HP printer"));
+        assert_eq!(bare.short().as_deref(), Some("Impresora HP"));
+        bare.kind = None;
+        assert_eq!(bare.short_in(Lang::En).as_deref(), Some("HP device"));
     }
 }

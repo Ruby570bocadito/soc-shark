@@ -17,10 +17,11 @@ use socshark_core::config::PipelineConfig;
 use socshark_core::{EnrichedFlow, L7Protocol};
 use socshark_dissectors::DissectorPipeline;
 use socshark_soc::explain::{
-    explain_with, stories_with, well_known_name, Explanation, Level, Story,
+    explain_with, stories_with, well_known_name_in, Explanation, Level, Story,
 };
-use socshark_soc::hosts::{HostBook, HostDirectory};
+use socshark_soc::hosts::{term_in, HostBook, HostDirectory};
 use socshark_soc::summarize::fmt_bytes;
+use socshark_soc::{tr, Lang};
 
 use crate::pipeline::run_capture;
 
@@ -36,6 +37,9 @@ pub struct ReportInput<'a> {
     pub tz_offset_minutes: i32,
     /// Cuándo se genera (µs epoch).
     pub generated_micros: u64,
+    /// Idioma del informe (las frases de `explanations` y `stories` ya
+    /// vienen en él).
+    pub lang: Lang,
 }
 
 /// Escapa texto para HTML (contenido y atributos).
@@ -57,9 +61,17 @@ pub fn esc(s: &str) -> String {
 const MONTHS: [&str; 12] = [
     "ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic",
 ];
+const MONTHS_EN: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
 
 /// Fecha y hora legibles (`14 nov 2023, 22:13`) con el desfase dado.
 pub fn fmt_date(micros: u64, tz_offset_minutes: i32) -> String {
+    fmt_date_in(micros, tz_offset_minutes, Lang::Es)
+}
+
+/// Como [`fmt_date`], en el idioma dado (`14 Nov 2023, 22:13`).
+pub fn fmt_date_in(micros: u64, tz_offset_minutes: i32, lang: Lang) -> String {
     let secs = (micros / 1_000_000) as i64 + i64::from(tz_offset_minutes) * 60;
     let days = secs.div_euclid(86_400);
     let rem = secs.rem_euclid(86_400);
@@ -75,35 +87,38 @@ pub fn fmt_date(micros: u64, tz_offset_minutes: i32) -> String {
     let year = yoe + era * 400 + i64::from(month <= 2);
     format!(
         "{day} {} {year}, {:02}:{:02}",
-        MONTHS[(month - 1) as usize],
+        lang.pick(MONTHS, MONTHS_EN)[(month - 1) as usize],
         rem / 3600,
         (rem % 3600) / 60
     )
 }
 
-fn fmt_duration(micros: u64) -> String {
+fn fmt_duration(micros: u64, lang: Lang) -> String {
     let s = micros / 1_000_000;
     match s {
-        0 => "menos de un segundo".into(),
-        1..=119 => format!("{s} segundos"),
-        120..=7_199 => format!("{} minutos", s / 60),
+        0 => lang
+            .pick("menos de un segundo", "less than a second")
+            .into(),
+        1..=119 => tr!(lang, "{s} segundos", "{s} seconds"),
+        120..=7_199 => tr!(lang, "{} minutos", "{} minutes", s / 60),
         _ => format!("{} h {} min", s / 3600, (s % 3600) / 60),
     }
 }
 
 // Iconos en SVG (los mismos que la ventana): centrados en cualquier fuente.
-fn level_badge(level: Level) -> &'static str {
-    match level {
-        Level::Peligro => {
-            r#"<span class="badge peligro"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7.6 7.6 8.8 8.8m0-8.8-8.8 8.8"/></svg>Peligro</span>"#
-        }
-        Level::Raro => {
-            r#"<span class="badge raro"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 6.2v7.6M12 18h0"/></svg>Raro</span>"#
-        }
-        Level::Ok => {
-            r#"<span class="badge ok"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6.5 12.5 3.6 3.6 7.4-8.2"/></svg>Normal</span>"#
-        }
-    }
+fn level_badge(level: Level, lang: Lang) -> String {
+    let (cls, path, label) = match level {
+        Level::Peligro => (
+            "peligro",
+            "m7.6 7.6 8.8 8.8m0-8.8-8.8 8.8",
+            lang.pick("Peligro", "Danger"),
+        ),
+        Level::Raro => ("raro", "M12 6.2v7.6M12 18h0", lang.pick("Raro", "Unusual")),
+        Level::Ok => ("ok", "m6.5 12.5 3.6 3.6 7.4-8.2", "Normal"),
+    };
+    format!(
+        r#"<span class="badge {cls}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="{path}"/></svg>{label}</span>"#
+    )
 }
 
 /// Logo de soc-shark (el de la ventana), en línea: el informe va solo.
@@ -186,6 +201,9 @@ ul.list { padding-left: 20px; } ul.list li { margin: 4px 0; overflow-wrap: anywh
 /// Escribe el informe completo.
 pub fn render(r: &ReportInput) -> String {
     let flows = r.flows;
+    let lang = r.lang;
+    let l = |es: &'static str, en: &'static str| lang.pick(es, en);
+    let badge = |lv: Level| level_badge(lv, lang);
     // El veredicto cuenta historias: un escaneo de 14 puertos es una cosa.
     let count = |lv: Level| r.stories.iter().filter(|s| s.level == lv).count();
     let (peligros, raros) = (count(Level::Peligro), count(Level::Raro));
@@ -213,7 +231,7 @@ pub fn render(r: &ReportInput) -> String {
             };
             let t = net.entry(f.dst_ip).or_default();
             if t.name.is_none() {
-                t.name = named.or_else(|| well_known_name(f.dst_ip).map(str::to_string));
+                t.name = named.or_else(|| well_known_name_in(f.dst_ip, lang).map(str::to_string));
             }
         }
         let p = if f.l7_protocol == L7Protocol::Unknown {
@@ -227,66 +245,96 @@ pub fn render(r: &ReportInput) -> String {
     }
 
     let mut h = String::with_capacity(32 * 1024);
+    let date = |micros: u64| fmt_date_in(micros, r.tz_offset_minutes, lang);
     let _ = write!(
         h,
-        "<!doctype html>\n<html lang=\"es\">\n<head>\n<meta charset=\"utf-8\">\n\
+        "<!doctype html>\n<html lang=\"{}\">\n<head>\n<meta charset=\"utf-8\">\n\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
          <meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'\">\n\
-         <title>Informe de red · {}</title>\n<style>{STYLE}</style>\n</head>\n<body>\n<main>\n",
+         <title>{} · {}</title>\n<style>{STYLE}</style>\n</head>\n<body>\n<main>\n",
+        lang.code(),
+        l("Informe de red", "Network report"),
         esc(r.name)
     );
     let _ = write!(
         h,
         "<div class=\"brand\">{LOGO}<span>soc-<b>shark</b></span></div>\n\
-         <h1>Informe de tu red</h1>\n<p class=\"sub\">Captura <b>{}</b>",
+         <h1>{}</h1>\n<p class=\"sub\">{} <b>{}</b>",
+        l("Informe de tu red", "Your network report"),
+        l("Captura", "Capture"),
         esc(r.name)
     );
     if let (Some(a), Some(b)) = (first, last) {
         let _ = write!(
             h,
-            " · del {} al {} ({})",
-            fmt_date(a, r.tz_offset_minutes),
-            fmt_date(b, r.tz_offset_minutes),
-            fmt_duration(b.saturating_sub(a))
+            "{}",
+            tr!(
+                lang,
+                " · del {} al {} ({})",
+                " · from {} to {} ({})",
+                date(a),
+                date(b),
+                fmt_duration(b.saturating_sub(a), lang)
+            )
         );
     }
     let _ = writeln!(
         h,
-        " · generado el {}</p>",
-        fmt_date(r.generated_micros, r.tz_offset_minutes)
+        "{}</p>",
+        tr!(
+            lang,
+            " · generado el {}",
+            " · generated on {}",
+            date(r.generated_micros)
+        )
     );
 
     let (cls, title, text) = if peligros > 0 {
+        let what = match (lang, peligros) {
+            (Lang::Es, 1) => "1 cosa peligrosa".to_string(),
+            (Lang::Es, n) => format!("{n} cosas peligrosas"),
+            (Lang::En, 1) => "1 dangerous thing".to_string(),
+            (Lang::En, n) => format!("{n} dangerous things"),
+        };
         (
             "peligro",
-            format!(
-                "Hay {} que revisar",
-                if peligros == 1 {
-                    "1 cosa peligrosa".to_string()
-                } else {
-                    format!("{peligros} cosas peligrosas")
-                }
+            tr!(lang, "Hay {what} que revisar", "There are {what} to check"),
+            l(
+                "Lee abajo «Lo que ha pasado»: cada punto dice qué pasó y qué hacer.",
+                "Read “What happened” below: each item says what happened and what to do.",
             ),
-            "Lee abajo «Lo que ha pasado»: cada punto dice qué pasó y qué hacer.",
         )
     } else if raros > 0 {
+        let what = match (lang, raros) {
+            (Lang::Es, 1) => "1 cosa rara".to_string(),
+            (Lang::Es, n) => format!("{n} cosas raras"),
+            (Lang::En, 1) => "1 unusual thing".to_string(),
+            (Lang::En, n) => format!("{n} unusual things"),
+        };
         (
             "raro",
-            format!(
-                "Nada grave, pero hay {} que conviene mirar",
-                if raros == 1 {
-                    "1 cosa rara".to_string()
-                } else {
-                    format!("{raros} cosas raras")
-                }
+            tr!(
+                lang,
+                "Nada grave, pero hay {what} que conviene mirar",
+                "Nothing serious, but there are {what} worth a look"
             ),
-            "No tiene por qué ser un problema; abajo se explica cada una.",
+            l(
+                "No tiene por qué ser un problema; abajo se explica cada una.",
+                "It is not necessarily a problem; each one is explained below.",
+            ),
         )
     } else {
         (
             "ok",
-            "No hemos visto nada preocupante".to_string(),
-            "Todo lo que pasó por la red parece normal.",
+            l(
+                "No hemos visto nada preocupante",
+                "We have not seen anything worrying",
+            )
+            .to_string(),
+            l(
+                "Todo lo que pasó por la red parece normal.",
+                "Everything that went through the network looks normal.",
+            ),
         )
     };
     let _ = writeln!(
@@ -298,24 +346,33 @@ pub fn render(r: &ReportInput) -> String {
     let _ = writeln!(
         h,
         "<div class=\"facts\">\
-         <div class=\"fact\"><span class=\"n\">{}</span><span class=\"l\">conversaciones</span></div>\
-         <div class=\"fact\"><span class=\"n\">{}</span><span class=\"l\">equipos de tu red</span></div>\
-         <div class=\"fact\"><span class=\"n\">{}</span><span class=\"l\">sitios de Internet</span></div>\
-         <div class=\"fact\"><span class=\"n\">{}</span><span class=\"l\">paquetes</span></div>\
-         <div class=\"fact\"><span class=\"n\">{}</span><span class=\"l\">datos</span></div></div>",
+         <div class=\"fact\"><span class=\"n\">{}</span><span class=\"l\">{}</span></div>\
+         <div class=\"fact\"><span class=\"n\">{}</span><span class=\"l\">{}</span></div>\
+         <div class=\"fact\"><span class=\"n\">{}</span><span class=\"l\">{}</span></div>\
+         <div class=\"fact\"><span class=\"n\">{}</span><span class=\"l\">{}</span></div>\
+         <div class=\"fact\"><span class=\"n\">{}</span><span class=\"l\">{}</span></div></div>",
         flows.len(),
+        l("conversaciones", "conversations"),
         lan.len(),
+        l("equipos de tu red", "devices on your network"),
         net.len(),
+        l("sitios de Internet", "Internet sites"),
         r.packets,
-        esc(&fmt_bytes(total_bytes))
+        l("paquetes", "packets"),
+        esc(&fmt_bytes(total_bytes)),
+        l("datos", "data"),
     );
 
     // Historias.
-    let _ = writeln!(h, "<h2>Lo que ha pasado</h2>");
+    let _ = writeln!(h, "<h2>{}</h2>", l("Lo que ha pasado", "What happened"));
     if r.stories.is_empty() {
         let _ = writeln!(
             h,
-            "<p class=\"muted\">Ninguna alerta: no hay nada que contar.</p>"
+            "<p class=\"muted\">{}</p>",
+            l(
+                "Ninguna alerta: no hay nada que contar.",
+                "No alerts: there is nothing to report.",
+            )
         );
     }
     for st in r.stories {
@@ -343,38 +400,55 @@ pub fn render(r: &ReportInput) -> String {
         let _ = writeln!(
             h,
             "<div class=\"story {cls}\"><h3>{} {}</h3><p>{}</p>\
-             <p class=\"todo\"><b>Qué hacer</b>{}</p><p class=\"sub\">{} {}{mitre}</p></div>",
-            level_badge(st.level),
+             <p class=\"todo\"><b>{}</b>{}</p><p class=\"sub\">{} {}{mitre}</p></div>",
+            badge(st.level),
             esc(&st.title),
             esc(&st.story),
+            l("Qué hacer", "What to do"),
             esc(&st.action),
             st.flows.len(),
             if st.flows.len() == 1 {
-                "conversación"
+                l("conversación", "conversation")
             } else {
-                "conversaciones"
+                l("conversaciones", "conversations")
             },
         );
     }
 
     // Equipos de la red.
-    let _ = writeln!(h, "<h2>Equipos de tu red</h2>");
+    let _ = writeln!(
+        h,
+        "<h2>{}</h2>",
+        l("Equipos de tu red", "Devices on your network")
+    );
     let mut lan: Vec<(IpAddr, Traffic)> = lan.into_iter().collect();
     lan.sort_by(|a, b| b.1.bytes.cmp(&a.1.bytes).then(a.0.cmp(&b.0)));
     if lan.is_empty() {
         let _ = writeln!(
             h,
-            "<p class=\"muted\">No aparece ningún equipo de la red local.</p>"
+            "<p class=\"muted\">{}</p>",
+            l(
+                "No aparece ningún equipo de la red local.",
+                "No device from the local network appears.",
+            )
         );
     } else {
         let _ = writeln!(
             h,
-            "<table><thead><tr><th>Equipo</th><th>Dirección</th><th>Marca</th><th>Sistema</th>\
-             <th class=\"num\">Conversaciones</th><th class=\"num\">Datos</th><th></th></tr></thead><tbody>"
+            "<table><thead><tr><th>{}</th><th>{}</th><th>{}</th><th>{}</th>\
+             <th class=\"num\">{}</th><th class=\"num\">{}</th><th></th></tr></thead><tbody>",
+            l("Equipo", "Device"),
+            l("Dirección", "Address"),
+            l("Marca", "Brand"),
+            l("Sistema", "System"),
+            l("Conversaciones", "Conversations"),
+            l("Datos", "Data"),
         );
         for (ip, t) in &lan {
             let host = r.hosts.get(*ip);
-            let name = host.and_then(|x| x.short()).unwrap_or_else(|| "—".into());
+            let name = host
+                .and_then(|x| x.short_in(lang))
+                .unwrap_or_else(|| "—".into());
             let mac = host
                 .and_then(|x| x.mac.clone())
                 .map(|m| format!("<div class=\"sub mono\">MAC {}</div>", esc(&m)))
@@ -382,16 +456,27 @@ pub fn render(r: &ReportInput) -> String {
             let vendor = host
                 .and_then(|x| {
                     x.vendor.map(|v| match x.vendor_hint {
-                        Some(hint) => format!("{v} (suele ser {hint})"),
+                        Some(hint) => {
+                            let hint = term_in(hint, lang);
+                            tr!(lang, "{v} (suele ser {hint})", "{v} (usually a {hint})")
+                        }
                         None => v.to_string(),
                     })
                 })
                 .or_else(|| {
-                    host.filter(|x| x.random_mac)
-                        .map(|_| "MAC aleatoria (móvil o portátil)".to_string())
+                    host.filter(|x| x.random_mac).map(|_| {
+                        l(
+                            "MAC aleatoria (móvil o portátil)",
+                            "random MAC (phone or laptop)",
+                        )
+                        .to_string()
+                    })
                 })
                 .unwrap_or_default();
-            let os = host.and_then(|x| x.os).unwrap_or("");
+            let os = host
+                .and_then(|x| x.os)
+                .map(|o| term_in(o, lang))
+                .unwrap_or("");
             let _ = writeln!(
                 h,
                 "<tr><td><b>{}</b></td><td class=\"mono\">{}{mac}</td><td>{}</td><td>{}</td>\
@@ -404,27 +489,42 @@ pub fn render(r: &ReportInput) -> String {
                 esc(&fmt_bytes(t.bytes)),
                 t.level
                     .filter(|l| *l > Level::Ok)
-                    .map(level_badge)
-                    .unwrap_or(""),
+                    .map(badge)
+                    .unwrap_or_default(),
             );
         }
         let _ = writeln!(h, "</tbody></table>");
     }
 
     // Internet.
-    let _ = writeln!(h, "<h2>Con quién habló en Internet</h2>");
+    let _ = writeln!(
+        h,
+        "<h2>{}</h2>",
+        l(
+            "Con quién habló en Internet",
+            "Who it talked to on the Internet"
+        )
+    );
     let mut net: Vec<(IpAddr, Traffic)> = net.into_iter().collect();
     net.sort_by(|a, b| b.1.bytes.cmp(&a.1.bytes).then(a.0.cmp(&b.0)));
     if net.is_empty() {
         let _ = writeln!(
             h,
-            "<p class=\"muted\">Ninguna conversación salió a Internet.</p>"
+            "<p class=\"muted\">{}</p>",
+            l(
+                "Ninguna conversación salió a Internet.",
+                "No conversation went out to the Internet.",
+            )
         );
     } else {
         let _ = writeln!(
             h,
-            "<table><thead><tr><th>Sitio</th><th>Dirección</th><th class=\"num\">Conversaciones</th>\
-             <th class=\"num\">Datos</th><th></th></tr></thead><tbody>"
+            "<table><thead><tr><th>{}</th><th>{}</th><th class=\"num\">{}</th>\
+             <th class=\"num\">{}</th><th></th></tr></thead><tbody>",
+            l("Sitio", "Site"),
+            l("Dirección", "Address"),
+            l("Conversaciones", "Conversations"),
+            l("Datos", "Data"),
         );
         for (ip, t) in net.iter().take(25) {
             let _ = writeln!(
@@ -434,23 +534,39 @@ pub fn render(r: &ReportInput) -> String {
                 esc(&ip.to_string()),
                 t.flows,
                 esc(&fmt_bytes(t.bytes)),
-                t.level.filter(|l| *l > Level::Ok).map(level_badge).unwrap_or(""),
+                t.level.filter(|l| *l > Level::Ok).map(badge).unwrap_or_default(),
             );
         }
         let _ = writeln!(h, "</tbody></table>");
         if net.len() > 25 {
-            let _ = writeln!(h, "<p class=\"sub\">Y {} sitios más.</p>", net.len() - 25);
+            let _ = writeln!(
+                h,
+                "<p class=\"sub\">{}</p>",
+                tr!(
+                    lang,
+                    "Y {} sitios más.",
+                    "And {} more sites.",
+                    net.len() - 25
+                )
+            );
         }
     }
 
     // Protocolos.
-    let _ = writeln!(h, "<h2>Qué tipo de tráfico hubo</h2>");
+    let _ = writeln!(
+        h,
+        "<h2>{}</h2>",
+        l("Qué tipo de tráfico hubo", "What kind of traffic there was")
+    );
     let mut protos: Vec<(&str, (u64, u64))> = protos.into_iter().collect();
     protos.sort_by(|a, b| b.1 .1.cmp(&a.1 .1).then(a.0.cmp(b.0)));
     let _ = writeln!(
         h,
-        "<table><thead><tr><th>Protocolo</th><th class=\"num\">Conversaciones</th>\
-         <th class=\"num\">Datos</th><th class=\"num\">%</th></tr></thead><tbody>"
+        "<table><thead><tr><th>{}</th><th class=\"num\">{}</th>\
+         <th class=\"num\">{}</th><th class=\"num\">%</th></tr></thead><tbody>",
+        l("Protocolo", "Protocol"),
+        l("Conversaciones", "Conversations"),
+        l("Datos", "Data"),
     );
     for (name, (n, bytes)) in &protos {
         let pct = (bytes * 100).checked_div(total_bytes).unwrap_or(0);
@@ -472,23 +588,38 @@ pub fn render(r: &ReportInput) -> String {
     if !notable.is_empty() {
         let _ = writeln!(
             h,
-            "<h2>Conversaciones que conviene mirar</h2><ul class=\"list\">"
+            "<h2>{}</h2><ul class=\"list\">",
+            l(
+                "Conversaciones que conviene mirar",
+                "Conversations worth a look"
+            )
         );
         for e in notable.iter().take(60) {
-            let _ = writeln!(h, "<li>{} {}</li>", level_badge(e.level), esc(&e.headline));
+            let _ = writeln!(h, "<li>{} {}</li>", badge(e.level), esc(&e.headline));
         }
         let _ = writeln!(h, "</ul>");
         if notable.len() > 60 {
-            let _ = writeln!(h, "<p class=\"sub\">Y {} más.</p>", notable.len() - 60);
+            let _ = writeln!(
+                h,
+                "<p class=\"sub\">{}</p>",
+                tr!(lang, "Y {} más.", "And {} more.", notable.len() - 60)
+            );
         }
     }
 
+    let version = env!("CARGO_PKG_VERSION");
     let _ = write!(
         h,
-        "<footer>Informe generado por soc-shark {}. Describe solo lo que se vio en esta captura: \
-         lo que no pasó por el punto donde se capturó no aparece. Los nombres de los equipos son \
-         los que ellos mismos anuncian y podrían no ser ciertos.</footer>\n</main>\n</body>\n</html>\n",
-        env!("CARGO_PKG_VERSION")
+        "<footer>{}</footer>\n</main>\n</body>\n</html>\n",
+        tr!(
+            lang,
+            "Informe generado por soc-shark {version}. Describe solo lo que se vio en esta captura: \
+             lo que no pasó por el punto donde se capturó no aparece. Los nombres de los equipos son \
+             los que ellos mismos anuncian y podrían no ser ciertos.",
+            "Report generated by soc-shark {version}. It only describes what was seen in this capture: \
+             whatever did not pass the point where it was captured does not appear. Device names are \
+             the ones the devices announce themselves and might not be true."
+        )
     );
     h
 }
@@ -532,6 +663,7 @@ pub fn from_file(path: &Path, cfg: &PipelineConfig, tz_offset_minutes: i32) -> R
         packets: out.stats.total_packets,
         tz_offset_minutes,
         generated_micros: now,
+        lang: Lang::Es,
     }))
 }
 
@@ -647,6 +779,7 @@ mod tests {
             packets: 0,
             tz_offset_minutes: 0,
             generated_micros: 0,
+            lang: Lang::Es,
         });
         assert!(!html.contains("<i>trampa"));
         assert!(html.contains("&lt;i&gt;trampa.pcap"));

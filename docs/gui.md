@@ -211,14 +211,19 @@ historial de filtros, interfaz, filtro de captura y avisos.
 Decisión completa en [ADR-013](decisions.md). En resumen:
 
 - **Página local servida por el propio binario**, sin dependencias nuevas:
-  un servidor HTTP/1.1 mínimo (`socshark-cli::gui::http`) y tres archivos
-  (`crates/socshark-cli/assets/gui/`: `index.html`, `app.css`, `app.js`)
+  un servidor HTTP/1.1 mínimo (`socshark-cli::gui::http`) y cuatro archivos
+  (`crates/socshark-cli/assets/gui/`: `index.html`, `app.css`, `app.js`,
+  `i18n.js`)
   incrustados con `include_str!`. Sin frameworks ni CDN: funciona sin
   Internet.
 - **El lenguaje claro vive en el motor**, no en la interfaz:
   `socshark-soc::explain` produce el semáforo, las frases, la explicación de
   cada alerta y las historias agrupadas. Cualquier interfaz (CLI, TUI, una
   futura app Tauri) puede reutilizarlo.
+- **Dos idiomas** ([ADR-015](decisions.md)): el selector ES/EN de la barra
+  cambia toda la ventana sin volver a abrir la captura. Los textos de la
+  página están en `i18n.js` (clave = el texto español) y las frases del
+  motor llegan ya traducidas: cada petición lleva `X-Socshark-Lang`.
 - **Índice de paquetes** (`socshark-cli::gui::packets`): tras el pipeline
   de flujos se relee la captura y cada trama se asocia a su conversación con
   la misma clave canónica del agregador (`FlowKey`). Al pedir un paquete se
@@ -228,7 +233,9 @@ Decisión completa en [ADR-013](decisions.md). En resumen:
 
 ### API local
 
-Todas las rutas `/api/*` exigen la cabecera `X-Socshark-Token`.
+Todas las rutas `/api/*` exigen la cabecera `X-Socshark-Token`. El idioma
+de los textos va en `X-Socshark-Lang: en` (o `?lang=en`); sin ella, español.
+Los datos son los mismos en los dos idiomas.
 
 | Ruta | Respuesta |
 |---|---|
@@ -275,7 +282,7 @@ ruta HTTP o un nombre de archivo pueden ser maliciosos. Por eso:
   en ninguna vista.
 - Ni siquiera estilos en línea: la CSP no admite `style="…"`; la posición
   de las filas y el ancho de las barras se fijan por CSSOM.
-- Cabeceras estrictas: CSP `default-src 'none'` (solo los tres archivos
+- Cabeceras estrictas: CSP `default-src 'none'` (solo los cuatro archivos
   propios), `X-Frame-Options: DENY`, `nosniff`, `no-store`, `no-referrer`.
 - Límites: cabeceras 16 KiB, captura subida 512 MiB, tiempo de lectura 30 s.
   Endurecimiento en curso: el cuerpo solo se lee tras validar `Host` y

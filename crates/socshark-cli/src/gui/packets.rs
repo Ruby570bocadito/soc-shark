@@ -19,9 +19,10 @@ use socshark_core::{
 };
 use socshark_dissectors::{DissectedPacket, DissectorPipeline};
 use socshark_flow::FlowKey;
-use socshark_soc::explain::{host_name, port_label};
+use socshark_soc::explain::{host_name_in, port_label_in};
 use socshark_soc::hosts::HostBook;
 use socshark_soc::summarize::fmt_bytes;
+use socshark_soc::{tr, Lang};
 
 /// Cota de bytes de tramas que se guardan en memoria. En un archivo, por
 /// encima se indexan las tramas sin contenido (la lista sigue, el detalle
@@ -180,7 +181,7 @@ impl PacketIndex {
     }
 
     /// Lista de paquetes de un flujo con una frase por paquete.
-    pub fn list(&self, flow: &EnrichedFlow) -> (Vec<PacketRow>, bool) {
+    pub fn list(&self, flow: &EnrichedFlow, lang: Lang) -> (Vec<PacketRow>, bool) {
         let idx = self.flow_packets(&flow.flow_id.0);
         let t0 = idx
             .first()
@@ -199,7 +200,7 @@ impl PacketIndex {
                     rel_micros: pkt.ts_micros.saturating_sub(t0),
                     len: pkt.orig_len as usize,
                     outbound: dp.as_ref().is_some_and(|d| is_outbound(d, flow)),
-                    summary: summary_or_reason(dp.as_ref(), pkt),
+                    summary: summary_or_reason(dp.as_ref(), pkt, lang),
                 })
             })
             .collect();
@@ -214,6 +215,7 @@ impl PacketIndex {
         offset: usize,
         limit: usize,
         keep: Option<&dyn Fn(&str) -> bool>,
+        lang: Lang,
     ) -> (Vec<GlobalRow>, usize) {
         let t0 = self.packets.front().map(|p| p.ts_micros).unwrap_or(0);
         // El filtro se evalúa una vez por flujo, no por paquete.
@@ -240,7 +242,7 @@ impl PacketIndex {
                     dst,
                     protocol: dp.as_ref().map(protocol_name).unwrap_or_default(),
                     len: pkt.orig_len as usize,
-                    summary: summary_or_reason(dp.as_ref(), pkt),
+                    summary: summary_or_reason(dp.as_ref(), pkt, lang),
                     flow_id: (fid != NO_FLOW).then(|| self.flow_ids[fid as usize].clone()),
                 });
             }
@@ -250,7 +252,7 @@ impl PacketIndex {
     }
 
     /// Detalle de un paquete (número 1-based, como en Wireshark).
-    pub fn detail(&self, n: usize) -> Option<PacketDetail> {
+    pub fn detail(&self, n: usize, lang: Lang) -> Option<PacketDetail> {
         let pkt = self.get(n.checked_sub(1)?)?;
         let dp = self.dissectors.dissect(pkt, self.link);
         Some(PacketDetail {
@@ -258,10 +260,10 @@ impl PacketIndex {
             ts_micros: pkt.ts_micros,
             len: pkt.orig_len as usize,
             captured: pkt.data.len(),
-            summary: dp.as_ref().map(summary).unwrap_or_default(),
+            summary: dp.as_ref().map(|d| summary_in(d, lang)).unwrap_or_default(),
             layers: dp
                 .as_ref()
-                .map(|d| layers(pkt, self.link, d))
+                .map(|d| layers(pkt, self.link, d, lang))
                 .unwrap_or_default(),
             hex: hex(&pkt.data),
         })
@@ -386,11 +388,18 @@ impl PacketIndex {
 }
 
 /// Frase del paquete o, si no se pudo diseccionar, el motivo.
-fn summary_or_reason(dp: Option<&DissectedPacket>, pkt: &RawPacket) -> String {
+fn summary_or_reason(dp: Option<&DissectedPacket>, pkt: &RawPacket, lang: Lang) -> String {
     match dp {
-        Some(d) => summary(d),
-        None if pkt.data.is_empty() => "(contenido no guardado)".into(),
-        None => "Paquete que no se pudo interpretar".into(),
+        Some(d) => summary_in(d, lang),
+        None if pkt.data.is_empty() => lang
+            .pick("(contenido no guardado)", "(content not stored)")
+            .into(),
+        None => lang
+            .pick(
+                "Paquete que no se pudo interpretar",
+                "Packet that could not be interpreted",
+            )
+            .into(),
     }
 }
 
@@ -525,7 +534,7 @@ pub struct Field {
     pub help: String,
 }
 
-fn field(name: &str, value: impl Into<String>, help: impl Into<String>) -> Field {
+fn field(name: impl Into<String>, value: impl Into<String>, help: impl Into<String>) -> Field {
     Field {
         name: name.into(),
         value: value.into(),
@@ -570,36 +579,63 @@ fn http_line(payload: &[u8]) -> Option<String> {
 }
 
 /// Tipo de registro TLS (y de mensaje de handshake) del inicio del payload.
-fn tls_kind(payload: &[u8]) -> Option<&'static str> {
+fn tls_kind(payload: &[u8], lang: Lang) -> Option<&'static str> {
     if payload.len() < 5 || payload[1] != 0x03 {
         return None;
     }
+    let l = |es: &'static str, en: &'static str| lang.pick(es, en);
     Some(match payload[0] {
-        20 => "Cambio a modo cifrado (TLS)",
-        21 => "Aviso TLS (alerta del protocolo)",
+        20 => l(
+            "Cambio a modo cifrado (TLS)",
+            "Switch to encrypted mode (TLS)",
+        ),
+        21 => l(
+            "Aviso TLS (alerta del protocolo)",
+            "TLS alert (protocol warning)",
+        ),
         22 => match payload.get(5) {
-            Some(1) => "Saludo TLS del cliente: pide una conexión segura",
-            Some(2) => "Saludo TLS del servidor: acepta la conexión segura",
-            Some(11) => "Certificado del servidor (TLS)",
-            Some(16) => "Intercambio de claves (TLS)",
-            _ => "Negociación TLS",
+            Some(1) => l(
+                "Saludo TLS del cliente: pide una conexión segura",
+                "TLS client hello: asks for a secure connection",
+            ),
+            Some(2) => l(
+                "Saludo TLS del servidor: acepta la conexión segura",
+                "TLS server hello: accepts the secure connection",
+            ),
+            Some(11) => l("Certificado del servidor (TLS)", "Server certificate (TLS)"),
+            Some(16) => l("Intercambio de claves (TLS)", "Key exchange (TLS)"),
+            _ => l("Negociación TLS", "TLS negotiation"),
         },
-        23 => "Datos cifrados (TLS)",
+        23 => l("Datos cifrados (TLS)", "Encrypted data (TLS)"),
         _ => return None,
     })
 }
 
 /// Una frase por paquete: qué hace este paquete.
 pub fn summary(dp: &DissectedPacket) -> String {
+    summary_in(dp, Lang::Es)
+}
+
+/// Como [`summary`], en el idioma dado.
+pub fn summary_in(dp: &DissectedPacket, lang: Lang) -> String {
+    let l = |es: &str, en: &str| lang.pick(es, en).to_string();
     if let Some(dns) = &dp.dns {
         let q = dns.queries.first();
         let qname = q.map(|q| q.name.as_str()).unwrap_or("?");
         if !dns.is_response {
             let qtype = q.map(|q| dns_type_str(q.qtype)).unwrap_or_default();
-            return format!("Pregunta DNS: ¿dónde está «{qname}»? ({qtype})");
+            return tr!(
+                lang,
+                "Pregunta DNS: ¿dónde está «{qname}»? ({qtype})",
+                "DNS question: where is “{qname}”? ({qtype})"
+            );
         }
         if dns.rcode == Some(3) {
-            return format!("Respuesta DNS: «{qname}» no existe");
+            return tr!(
+                lang,
+                "Respuesta DNS: «{qname}» no existe",
+                "DNS answer: “{qname}” does not exist"
+            );
         }
         let addrs: Vec<String> = dns
             .answers
@@ -610,45 +646,75 @@ pub fn summary(dp: &DissectedPacket) -> String {
                     .or_else(|| a.target.clone())
             })
             .collect();
-        return format!("Respuesta DNS: «{qname}» → {}", addrs.join(", "));
+        return tr!(
+            lang,
+            "Respuesta DNS: «{qname}» → {}",
+            "DNS answer: “{qname}” → {}",
+            addrs.join(", ")
+        );
     }
     let payload = &dp.payload[..];
     if let Some(t) = &dp.tcp {
         let f = &t.flags;
         if f.rst {
-            return "Corta la conexión de golpe (RST)".into();
+            return l(
+                "Corta la conexión de golpe (RST)",
+                "Abruptly cuts the connection (RST)",
+            );
         }
         if f.syn && f.ack {
-            return "Acepta abrir la conexión (SYN-ACK)".into();
+            return l(
+                "Acepta abrir la conexión (SYN-ACK)",
+                "Agrees to open the connection (SYN-ACK)",
+            );
         }
         if f.syn {
-            return "Pide abrir una conexión (SYN)".into();
+            return l(
+                "Pide abrir una conexión (SYN)",
+                "Asks to open a connection (SYN)",
+            );
         }
         if !payload.is_empty() {
             if let Some(line) = http_line(payload) {
                 return if line.starts_with("HTTP/") {
-                    format!("Respuesta web: {line}")
+                    tr!(lang, "Respuesta web: {line}", "Web response: {line}")
                 } else {
-                    format!("Petición web: {line}")
+                    tr!(lang, "Petición web: {line}", "Web request: {line}")
                 };
             }
-            if let Some(kind) = tls_kind(payload) {
+            if let Some(kind) = tls_kind(payload, lang) {
                 return format!("{kind} · {}", fmt_bytes(payload.len() as u64));
             }
             if payload.starts_with(b"SSH-") {
-                return "Saludo SSH: presenta su versión".into();
+                return l(
+                    "Saludo SSH: presenta su versión",
+                    "SSH greeting: announces its version",
+                );
             }
-            return format!("Envía {} de datos", fmt_bytes(payload.len() as u64));
+            return tr!(
+                lang,
+                "Envía {} de datos",
+                "Sends {} of data",
+                fmt_bytes(payload.len() as u64)
+            );
         }
         if f.fin {
-            return "Cierra la conexión (FIN)".into();
+            return l("Cierra la conexión (FIN)", "Closes the connection (FIN)");
         }
-        return "Confirma lo recibido (ACK)".into();
+        return l(
+            "Confirma lo recibido (ACK)",
+            "Acknowledges what it received (ACK)",
+        );
     }
     if dp.udp.is_some() {
-        return format!("Envía {} de datos (UDP)", fmt_bytes(payload.len() as u64));
+        return tr!(
+            lang,
+            "Envía {} de datos (UDP)",
+            "Sends {} of data (UDP)",
+            fmt_bytes(payload.len() as u64)
+        );
     }
-    format!("Paquete {}", dp.transport.as_str())
+    tr!(lang, "Paquete {}", "{} packet", dp.transport.as_str())
 }
 
 // ------------------------------------------------------------ capas
@@ -674,18 +740,42 @@ fn payload_offset(raw: &[u8], payload: &[u8]) -> Option<usize> {
     (p >= start && p + payload.len() <= start + raw.len()).then(|| p - start)
 }
 
-fn tcp_flags_text(f: &socshark_dissectors::TcpFlags) -> (String, String) {
+fn tcp_flags_text(f: &socshark_dissectors::TcpFlags, lang: Lang) -> (String, String) {
     let mut names = Vec::new();
     let mut help = Vec::new();
+    let l = |es: &'static str, en: &'static str| lang.pick(es, en);
     for (on, name, what) in [
-        (f.syn, "SYN", "pide abrir conexión"),
-        (f.ack, "ACK", "confirma lo recibido"),
-        (f.psh, "PSH", "entrega datos ya"),
-        (f.fin, "FIN", "termina de forma ordenada"),
-        (f.rst, "RST", "corta de golpe"),
-        (f.urg, "URG", "datos urgentes"),
-        (f.ece, "ECE", "aviso de congestión"),
-        (f.cwr, "CWR", "reduce la velocidad por congestión"),
+        (
+            f.syn,
+            "SYN",
+            l("pide abrir conexión", "asks to open a connection"),
+        ),
+        (
+            f.ack,
+            "ACK",
+            l("confirma lo recibido", "acknowledges what it received"),
+        ),
+        (
+            f.psh,
+            "PSH",
+            l("entrega datos ya", "delivers data right away"),
+        ),
+        (
+            f.fin,
+            "FIN",
+            l("termina de forma ordenada", "ends in an orderly way"),
+        ),
+        (f.rst, "RST", l("corta de golpe", "cuts abruptly")),
+        (f.urg, "URG", l("datos urgentes", "urgent data")),
+        (f.ece, "ECE", l("aviso de congestión", "congestion warning")),
+        (
+            f.cwr,
+            "CWR",
+            l(
+                "reduce la velocidad por congestión",
+                "slows down due to congestion",
+            ),
+        ),
     ] {
         if on {
             names.push(name);
@@ -695,8 +785,9 @@ fn tcp_flags_text(f: &socshark_dissectors::TcpFlags) -> (String, String) {
     (names.join(", "), help.join(" · "))
 }
 
-fn layers(raw: &RawPacket, link: LinkType, dp: &DissectedPacket) -> Vec<Layer> {
+fn layers(raw: &RawPacket, link: LinkType, dp: &DissectedPacket, lang: Lang) -> Vec<Layer> {
     let data = &raw.data[..];
+    let l = |es: &'static str, en: &'static str| lang.pick(es, en);
     let mut out = Vec::new();
     let l3 = link_header_len(data, link);
 
@@ -705,29 +796,42 @@ fn layers(raw: &RawPacket, link: LinkType, dp: &DissectedPacket) -> Vec<Layer> {
             0x0800 => "IPv4",
             0x86dd => "IPv6",
             0x0806 => "ARP",
-            _ => "otro",
+            _ => l("otro", "other"),
         };
         let dst_help = if e.dst_mac == [0xff; 6] {
-            "todos los equipos de la red (difusión)"
+            l(
+                "todos los equipos de la red (difusión)",
+                "every device on the network (broadcast)",
+            )
         } else {
             ""
         };
         out.push(Layer {
             name: "Ethernet".into(),
-            about: "La dirección física de las tarjetas de red. Solo sirve dentro de la red local."
-                .into(),
+            about: l(
+                "La dirección física de las tarjetas de red. Solo sirve dentro de la red local.",
+                "The physical address of network cards. It only matters inside the local network.",
+            )
+            .into(),
             range: (data.len() >= l3).then_some((0, l3)),
             fields: vec![
                 field(
-                    "Origen (MAC)",
+                    l("Origen (MAC)", "Source (MAC)"),
                     mac(&e.src_mac),
-                    "tarjeta de red que lo envía",
+                    l("tarjeta de red que lo envía", "network card that sends it"),
                 ),
-                field("Destino (MAC)", mac(&e.dst_mac), dst_help),
                 field(
-                    "Contenido",
+                    l("Destino (MAC)", "Destination (MAC)"),
+                    mac(&e.dst_mac),
+                    dst_help,
+                ),
+                field(
+                    l("Contenido", "Content"),
                     format!("{ethertype} (0x{:04x})", e.ethertype),
-                    "qué protocolo viaja dentro",
+                    l(
+                        "qué protocolo viaja dentro",
+                        "which protocol travels inside",
+                    ),
                 ),
             ],
         });
@@ -742,61 +846,76 @@ fn layers(raw: &RawPacket, link: LinkType, dp: &DissectedPacket) -> Vec<Layer> {
     };
     let l4_at = payload_at.zip(l4_len).and_then(|(p, h)| p.checked_sub(h));
     let ip_range = l4_at.filter(|&s| s >= l3).map(|s| (l3, s));
-    let ip_name = |ip: IpAddr| host_name(ip);
+    let ip_name = |ip: IpAddr| host_name_in(ip, lang);
 
     if let Some(i) = &dp.ipv4 {
         let proto = match i.protocol {
             1 => "ICMP",
             6 => "TCP",
             17 => "UDP",
-            _ => "otro",
+            _ => l("otro", "other"),
         };
         let mut frag = Vec::new();
         if i.dont_fragment {
-            frag.push("no fragmentar".to_string());
+            frag.push(l("no fragmentar", "don't fragment").to_string());
         }
         if i.more_fragments || i.fragment_offset > 0 {
-            frag.push(format!("fragmento (desplazamiento {})", i.fragment_offset));
+            frag.push(tr!(
+                lang,
+                "fragmento (desplazamiento {})",
+                "fragment (offset {})",
+                i.fragment_offset
+            ));
         }
         out.push(Layer {
             name: "IPv4".into(),
-            about: "La dirección de Internet: de qué equipo sale el paquete y a cuál va.".into(),
+            about: l(
+                "La dirección de Internet: de qué equipo sale el paquete y a cuál va.",
+                "The Internet address: which device the packet leaves from and which one it goes to.",
+            )
+            .into(),
             range: ip_range,
             fields: vec![
-                field("Origen", i.src.to_string(), ip_name(IpAddr::V4(i.src))),
-                field("Destino", i.dst.to_string(), ip_name(IpAddr::V4(i.dst))),
+                field(l("Origen", "Source"), i.src.to_string(), ip_name(IpAddr::V4(i.src))),
+                field(l("Destino", "Destination"), i.dst.to_string(), ip_name(IpAddr::V4(i.dst))),
                 field(
                     "TTL",
                     i.ttl.to_string(),
-                    "saltos entre routers que le quedan antes de descartarse",
+                    l(
+                        "saltos entre routers que le quedan antes de descartarse",
+                        "hops between routers it has left before being discarded",
+                    ),
                 ),
                 field(
-                    "Protocolo",
+                    l("Protocolo", "Protocol"),
                     format!("{proto} ({})", i.protocol),
-                    "qué viaja dentro",
+                    l("qué viaja dentro", "what travels inside"),
                 ),
                 field(
-                    "Identificación",
+                    l("Identificación", "Identification"),
                     format!("0x{:04x}", i.identification),
-                    "número para recomponer fragmentos",
+                    l("número para recomponer fragmentos", "number used to reassemble fragments"),
                 ),
                 field(
-                    "Fragmentación",
+                    l("Fragmentación", "Fragmentation"),
                     if frag.is_empty() {
-                        "ninguna".to_string()
+                        l("ninguna", "none").to_string()
                     } else {
                         frag.join(", ")
                     },
                     "",
                 ),
                 field(
-                    "Suma de control",
+                    l("Suma de control", "Checksum"),
                     if i.checksum_ok {
-                        "correcta"
+                        l("correcta", "correct")
                     } else {
-                        "INCORRECTA"
+                        l("INCORRECTA", "WRONG")
                     },
-                    "comprueba que la cabecera no llegó dañada",
+                    l(
+                        "comprueba que la cabecera no llegó dañada",
+                        "checks that the header did not arrive damaged",
+                    ),
                 ),
             ],
         });
@@ -804,30 +923,36 @@ fn layers(raw: &RawPacket, link: LinkType, dp: &DissectedPacket) -> Vec<Layer> {
     if let Some(i) = &dp.ipv6 {
         out.push(Layer {
             name: "IPv6".into(),
-            about: "La dirección de Internet (versión nueva): de qué equipo sale y a cuál va."
-                .into(),
+            about: l(
+                "La dirección de Internet (versión nueva): de qué equipo sale y a cuál va.",
+                "The Internet address (new version): which device it leaves from and which one it goes to.",
+            )
+            .into(),
             range: ip_range,
             fields: vec![
-                field("Origen", i.src.to_string(), ip_name(IpAddr::V6(i.src))),
-                field("Destino", i.dst.to_string(), ip_name(IpAddr::V6(i.dst))),
+                field(l("Origen", "Source"), i.src.to_string(), ip_name(IpAddr::V6(i.src))),
+                field(l("Destino", "Destination"), i.dst.to_string(), ip_name(IpAddr::V6(i.dst))),
                 field(
-                    "Límite de saltos",
+                    l("Límite de saltos", "Hop limit"),
                     i.hop_limit.to_string(),
-                    "routers que puede atravesar antes de descartarse",
+                    l(
+                        "routers que puede atravesar antes de descartarse",
+                        "routers it can cross before being discarded",
+                    ),
                 ),
                 field(
-                    "Siguiente cabecera",
+                    l("Siguiente cabecera", "Next header"),
                     i.next_header.to_string(),
-                    "qué viaja dentro",
+                    l("qué viaja dentro", "what travels inside"),
                 ),
                 field(
-                    "Extensiones",
+                    l("Extensiones", "Extensions"),
                     if i.extensions.is_empty() {
-                        "ninguna".to_string()
+                        l("ninguna", "none").to_string()
                     } else {
                         format!("{:?}", i.extensions)
                     },
-                    "cabeceras opcionales encadenadas",
+                    l("cabeceras opcionales encadenadas", "chained optional headers"),
                 ),
             ],
         });
@@ -835,37 +960,50 @@ fn layers(raw: &RawPacket, link: LinkType, dp: &DissectedPacket) -> Vec<Layer> {
 
     let l4_range = l4_at.zip(payload_at);
     if let Some(t) = &dp.tcp {
-        let (flags, flags_help) = tcp_flags_text(&t.flags);
+        let (flags, flags_help) = tcp_flags_text(&t.flags, lang);
         out.push(Layer {
             name: "TCP".into(),
-            about: "Conexión fiable: numera los datos y confirma que llegan, en orden.".into(),
+            about: l(
+                "Conexión fiable: numera los datos y confirma que llegan, en orden.",
+                "Reliable connection: numbers the data and confirms it arrives, in order.",
+            )
+            .into(),
             range: l4_range,
             fields: vec![
                 field(
-                    "Puerto origen",
-                    port_label(t.src_port, Transport::Tcp),
-                    "programa que envía",
+                    l("Puerto origen", "Source port"),
+                    port_label_in(t.src_port, Transport::Tcp, lang),
+                    l("programa que envía", "program that sends"),
                 ),
                 field(
-                    "Puerto destino",
-                    port_label(t.dst_port, Transport::Tcp),
-                    "servicio al que va",
+                    l("Puerto destino", "Destination port"),
+                    port_label_in(t.dst_port, Transport::Tcp, lang),
+                    l("servicio al que va", "service it goes to"),
                 ),
                 field("Flags", flags, flags_help),
                 field(
-                    "Secuencia",
+                    l("Secuencia", "Sequence"),
                     t.seq.to_string(),
-                    "posición de estos datos en la conversación",
+                    l(
+                        "posición de estos datos en la conversación",
+                        "position of this data in the conversation",
+                    ),
                 ),
                 field(
-                    "Confirmación",
+                    l("Confirmación", "Acknowledgment"),
                     t.ack_number.to_string(),
-                    "hasta dónde ha recibido del otro lado",
+                    l(
+                        "hasta dónde ha recibido del otro lado",
+                        "how far it has received from the other side",
+                    ),
                 ),
                 field(
-                    "Ventana",
+                    l("Ventana", "Window"),
                     t.window.to_string(),
-                    "cuántos bytes acepta recibir sin confirmar",
+                    l(
+                        "cuántos bytes acepta recibir sin confirmar",
+                        "how many bytes it accepts without acknowledging",
+                    ),
                 ),
             ],
         });
@@ -873,24 +1011,27 @@ fn layers(raw: &RawPacket, link: LinkType, dp: &DissectedPacket) -> Vec<Layer> {
     if let Some(u) = &dp.udp {
         out.push(Layer {
             name: "UDP".into(),
-            about: "Envío rápido sin conexión ni confirmación (si se pierde, no se reenvía)."
-                .into(),
+            about: l(
+                "Envío rápido sin conexión ni confirmación (si se pierde, no se reenvía).",
+                "Fast sending with no connection or acknowledgment (if it is lost, it is not resent).",
+            )
+            .into(),
             range: l4_range,
             fields: vec![
                 field(
-                    "Puerto origen",
-                    port_label(u.src_port, Transport::Udp),
-                    "programa que envía",
+                    l("Puerto origen", "Source port"),
+                    port_label_in(u.src_port, Transport::Udp, lang),
+                    l("programa que envía", "program that sends"),
                 ),
                 field(
-                    "Puerto destino",
-                    port_label(u.dst_port, Transport::Udp),
-                    "servicio al que va",
+                    l("Puerto destino", "Destination port"),
+                    port_label_in(u.dst_port, Transport::Udp, lang),
+                    l("servicio al que va", "service it goes to"),
                 ),
                 field(
-                    "Longitud",
+                    l("Longitud", "Length"),
                     u.length.to_string(),
-                    "bytes de cabecera más datos",
+                    l("bytes de cabecera más datos", "header bytes plus data"),
                 ),
             ],
         });
@@ -900,35 +1041,41 @@ fn layers(raw: &RawPacket, link: LinkType, dp: &DissectedPacket) -> Vec<Layer> {
     if let Some(d) = &dp.dns {
         let mut fields = vec![
             field(
-                "Tipo",
+                l("Tipo", "Type"),
                 if d.is_response {
-                    "respuesta"
+                    l("respuesta", "answer")
                 } else {
-                    "pregunta"
+                    l("pregunta", "question")
                 },
                 "",
             ),
             field(
-                "Identificador",
+                l("Identificador", "Identifier"),
                 format!("0x{:04x}", d.id),
-                "empareja la pregunta con su respuesta",
+                l(
+                    "empareja la pregunta con su respuesta",
+                    "pairs the question with its answer",
+                ),
             ),
         ];
         if let Some(rc) = d.rcode.filter(|_| d.is_response) {
             let help = match rc {
-                0 => "sin errores",
-                3 => "el nombre no existe",
-                2 => "el servidor falló",
-                5 => "el servidor se negó a responder",
+                0 => l("sin errores", "no errors"),
+                3 => l("el nombre no existe", "the name does not exist"),
+                2 => l("el servidor falló", "the server failed"),
+                5 => l(
+                    "el servidor se negó a responder",
+                    "the server refused to answer",
+                ),
                 _ => "",
             };
-            fields.push(field("Resultado", dns_rcode_str(rc), help));
+            fields.push(field(l("Resultado", "Result"), dns_rcode_str(rc), help));
         }
         for q in &d.queries {
             fields.push(field(
-                "Pregunta",
+                l("Pregunta", "Question"),
                 format!("{} ({})", q.name, dns_type_str(q.qtype)),
-                dns_type_help(q.qtype),
+                dns_type_help(q.qtype, lang),
             ));
         }
         for a in &d.answers {
@@ -938,32 +1085,48 @@ fn layers(raw: &RawPacket, link: LinkType, dp: &DissectedPacket) -> Vec<Layer> {
                 .or_else(|| a.target.clone())
                 .unwrap_or_default();
             fields.push(field(
-                "Respuesta",
+                l("Respuesta", "Answer"),
                 format!("{} → {value}", a.name),
-                format!("{} · válida {} s", dns_type_help(a.rtype), a.ttl),
+                tr!(
+                    lang,
+                    "{} · válida {} s",
+                    "{} · valid for {} s",
+                    dns_type_help(a.rtype, lang),
+                    a.ttl
+                ),
             ));
         }
         out.push(Layer {
             name: "DNS".into(),
-            about: "La guía telefónica de Internet: traduce nombres en direcciones.".into(),
+            about: l(
+                "La guía telefónica de Internet: traduce nombres en direcciones.",
+                "The phone book of the Internet: it turns names into addresses.",
+            )
+            .into(),
             range: payload_range,
             fields,
         });
     } else if !dp.payload.is_empty() {
         let p = &dp.payload[..];
         let mut fields = vec![field(
-            "Tamaño",
+            l("Tamaño", "Size"),
             fmt_bytes(p.len() as u64),
-            "datos de la aplicación",
+            l("datos de la aplicación", "application data"),
         )];
-        let about = if let Some(kind) = tls_kind(p) {
-            fields.push(field("Mensaje", kind, ""));
-            "Datos de una conexión segura: el contenido va cifrado y no se puede leer."
+        let about = if let Some(kind) = tls_kind(p, lang) {
+            fields.push(field(l("Mensaje", "Message"), kind, ""));
+            l(
+                "Datos de una conexión segura: el contenido va cifrado y no se puede leer.",
+                "Data of a secure connection: the content is encrypted and cannot be read.",
+            )
         } else if let Some(line) = http_line(p) {
-            fields.push(field("Primera línea", line, ""));
-            "Texto de la web sin cifrar: se puede leer tal cual."
+            fields.push(field(l("Primera línea", "First line"), line, ""));
+            l(
+                "Texto de la web sin cifrar: se puede leer tal cual.",
+                "Unencrypted web text: it can be read as is.",
+            )
         } else {
-            "Datos de la aplicación."
+            l("Datos de la aplicación.", "Application data.")
         };
         let text: String = p
             .iter()
@@ -976,9 +1139,16 @@ fn layers(raw: &RawPacket, link: LinkType, dp: &DissectedPacket) -> Vec<Layer> {
                 }
             })
             .collect();
-        fields.push(field("Vista de texto", text, "bytes no imprimibles como ·"));
+        fields.push(field(
+            l("Vista de texto", "Text view"),
+            text,
+            l(
+                "bytes no imprimibles como ·",
+                "non-printable bytes shown as ·",
+            ),
+        ));
         out.push(Layer {
-            name: "Datos".into(),
+            name: l("Datos", "Data").into(),
             about: about.into(),
             range: payload_range,
             fields,
@@ -987,15 +1157,16 @@ fn layers(raw: &RawPacket, link: LinkType, dp: &DissectedPacket) -> Vec<Layer> {
     out
 }
 
-fn dns_type_help(t: u16) -> &'static str {
+fn dns_type_help(t: u16, lang: Lang) -> &'static str {
+    let l = |es: &'static str, en: &'static str| lang.pick(es, en);
     match t {
-        1 => "dirección IPv4",
-        28 => "dirección IPv6",
-        5 => "alias de otro nombre",
-        15 => "servidor de correo",
-        16 => "texto libre",
-        12 => "nombre de una dirección",
-        2 => "servidor DNS responsable",
+        1 => l("dirección IPv4", "IPv4 address"),
+        28 => l("dirección IPv6", "IPv6 address"),
+        5 => l("alias de otro nombre", "alias of another name"),
+        15 => l("servidor de correo", "mail server"),
+        16 => l("texto libre", "free text"),
+        12 => l("nombre de una dirección", "name of an address"),
+        2 => l("servidor DNS responsable", "authoritative DNS server"),
         _ => "",
     }
 }
@@ -1096,7 +1267,7 @@ mod tests {
         assert_eq!(in_flows, 45);
 
         // Paquete 1: pregunta DNS por example.com con Ethernet/IPv4/UDP/DNS.
-        let p = idx.detail(1).unwrap();
+        let p = idx.detail(1, Lang::Es).unwrap();
         assert!(p
             .summary
             .starts_with("Pregunta DNS: ¿dónde está «example.com»?"));
@@ -1109,24 +1280,24 @@ mod tests {
         assert_eq!(r[2], (34, 42));
         assert_eq!(r[3].0, 42);
         assert_eq!(p.hex.len(), p.captured * 2);
-        assert!(idx.detail(0).is_none() && idx.detail(46).is_none());
+        assert!(idx.detail(0, Lang::Es).is_none() && idx.detail(46, Lang::Es).is_none());
     }
 
     #[test]
     fn lista_global_paginada_y_filtrada_por_flujo() {
         let idx = demo_index();
-        let (all, total) = idx.page(0, 10, None);
+        let (all, total) = idx.page(0, 10, None, Lang::Es);
         assert_eq!(total, 45);
         assert_eq!(all.len(), 10);
         assert_eq!(all[0].n, 1);
         assert_eq!(all[0].protocol, "DNS");
         assert_eq!(all[0].src, "192.168.1.10:53001");
-        let (tail, _) = idx.page(40, 10, None);
+        let (tail, _) = idx.page(40, 10, None, Lang::Es);
         assert_eq!(tail.len(), 5);
         assert_eq!(tail[4].n, 45);
 
         let only_443 = |id: &str| id.contains(":443-");
-        let (rows, total) = idx.page(0, 100, Some(&only_443));
+        let (rows, total) = idx.page(0, 100, Some(&only_443), Lang::Es);
         assert_eq!(total, 7, "los 7 paquetes de la sesión TLS");
         assert!(rows
             .iter()
@@ -1181,9 +1352,12 @@ mod tests {
         }
         assert_eq!(idx.total(), MAX_LIVE_PACKETS + 10);
         assert!(idx.truncated);
-        assert!(idx.detail(1).is_none(), "el primero ya se descartó");
-        assert!(idx.detail(MAX_LIVE_PACKETS + 10).is_some());
-        let (rows, total) = idx.page(0, 1, None);
+        assert!(
+            idx.detail(1, Lang::Es).is_none(),
+            "el primero ya se descartó"
+        );
+        assert!(idx.detail(MAX_LIVE_PACKETS + 10, Lang::Es).is_some());
+        let (rows, total) = idx.page(0, 1, None, Lang::Es);
         assert_eq!(total, MAX_LIVE_PACKETS);
         assert_eq!(rows[0].n, 11);
     }
