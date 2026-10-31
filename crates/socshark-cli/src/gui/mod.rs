@@ -2244,14 +2244,23 @@ mod tests {
         assert_eq!(call(&s, "POST", "/api/live/stop", Some(&t)).status, 200);
         assert_eq!(call(&s, "GET", "/api/live/start", Some(&t)).status, 405);
         // Con un filtro del usuario inválido, el error es el suyo (legible).
+        // Solo se comprueba si la interfaz llegó a abrirse: sin permisos de
+        // captura (CI en macOS) el error es otro, y además menciona
+        // «ChmodBPF», así que no basta con buscar «BPF».
+        let lo = if cfg!(target_os = "macos") {
+            "lo0"
+        } else {
+            "lo"
+        };
         let r = call(
             &s,
             "POST",
-            "/api/live/start?iface=lo&bpf=port+%3D%3D",
+            &format!("/api/live/start?iface={lo}&bpf=port+%3D%3D"),
             Some(&t),
         );
-        if r.status == 400 && String::from_utf8_lossy(&r.body).contains("BPF") {
-            assert!(String::from_utf8_lossy(&r.body).contains("port =="));
+        let body = String::from_utf8_lossy(&r.body);
+        if r.status == 400 && body.contains("filtro BPF inválido") {
+            assert!(body.contains("port =="), "{body}");
         }
     }
 
