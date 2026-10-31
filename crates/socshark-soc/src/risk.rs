@@ -49,7 +49,7 @@ use socshark_core::{Alert, EnrichedFlow, L7Protocol, Severity, Transport};
 
 use socshark_core::config::PipelineConfig;
 
-use crate::{is_failed_connect, ScanSignals};
+use crate::{is_failed_connect, Lang, ScanSignals};
 
 /// Entropía de Shannon por carácter (bits/símbolo) sobre los bytes UTF-8.
 ///
@@ -570,6 +570,126 @@ pub fn assess_with_intel(
     flow.risk_score = score.min(100) as u8;
 }
 
+// ------------------------------------------------------------ idioma
+
+/// Nombre de una alerta en el idioma dado. El `name` guardado en la alerta
+/// (español) es parte del contrato del JSONL y no cambia: esto es solo
+/// para mostrarlo.
+pub fn alert_name_in(alert: &Alert, lang: Lang) -> String {
+    if lang == Lang::Es {
+        return alert.name.clone();
+    }
+    let jitter = alert.name.contains("jitter");
+    match alert.id.as_str() {
+        "DNS-TUNNELING" => "Possible DNS tunnel",
+        "PORT-SCAN" => "Possible port scan",
+        "NETWORK-SWEEP" => "Possible network sweep",
+        "REPEATED-ATTEMPTS" => "Repeated connection attempts",
+        "INSECURE-PORT" => "Cleartext Telnet",
+        "EXPOSED-DB" => "Exposed database",
+        "BEACONING" if jitter => "Periodic communication with jitter (beacon)",
+        "BEACONING" => "Periodic communication (beacon)",
+        "FILE-MASQUERADING" => "File transferred with a forged identity",
+        "THREAT-INTEL-FEODO" => "Destination on a C2 list (Feodo)",
+        "TOR-USAGE" => "Connection to a Tor exit node",
+        _ => return alert.name.clone(),
+    }
+    .to_string()
+}
+
+/// Detalle de una alerta en el idioma dado (el guardado es el español del
+/// contrato). Reconoce las plantillas de las reglas; lo que no reconoce se
+/// devuelve tal cual.
+pub fn alert_detail_in(alert: &Alert, lang: Lang) -> String {
+    if lang == Lang::Es {
+        return alert.detail.clone();
+    }
+    detail_en(&alert.id, &alert.detail).unwrap_or_else(|| alert.detail.clone())
+}
+
+fn detail_en(id: &str, d: &str) -> Option<String> {
+    Some(match id {
+        "DNS-TUNNELING" => {
+            if let Some((n, rest)) = d.split_once(" subdominios únicos de ") {
+                let (domain, rest) = rest.rsplit_once(" en ")?;
+                let mins = rest.split_once(" min")?.0;
+                format!(
+                    "{n} unique subdomains of {domain} in {mins} min: the volume of a tunnel \
+                     even if each name looks harmless"
+                )
+            } else {
+                let rest = d.strip_prefix("qname '")?;
+                let (qname, rest) = rest.rsplit_once("': subdominio de ")?;
+                let (chars, rest) = rest.split_once(" caracteres codificado (etiqueta de ")?;
+                let (label, rest) = rest.split_once(", entropía ")?;
+                format!(
+                    "qname '{qname}': encoded subdomain of {chars} characters (label of {label}, \
+                     entropy {rest}"
+                )
+            }
+        }
+        "PORT-SCAN" => {
+            let (src, rest) = d.split_once(" probó ")?;
+            let (n, rest) = rest.split_once(" puertos distintos de ")?;
+            let dst = rest.strip_suffix(" sin establecer conexión")?;
+            format!("{src} probed {n} different ports on {dst} without establishing a connection")
+        }
+        "NETWORK-SWEEP" => {
+            let (src, rest) = d.split_once(" probó el puerto ")?;
+            let (port, rest) = rest.split_once(" en ")?;
+            let hosts = rest.strip_suffix(" hosts distintos sin establecer conexión")?;
+            format!(
+                "{src} probed port {port} on {hosts} different hosts without establishing a connection"
+            )
+        }
+        "REPEATED-ATTEMPTS" => {
+            let (n, rest) = d.split_once(" intentos de ")?;
+            let (src, rest) = rest.split_once(" a ")?;
+            let dst = rest.strip_suffix(" sin llegar a establecer conexión")?;
+            format!("{n} attempts from {src} to {dst} without ever establishing a connection")
+        }
+        "INSECURE-PORT" => {
+            let ip = d
+                .strip_prefix("conexión a telnet (23/tcp) en ")?
+                .strip_suffix(": credenciales sin cifrar")?;
+            format!("telnet connection (23/tcp) to {ip}: unencrypted credentials")
+        }
+        "EXPOSED-DB" => {
+            let rest = d.strip_prefix("conexión directa a puerto de base de datos (")?;
+            let (port, ip) = rest.split_once(") en ")?;
+            format!("direct connection to a database port ({port}) on {ip}")
+        }
+        "BEACONING" => {
+            let rest = d.strip_prefix("intervalo medio ")?;
+            let rest = rest
+                .replace(" (mediana)", " (median)")
+                .replace(" con jitter ", " with jitter ")
+                .replace(
+                    " intervalos entre conexiones",
+                    " intervals between connections",
+                )
+                .replace(" intervalos", " intervals")
+                .replacen(" en ", " over ", 1);
+            format!("mean interval {rest}")
+        }
+        "FILE-MASQUERADING" => {
+            let files = d.strip_prefix("tipo real ≠ extensión declarada en ")?;
+            format!("real type ≠ declared extension in {files}")
+        }
+        "THREAT-INTEL-FEODO" => {
+            let ip = d.strip_suffix(" aparece en la lista Feodo cargada (--intel-feodo)")?;
+            format!("{ip} appears on the loaded Feodo list (--intel-feodo)")
+        }
+        "TOR-USAGE" => {
+            let ip = d.strip_suffix(
+                " es un nodo de salida de Tor (lista --intel-tor): posible proxy multi-salto",
+            )?;
+            format!("{ip} is a Tor exit node (--intel-tor list): possible multi-hop proxy")
+        }
+        _ => return None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1043,5 +1163,101 @@ mod tests {
             }],
             answers: vec![],
         }
+    }
+
+    #[test]
+    fn nombres_y_detalles_en_ingles_sin_tocar_el_contrato() {
+        let a = |id: &str, name: &str, detail: &str| Alert {
+            id: id.into(),
+            name: name.into(),
+            severity: Severity::Medium,
+            detail: detail.into(),
+            mitre: None,
+        };
+        let cases = [
+            a(
+                "PORT-SCAN",
+                "Posible escaneo de puertos",
+                "10.0.0.5 probó 12 puertos distintos de 10.0.0.1 sin establecer conexión",
+            ),
+            a(
+                "NETWORK-SWEEP",
+                "Posible barrido de red",
+                "10.0.0.5 probó el puerto 445 en 9 hosts distintos sin establecer conexión",
+            ),
+            a(
+                "REPEATED-ATTEMPTS",
+                "Intentos de conexión repetidos",
+                "7 intentos de 10.0.0.5 a 10.0.0.1:22 sin llegar a establecer conexión",
+            ),
+            a(
+                "INSECURE-PORT",
+                "Telnet en texto claro",
+                "conexión a telnet (23/tcp) en 10.0.0.1: credenciales sin cifrar",
+            ),
+            a(
+                "EXPOSED-DB",
+                "Base de datos expuesta",
+                "conexión directa a puerto de base de datos (3306) en 10.0.0.1",
+            ),
+            a(
+                "BEACONING",
+                "Comunicación periódica (beacon)",
+                "intervalo medio 30.0s con jitter ±0.5% en 9 intervalos",
+            ),
+            a(
+                "BEACONING",
+                "Comunicación periódica con jitter (beacon)",
+                "intervalo medio 60.0s (mediana) con jitter ~25% en 9 intervalos entre conexiones",
+            ),
+            a(
+                "FILE-MASQUERADING",
+                "Archivo transferido con identidad falseada",
+                "tipo real ≠ extensión declarada en factura.jpg",
+            ),
+            a(
+                "THREAT-INTEL-FEODO",
+                "Destino en lista de C2 (Feodo)",
+                "1.2.3.4 aparece en la lista Feodo cargada (--intel-feodo)",
+            ),
+            a(
+                "TOR-USAGE",
+                "Conexión a nodo de salida de Tor",
+                "1.2.3.4 es un nodo de salida de Tor (lista --intel-tor): posible proxy multi-salto",
+            ),
+            a(
+                "DNS-TUNNELING",
+                "Posible túnel DNS",
+                "40 subdominios únicos de evil.example en 5 min: volumen propio de un túnel aunque cada nombre parezca inocuo",
+            ),
+            a(
+                "DNS-TUNNELING",
+                "Posible túnel DNS",
+                "qname 'x.en.y': subdominio de 60 caracteres codificado (etiqueta de 60, entropía 4.10 ≥ 3.50)",
+            ),
+        ];
+        for al in &cases {
+            assert_eq!(alert_detail_in(al, Lang::Es), al.detail);
+            assert_eq!(alert_name_in(al, Lang::Es), al.name);
+            let en = alert_detail_in(al, Lang::En);
+            assert_ne!(en, al.detail, "{}", al.id);
+            assert!(
+                !en.contains(" en ") || en.contains("'x.en.y'"),
+                "{} sin traducir: {en}",
+                al.id
+            );
+            assert_ne!(alert_name_in(al, Lang::En), al.name);
+        }
+        assert_eq!(
+            alert_detail_in(&cases[6], Lang::En),
+            "mean interval 60.0s (median) with jitter ~25% over 9 intervals between connections"
+        );
+        assert_eq!(
+            alert_detail_in(&cases[11], Lang::En),
+            "qname 'x.en.y': encoded subdomain of 60 characters (label of 60, entropy 4.10 ≥ 3.50)"
+        );
+        // Lo que no reconoce, tal cual.
+        let otro = a("PORT-SCAN", "x", "otra cosa");
+        assert_eq!(alert_detail_in(&otro, Lang::En), "otra cosa");
     }
 }

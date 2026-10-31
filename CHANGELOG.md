@@ -5,6 +5,24 @@ y [SemVer](https://semver.org/lang/es/).
 
 ## [Sin publicar]
 
+### Añadido
+
+- **GUI en inglés y español** (ADR-015): selector ES/EN en la barra de
+  herramientas que cambia toda la ventana sin volver a abrir la captura
+  (barra, vistas, historias, explicaciones, paquetes y capas,
+  estadísticas, mapa, ayuda, glosario e informe). Se recuerda el idioma
+  elegido y, la primera vez, se usa el del navegador si es inglés.
+- `socshark_soc::Lang`, la macro `tr!` y las variantes `*_in(…, lang)` de
+  los textos del motor (`explain_in`, `stories_in`, `summarize_in`,
+  `alert_name_in`, `alert_detail_in`…). La API de la GUI acepta la
+  cabecera `X-Socshark-Lang` (o `?lang=`).
+
+### Sin cambios
+
+- El JSONL, ECS, Wazuh, los `alert.id` y el `human_summary` exportado
+  siguen en español (`schema_version` 1). La TUI, la CLI y `socshark
+  report` también.
+
 ## [0.8.0] — 2026-10-31
 
 ### Alcance de la 1.0

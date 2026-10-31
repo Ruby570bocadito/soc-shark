@@ -13,6 +13,7 @@
 //! - [`domain`]: dominio registrable aproximado (eTLD+1) sin PSL completa.
 //! - [`intel`]: threat intel offline (Feodo C2, salidas de Tor).
 //! - [`siem`]: export a SIEM (ECS y Wazuh).
+//! - [`lang`]: idioma de los textos para personas (español o inglés).
 //!
 //! Las fases posteriores añadirán aquí: correlación de proceso (eBPF) y
 //! GeoIP/ASN. Ver `docs/soc-features.md`, `docs/siem-export.md` y
@@ -26,6 +27,7 @@ pub mod enrich;
 pub mod explain;
 pub mod hosts;
 pub mod intel;
+pub mod lang;
 pub mod noise;
 mod oui_data;
 pub mod passive_dns;
@@ -40,6 +42,7 @@ use socshark_core::{EnrichedFlow, Transport};
 
 pub use enrich::{enrich_all, SocContext};
 pub use intel::ThreatIntelDb;
+pub use lang::Lang;
 
 /// (ip_origen, ip_destino, puerto_destino): un servicio concreto.
 pub type ScanKey = (IpAddr, IpAddr, u16);

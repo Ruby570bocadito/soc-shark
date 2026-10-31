@@ -7,6 +7,7 @@
 <title>soc-shark</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%2322c3d8'/%3E%3Cstop offset='.55' stop-color='%230e7490'/%3E%3Cstop offset='1' stop-color='%230a3550'/%3E%3C/linearGradient%3E%3ClinearGradient id='w' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%230a5f78'/%3E%3Cstop offset='1' stop-color='%23052436'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='15' fill='url(%23g)'/%3E%3Cpath d='M12 43C24 39 33 27 41 11.5c.8-1.5 2.6-1.2 2.6.5C42 25 44 36 52 43v5H12z' fill='%23fff'/%3E%3Cpath d='M0 46H4.5c6 0 7.75-3.6 13.75-3.6s7.75 3.6 13.75 3.6 7.75-3.6 13.75-3.6 7.75 3.6 13.75 3.6H64v3a15 15 0 0 1-15 15H15A15 15 0 0 1 0 49z' fill='url(%23w)'/%3E%3Cpath d='M4.5 46c6 0 7.75-3.6 13.75-3.6s7.75 3.6 13.75 3.6 7.75-3.6 13.75-3.6 7.75 3.6 13.75 3.6' fill='none' stroke='%23fff' stroke-width='3.8' stroke-linecap='round'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="/app.css">
+<script src="/i18n.js" defer></script>
 <script src="/app.js" defer></script>
 </head>
 <body>
@@ -44,9 +45,9 @@
 </svg>
 
 <header class="toolbar">
-  <div class="brand" role="img" aria-label="soc-shark">
+  <div class="brand" role="img" aria-label="soc-shark" data-i18n-skip>
     <svg class="logo" aria-hidden="true"><use href="#logo"/></svg>
-    <span class="wordmark" aria-hidden="true">soc-<b>shark</b></span>
+    <span class="wordmark" aria-hidden="true" data-i18n-skip>soc-<b>shark</b></span>
   </div>
   <div class="tb-group" role="group" aria-label="Captura">
     <button id="open-btn" class="tb-btn" type="button" title="Abrir una captura guardada (Ctrl+O)"><svg><use href="#i-open"/></svg><span>Abrir</span></button>
@@ -64,9 +65,13 @@
     <button type="button" role="tab" data-view="map" aria-selected="false" title="Dibujo de quién habla con quién (4)"><svg><use href="#v-map"/></svg><span>Mapa</span></button>
   </nav>
   <div class="spacer"></div>
-  <div class="segmented" role="group" aria-label="Nivel de detalle">
+  <div id="mode-seg" class="segmented" role="group" aria-label="Nivel de detalle">
     <button type="button" data-mode="simple" aria-pressed="true" title="Frases en lenguaje claro">Simple</button>
     <button type="button" data-mode="experto" aria-pressed="false" title="Columnas técnicas como en Wireshark">Experto</button>
+  </div>
+  <div id="lang-seg" class="segmented lang-seg" role="group" aria-label="Idioma de la interfaz">
+    <button type="button" data-lang="es" lang="es" aria-pressed="true" title="Español" data-i18n-skip>ES</button>
+    <button type="button" data-lang="en" lang="en" aria-pressed="false" title="English" data-i18n-skip>EN</button>
   </div>
   <button id="side-btn" class="tb-icon" type="button" title="Mostrar u ocultar el resumen (Ctrl+B)" aria-label="Panel de resumen" aria-pressed="true"><svg><use href="#i-side"/></svg></button>
   <button id="theme-btn" class="tb-icon" type="button" title="Cambiar entre tema claro y oscuro" aria-label="Cambiar tema"><svg><use href="#i-theme"/></svg></button>
@@ -163,7 +168,7 @@
     <div class="hero">
       <svg class="hero-waves" viewBox="0 0 600 120" preserveAspectRatio="none" aria-hidden="true"><path d="M0 70c50 0 75-18 125-18s75 18 125 18 75-18 125-18 75 18 125 18 75-18 100-18v68H0z"/><path d="M0 92c50 0 75-14 125-14s75 14 125 14 75-14 125-14 75 14 125 14 75-14 100-14v42H0z"/></svg>
       <svg class="logo hero-logo" aria-hidden="true"><use href="#logo"/></svg>
-      <div class="wordmark big" aria-hidden="true">soc-<b>shark</b></div>
+      <div class="wordmark big" aria-hidden="true" data-i18n-skip>soc-<b>shark</b></div>
     </div>
     <div class="welcome-body">
       <h1>Entiende lo que pasa en tu red</h1>
