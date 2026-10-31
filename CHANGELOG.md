@@ -5,6 +5,39 @@ y [SemVer](https://semver.org/lang/es/).
 
 ## [Sin publicar]
 
+## [0.8.0] — 2026-10-31
+
+### Alcance de la 1.0
+
+- La hoja de ruta se recorta: la 1.0 es lo que ya funciona, verificado y
+  accesible. eBPF, privilegios separados, Tauri, WASM, DuckDB, protocolos
+  nuevos y distribución por gestores de paquetes pasan a «Después de la
+  1.0» (`docs/roadmap.md`).
+
+### Añadido (hoja de ruta 0.8, segundo bloque)
+
+- **Corpus de verificación** (`corpus/`): cada captura declara las reglas
+  que deben saltar y las que no, y guarda el resultado esperado en un
+  *golden file*. El test `corpus` corre en cada `cargo test`;
+  `SOCSHARK_BLESS=1` regenera los golden y `scripts/fetch_corpus.py` baja
+  las capturas reales comprobando su SHA-256. Sembrado con seis escenarios
+  sintéticos.
+- **Reglas Wazuh listas para copiar** (`docs/wazuh/local_rules.xml`): nivel
+  por severidad, una regla por técnica MITRE con su bloque `<mitre>` y
+  subida a 12 para destinos en threat intel. Test de contrato
+  (`wazuh_contract`) que fija la forma del JSON y falla si una técnica o un
+  nivel se queda sin regla.
+- **`schema_version` en el JSONL** (`capture --json`, daemon): contrato
+  versionado de la salida (`docs/data-model.md`).
+- **`SECURITY.md`**: canal privado de reporte, plazos y alcance.
+
+### Rendimiento
+
+- *Carving* unas 4 veces más rápido: SHA-256 sin copiar el cuerpo entero,
+  búsqueda de cabeceras HTTP por primer byte (~4,7×) y flujos tallados en
+  paralelo (resultado idéntico al secuencial, con test). `dev bench`:
+  ~350k → ~450-510k paquetes/s.
+
 ### Hoja de ruta 0.8 (primer bloque)
 
 - **Túnel DNS por volumen**: muchos subdominios únicos de un mismo dominio

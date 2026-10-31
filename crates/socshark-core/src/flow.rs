@@ -383,6 +383,32 @@ pub struct EnrichedFlow {
     pub extracted_files: Vec<ExtractedFile>,
 }
 
+/// Versión del formato JSONL de salida (`capture --json`, daemon).
+///
+/// Regla de versionado: añadir un campo opcional **no** cambia la versión
+/// (los lectores ignoran lo que no conocen); quitar o renombrar un campo, o
+/// cambiar su tipo o su significado, la incrementa. Ver `docs/data-model.md`.
+pub const JSONL_SCHEMA_VERSION: u32 = 1;
+
+/// Un [`EnrichedFlow`] tal y como se escribe en el JSONL: el flujo con
+/// `schema_version` delante. Leer de vuelta como `EnrichedFlow` funciona
+/// (serde ignora el campo extra).
+#[derive(Debug, Serialize)]
+pub struct VersionedFlow<'a> {
+    pub schema_version: u32,
+    #[serde(flatten)]
+    pub flow: &'a EnrichedFlow,
+}
+
+impl<'a> VersionedFlow<'a> {
+    pub fn new(flow: &'a EnrichedFlow) -> Self {
+        Self {
+            schema_version: JSONL_SCHEMA_VERSION,
+            flow,
+        }
+    }
+}
+
 /// Nombre legible de un tipo de registro DNS (subconjunto Fase 1; el resto
 /// se muestra como `TYPE<n>`).
 pub fn dns_type_str(t: u16) -> String {

@@ -15,7 +15,7 @@ pub use config::PipelineConfig;
 pub use flow::{
     dns_rcode_str, dns_type_str, Alert, DnsAnswerSummary, DnsQuerySummary, DnsSummary,
     EnrichedFlow, ExtractedFile, FlowId, FlowState, IntervalStats, L7Protocol, Severity,
-    TcpFlagCounts, Transport,
+    TcpFlagCounts, Transport, VersionedFlow, JSONL_SCHEMA_VERSION,
 };
 pub use hash::{sha256, to_hex};
 pub use packet::{LinkType, RawPacket};

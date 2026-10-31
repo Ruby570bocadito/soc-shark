@@ -18,74 +18,35 @@ const K256: [u32; 64] = [
 ];
 
 /// SHA-256 puro (FIPS 180-4), sin dependencias externas.
+///
+/// Los bloques completos se procesan directamente sobre `data`; solo el
+/// último (o los dos últimos) se copian para añadir el relleno. Antes se
+/// copiaba el mensaje entero, lo que con los archivos tallados doblaba la
+/// memoria y el tráfico de caché del *carving*.
 pub fn sha256(data: &[u8]) -> [u8; 32] {
     let mut h: [u32; 8] = [
         0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
         0x5be0cd19,
     ];
 
-    // Padding: 0x80, ceros, longitud en bits de 64 bits big-endian.
-    let bit_len = (data.len() as u64).wrapping_mul(8);
-    let mut msg = Vec::with_capacity(data.len() + 72);
-    msg.extend_from_slice(data);
-    msg.push(0x80);
-    while msg.len() % 64 != 56 {
-        msg.push(0);
-    }
-    msg.extend_from_slice(&bit_len.to_be_bytes());
-
     // as_chunks es de Rust 1.88; el MSRV del workspace es 1.75 (ADR-001).
     #[allow(unknown_lints, clippy::chunks_exact_to_as_chunks)]
-    for chunk in msg.chunks_exact(64) {
-        let mut w = [0u32; 64];
-        for i in 0..16 {
-            w[i] = u32::from_be_bytes([
-                chunk[4 * i],
-                chunk[4 * i + 1],
-                chunk[4 * i + 2],
-                chunk[4 * i + 3],
-            ]);
-        }
-        for i in 16..64 {
-            let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
-            let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
-            w[i] = w[i - 16]
-                .wrapping_add(s0)
-                .wrapping_add(w[i - 7])
-                .wrapping_add(s1);
-        }
+    let blocks = data.chunks_exact(64);
+    let rest = blocks.remainder();
+    for chunk in blocks {
+        compress(&mut h, chunk);
+    }
 
-        let (mut a, mut b, mut c, mut d) = (h[0], h[1], h[2], h[3]);
-        let (mut e, mut f, mut g, mut hh) = (h[4], h[5], h[6], h[7]);
-        for i in 0..64 {
-            let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
-            let ch = (e & f) ^ ((!e) & g);
-            let t1 = hh
-                .wrapping_add(s1)
-                .wrapping_add(ch)
-                .wrapping_add(K256[i])
-                .wrapping_add(w[i]);
-            let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
-            let maj = (a & b) ^ (a & c) ^ (b & c);
-            let t2 = s0.wrapping_add(maj);
-            hh = g;
-            g = f;
-            f = e;
-            e = d.wrapping_add(t1);
-            d = c;
-            c = b;
-            b = a;
-            a = t1.wrapping_add(t2);
-        }
-
-        h[0] = h[0].wrapping_add(a);
-        h[1] = h[1].wrapping_add(b);
-        h[2] = h[2].wrapping_add(c);
-        h[3] = h[3].wrapping_add(d);
-        h[4] = h[4].wrapping_add(e);
-        h[5] = h[5].wrapping_add(f);
-        h[6] = h[6].wrapping_add(g);
-        h[7] = h[7].wrapping_add(hh);
+    // Relleno: 0x80, ceros, longitud en bits de 64 bits big-endian.
+    let bit_len = (data.len() as u64).wrapping_mul(8);
+    let mut tail = [0u8; 128];
+    tail[..rest.len()].copy_from_slice(rest);
+    tail[rest.len()] = 0x80;
+    let tail_len = if rest.len() < 56 { 64 } else { 128 };
+    tail[tail_len - 8..tail_len].copy_from_slice(&bit_len.to_be_bytes());
+    #[allow(unknown_lints, clippy::chunks_exact_to_as_chunks)]
+    for chunk in tail[..tail_len].chunks_exact(64) {
+        compress(&mut h, chunk);
     }
 
     let mut out = [0u8; 32];
@@ -93,6 +54,60 @@ pub fn sha256(data: &[u8]) -> [u8; 32] {
         out[i * 4..i * 4 + 4].copy_from_slice(&word.to_be_bytes());
     }
     out
+}
+
+/// Función de compresión sobre un bloque de 64 bytes.
+#[inline(always)]
+fn compress(h: &mut [u32; 8], chunk: &[u8]) {
+    let mut w = [0u32; 64];
+    for i in 0..16 {
+        w[i] = u32::from_be_bytes([
+            chunk[4 * i],
+            chunk[4 * i + 1],
+            chunk[4 * i + 2],
+            chunk[4 * i + 3],
+        ]);
+    }
+    for i in 16..64 {
+        let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
+        let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
+        w[i] = w[i - 16]
+            .wrapping_add(s0)
+            .wrapping_add(w[i - 7])
+            .wrapping_add(s1);
+    }
+
+    let (mut a, mut b, mut c, mut d) = (h[0], h[1], h[2], h[3]);
+    let (mut e, mut f, mut g, mut hh) = (h[4], h[5], h[6], h[7]);
+    for i in 0..64 {
+        let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
+        let ch = (e & f) ^ ((!e) & g);
+        let t1 = hh
+            .wrapping_add(s1)
+            .wrapping_add(ch)
+            .wrapping_add(K256[i])
+            .wrapping_add(w[i]);
+        let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
+        let maj = (a & b) ^ (a & c) ^ (b & c);
+        let t2 = s0.wrapping_add(maj);
+        hh = g;
+        g = f;
+        f = e;
+        e = d.wrapping_add(t1);
+        d = c;
+        c = b;
+        b = a;
+        a = t1.wrapping_add(t2);
+    }
+
+    h[0] = h[0].wrapping_add(a);
+    h[1] = h[1].wrapping_add(b);
+    h[2] = h[2].wrapping_add(c);
+    h[3] = h[3].wrapping_add(d);
+    h[4] = h[4].wrapping_add(e);
+    h[5] = h[5].wrapping_add(f);
+    h[6] = h[6].wrapping_add(g);
+    h[7] = h[7].wrapping_add(hh);
 }
 
 /// Digest como cadena hexadecimal en minúscula (64 caracteres).
@@ -137,6 +152,27 @@ mod tests {
         assert_eq!(
             hex(&[b'a'; 64]),
             "ffe054fe7ae0cb6dc65c3af9b61d5209f439851db43d0ba5997337df154668eb"
+        );
+        // Un millón de 'a' (vector largo clásico): muchos bloques completos
+        // procesados sin copia más el relleno del final.
+        assert_eq!(
+            hex(&vec![b'a'; 1_000_000]),
+            "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0"
+        );
+    }
+
+    #[test]
+    fn sha256_todas_las_longitudes_de_cola_son_coherentes() {
+        // 56..=63 bytes de cola necesitan dos bloques de relleno: comprobar
+        // que cada longitud da un digest distinto y que el prefijo común no
+        // colisiona (un error de relleno suele repetir digests).
+        let data = [0x5au8; 200];
+        let digests: std::collections::HashSet<[u8; 32]> =
+            (0..=200).map(|n| sha256(&data[..n])).collect();
+        assert_eq!(digests.len(), 201);
+        assert_eq!(
+            hex(&[b'a'; 56]),
+            "b35439a4ac6f0948b6d6f9e3c6af0f5f590ce20f1bde7090ef7970686ec6738a"
         );
     }
 

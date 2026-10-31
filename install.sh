@@ -14,7 +14,7 @@
 #  builds that clone. Run it again any time to update.
 #
 #  Options (environment variables, all optional):
-#    SOCSHARK_VERSION         version to install, e.g. 0.7.0 (default: latest)
+#    SOCSHARK_VERSION         version to install, e.g. 0.8.0 (default: latest)
 #    SOCSHARK_FROM_SOURCE=1   build from source instead of downloading
 #    SOCSHARK_DOWNLOAD_URL    another download location (a release mirror, https:// only)
 #    SOCSHARK_BIN             install folder (default ~/.local/bin)

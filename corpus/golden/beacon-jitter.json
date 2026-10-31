@@ -1,0 +1,155 @@
+{
+  "alerted_flows": [
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/192.168.1.30:41000-198.51.100.23:443",
+      "risk_score": 10
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/192.168.1.30:41001-198.51.100.23:443",
+      "risk_score": 10
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/192.168.1.30:41002-198.51.100.23:443",
+      "risk_score": 10
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/192.168.1.30:41003-198.51.100.23:443",
+      "risk_score": 10
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/192.168.1.30:41004-198.51.100.23:443",
+      "risk_score": 10
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/192.168.1.30:41005-198.51.100.23:443",
+      "risk_score": 10
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/192.168.1.30:41006-198.51.100.23:443",
+      "risk_score": 10
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/192.168.1.30:41007-198.51.100.23:443",
+      "risk_score": 10
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/192.168.1.30:41008-198.51.100.23:443",
+      "risk_score": 10
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/192.168.1.30:41009-198.51.100.23:443",
+      "risk_score": 10
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/192.168.1.30:41010-198.51.100.23:443",
+      "risk_score": 10
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/192.168.1.30:41011-198.51.100.23:443",
+      "risk_score": 10
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/192.168.1.30:41012-198.51.100.23:443",
+      "risk_score": 10
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/192.168.1.30:41013-198.51.100.23:443",
+      "risk_score": 10
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/192.168.1.30:41014-198.51.100.23:443",
+      "risk_score": 10
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/192.168.1.30:41015-198.51.100.23:443",
+      "risk_score": 10
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/192.168.1.30:41016-198.51.100.23:443",
+      "risk_score": 10
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/192.168.1.30:41017-198.51.100.23:443",
+      "risk_score": 10
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/192.168.1.30:41018-198.51.100.23:443",
+      "risk_score": 10
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/192.168.1.30:41019-198.51.100.23:443",
+      "risk_score": 10
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/192.168.1.30:41020-198.51.100.23:443",
+      "risk_score": 10
+    }
+  ],
+  "alerts_by_rule": {
+    "BEACONING": 21
+  },
+  "flows": 21
+}

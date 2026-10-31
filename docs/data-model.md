@@ -116,10 +116,16 @@ archivo entero. Las convenciones:
 - Los campos opcionales/futuros llevan `#[serde(default)]`: un JSON producido
   por una versión nueva sigue cargando en una versión vieja, y los campos
   que llegarán con eBPF/carving no rompen a los consumidores actuales.
+- Cada línea empieza por `"schema_version": 1` (constante
+  `JSONL_SCHEMA_VERSION`). **Contrato estable desde la 1.0**: añadir un
+  campo opcional no cambia la versión (los lectores deben ignorar campos
+  desconocidos); quitar o renombrar un campo, cambiar su tipo o su
+  significado sube la versión y se anuncia en el CHANGELOG. Un consumidor
+  que solo entienda la versión 1 debe rechazar líneas con una versión mayor.
 - Ejemplo real (primer flujo de la demo, recortado):
 
 ```json
-{"flow_id":"udp/8.8.8.8:53-192.168.1.10:53001","state":"Idle",
+{"schema_version":1,"flow_id":"udp/8.8.8.8:53-192.168.1.10:53001","state":"Idle",
  "transport":"Udp","l7_protocol":"Dns","src_ip":"192.168.1.10",
  "src_port":53001,"dst_ip":"8.8.8.8","dst_port":53,
  "first_seen_micros":1700000000000000,"packets":1,"bytes":71,

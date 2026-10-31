@@ -328,7 +328,8 @@ fn announce(
     let mut announced = 0u64;
     for f in flows {
         if let Some(w) = writer.as_deref_mut() {
-            let line = serde_json::to_string(f).context("error serializando flujo")?;
+            let line = serde_json::to_string(&socshark_core::VersionedFlow::new(f))
+                .context("error serializando flujo")?;
             writeln!(w, "{line}").context("error escribiendo JSONL")?;
         }
         if (opts.show_noise || !f.is_background_noise)

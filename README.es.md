@@ -71,7 +71,7 @@ socshark gui
 - **¿No hay binario para tu sistema, o no arranca?** El instalador lo compila
   desde el código, instalando lo necesario (Git, Rust, un enlazador de C; en
   Windows, las Build Tools de C++ de Visual Studio).
-- Opciones (variables de entorno): `SOCSHARK_VERSION` (p. ej. `0.7.0`; por
+- Opciones (variables de entorno): `SOCSHARK_VERSION` (p. ej. `0.8.0`; por
   defecto, la última), `SOCSHARK_FROM_SOURCE=1` (compilar en vez de
   descargar), `SOCSHARK_BIN` (carpeta de instalación en Linux/macOS),
   `SOCSHARK_NO_SETCAP=1`.

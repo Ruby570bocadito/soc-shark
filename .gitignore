@@ -9,3 +9,6 @@
 /informe*.html
 /report*.html
 /dist
+
+# Capturas reales del corpus: se descargan con scripts/fetch_corpus.py
+/corpus/captures/

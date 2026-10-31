@@ -1,0 +1,103 @@
+<!--
+  Reglas de Wazuh para los eventos de soc-shark (`socshark export -F wazuh`).
+
+  Copia este bloque en /var/ossec/etc/rules/local_rules.xml del manager y
+  declara el JSONL como <localfile> con <log_format>json</log_format>
+  (receta completa en docs/siem-export.md). Ajusta los IDs si chocan con
+  reglas tuyas: el rango 100200-100299 queda reservado para soc-shark.
+
+  Contrato verificado por crates/socshark-soc/tests/wazuh_contract.rs: cada
+  nivel y cada técnica MITRE que puede emitir soc-shark tiene aquí su regla.
+-->
+<group name="socshark,">
+
+  <!-- Todo evento de soc-shark: nivel 0 (solo archivo con logall). -->
+  <rule id="100200" level="0">
+    <decoded_as>json</decoded_as>
+    <field name="program_name">^socshark$</field>
+    <description>soc-shark: flujo de red</description>
+  </rule>
+
+  <!--
+    Orden: Wazuh elige la PRIMERA regla hija de 100200 que casa, así que van
+    de lo más específico (threat intel, técnica MITRE) a lo más genérico
+    (nivel sugerido). Un flujo sin técnica MITRE cae en las de severidad.
+  -->
+
+  <!-- Destino en threat intel offline: sube a 12 aunque la severidad sea menor. -->
+  <rule id="100210" level="12">
+    <if_sid>100200</if_sid>
+    <field name="data.threat_intel">\.+</field>
+    <description>soc-shark: destino en lista de threat intel</description>
+  </rule>
+
+  <!--
+    MITRE ATT&CK: el módulo del manager lee el bloque <mitre> de la regla
+    que dispara. Una regla hija por técnica que emite soc-shark.
+  -->
+  <rule id="100220" level="10">
+    <if_sid>100200</if_sid>
+    <field name="rule.mitre.id">T1071.004</field>
+    <description>soc-shark: túnel DNS (T1071.004)</description>
+    <mitre><id>T1071.004</id></mitre>
+  </rule>
+  <rule id="100221" level="10">
+    <if_sid>100200</if_sid>
+    <field name="rule.mitre.id">T1071.001</field>
+    <description>soc-shark: C2 sobre web (T1071.001)</description>
+    <mitre><id>T1071.001</id></mitre>
+  </rule>
+  <rule id="100222" level="8">
+    <if_sid>100200</if_sid>
+    <field name="rule.mitre.id">T1071</field>
+    <description>soc-shark: comunicación periódica tipo beacon (T1071)</description>
+    <mitre><id>T1071</id></mitre>
+  </rule>
+  <rule id="100223" level="8">
+    <if_sid>100200</if_sid>
+    <field name="rule.mitre.id">T1046</field>
+    <description>soc-shark: escaneo de red o de puertos (T1046)</description>
+    <mitre><id>T1046</id></mitre>
+  </rule>
+  <rule id="100224" level="10">
+    <if_sid>100200</if_sid>
+    <field name="rule.mitre.id">T1036</field>
+    <description>soc-shark: archivo con identidad falseada (T1036)</description>
+    <mitre><id>T1036</id></mitre>
+  </rule>
+  <rule id="100225" level="8">
+    <if_sid>100200</if_sid>
+    <field name="rule.mitre.id">T1021</field>
+    <description>soc-shark: servicio remoto inseguro o expuesto (T1021)</description>
+    <mitre><id>T1021</id></mitre>
+  </rule>
+  <rule id="100226" level="10">
+    <if_sid>100200</if_sid>
+    <field name="rule.mitre.id">T1090.003</field>
+    <description>soc-shark: tráfico a través de Tor (T1090.003)</description>
+    <mitre><id>T1090.003</id></mitre>
+  </rule>
+
+  <!-- Severidad sugerida por soc-shark → nivel real de alerta. -->
+  <rule id="100201" level="3">
+    <if_sid>100200</if_sid>
+    <field name="rule.level">^2$</field>
+    <description>soc-shark (info): $(rule.description)</description>
+  </rule>
+  <rule id="100202" level="5">
+    <if_sid>100200</if_sid>
+    <field name="rule.level">^4$|^6$</field>
+    <description>soc-shark: $(rule.description)</description>
+  </rule>
+  <rule id="100203" level="10">
+    <if_sid>100200</if_sid>
+    <field name="rule.level">^10$</field>
+    <description>soc-shark (alta): $(rule.description)</description>
+  </rule>
+  <rule id="100204" level="13">
+    <if_sid>100200</if_sid>
+    <field name="rule.level">^13$</field>
+    <description>soc-shark (crítica): $(rule.description)</description>
+  </rule>
+
+</group>

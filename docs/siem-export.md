@@ -128,8 +128,14 @@ pero solo las detecciones generan alerta.
    JSONL: el decoder JSON de serie extrae los campos (`srcip`/`dstip`
    indexados; el resto bajo `data.*`). Esto **por sí solo no genera
    alertas**.
-3. Añade reglas propias (p. ej. en `local_rules.xml`) que traduzcan el nivel
-   sugerido a nivel real de alerta:
+3. Copia las reglas de [`docs/wazuh/local_rules.xml`](wazuh/local_rules.xml)
+   en el `local_rules.xml` del manager. Traducen el nivel sugerido a nivel
+   real de alerta, etiquetan cada técnica MITRE que emite soc-shark y suben
+   a 12 los destinos en threat intel. El test
+   `crates/socshark-soc/tests/wazuh_contract.rs` comprueba en cada
+   `cargo test` que el JSON tiene la forma que esas reglas esperan y que
+   ninguna técnica ni nivel se queda sin regla (pendiente: probarlas contra
+   un manager real con `wazuh-logtest`). Lo esencial de esas reglas:
 
    ```xml
    <group name="socshark,">
