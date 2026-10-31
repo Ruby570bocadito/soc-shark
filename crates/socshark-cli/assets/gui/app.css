@@ -267,6 +267,7 @@ small { font-size: 12px; }
 .segmented button[aria-pressed="true"] { background: var(--accent); color: var(--accent-text); box-shadow: var(--shadow); }
 .segmented.small { padding: 2px; border-radius: 7px; }
 .segmented.small button { padding: 1px 9px; font-size: 12.5px; border-radius: 5px; }
+.lang-seg button { padding: 4px 8px; font-size: 12px; letter-spacing: .3px; }
 
 /* ------------------------------------------------------------ filtros */
 .filterbar {
@@ -394,6 +395,7 @@ body.dragging-h { cursor: row-resize; user-select: none; }
 .story p { margin: 4px 0; color: var(--muted); font-size: 12.5px; overflow-wrap: anywhere; }
 .story .todo { color: var(--text); background: var(--panel-2); border-radius: 7px; padding: 6px 9px; margin-top: 7px; }
 .story .todo::before { content: "Qué hacer"; display: block; font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .6px; color: var(--accent); margin-bottom: 1px; }
+:root:lang(en) .story .todo::before { content: "What to do"; }
 .story .actions { display: flex; gap: 8px; margin-top: 8px; align-items: center; flex-wrap: wrap; }
 .all-good { text-align: center; padding: 18px 8px; color: var(--muted); display: flex; flex-direction: column; align-items: center; gap: 4px; }
 .all-good .dot { width: 34px; height: 34px; margin-bottom: 4px; }

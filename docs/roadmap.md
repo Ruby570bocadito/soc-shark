@@ -123,8 +123,10 @@ captura en vivo verificada en los tres sistemas.
 - [x] **Formato JSONL versionado**: cada flujo lleva `schema_version`; los
       cambios incompatibles suben su número mayor (ver
       [data-model.md](data-model.md))
-- [ ] **Interfaz en inglés y español** (GUI con selector de idioma; TUI e
-      informe a continuación)
+- [x] **Interfaz en inglés y español**: la GUI con selector de idioma
+      (frases, historias, paquetes, estadísticas, mapa e informe), sin
+      tocar el JSONL ni los `alert.id` (ADR-015). La TUI, los mensajes de
+      la CLI y `socshark report` siguen en español por ahora
 - [ ] Probar los instaladores en limpio: Windows 11 (PowerShell 5.1),
       Ubuntu, Fedora y macOS
 - [ ] Release desde el flujo de Actions con todo lo anterior

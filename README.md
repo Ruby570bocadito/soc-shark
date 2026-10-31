@@ -123,7 +123,8 @@ scrolling:
   </tr>
 </table>
 
-> The interface and the detailed documentation are in Spanish for now.
+> The GUI speaks English and Spanish (switch with the **ES / EN** buttons in the toolbar; it follows your
+> browser the first time). The TUI, the CLI messages and the detailed documentation are in Spanish for now.
 
 ## Usage
 

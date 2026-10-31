@@ -19,6 +19,11 @@
 //!   ni enviarlo (cabecera propia ⇒ preflight CORS que nunca se aprueba).
 //! - El frontend trata todo dato de la captura como texto (nunca HTML) y la
 //!   CSP impide cargar o ejecutar nada externo.
+//!
+//! Idioma (ADR-015): la ventana manda el suyo en la cabecera
+//! `X-Socshark-Lang` (o `?lang=`) y las frases, los paquetes y el informe
+//! se cuentan en ese idioma. Los datos (flujos, `alert.id`, niveles) son
+//! los mismos en los dos.
 
 mod http;
 mod live;
@@ -30,7 +35,7 @@ use std::io::ErrorKind;
 use std::net::{IpAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -41,10 +46,10 @@ use socshark_core::config::PipelineConfig;
 use socshark_core::{EnrichedFlow, L7Protocol, Transport};
 use socshark_flow::PipelineStats;
 use socshark_soc::explain::{
-    explain_with, service_by_port, stories_with, Explanation, Level, Story,
+    explain_in, service_by_port_in, stories_in, Explanation, Level, Story,
 };
-use socshark_soc::hosts::HostDirectory;
-use socshark_soc::ThreatIntelDb;
+use socshark_soc::hosts::{term_in, HostDirectory};
+use socshark_soc::{Lang, ThreatIntelDb};
 
 use crate::pipeline::run_capture;
 use http::{read_body, read_head, write_response, ReadError, Request, Response};
@@ -54,6 +59,7 @@ use packets::PacketIndex;
 
 const INDEX_HTML: &str = include_str!("../../assets/gui/index.html");
 const APP_JS: &str = include_str!("../../assets/gui/app.js");
+const I18N_JS: &str = include_str!("../../assets/gui/i18n.js");
 const APP_CSS: &str = include_str!("../../assets/gui/app.css");
 
 /// Puerto por defecto; si está ocupado se usa uno libre cualquiera.
@@ -83,12 +89,30 @@ pub struct GuiOptions {
     pub cfg: PipelineConfig,
 }
 
+/// Frases de una captura en un idioma.
+struct Texts {
+    explanations: Vec<Explanation>,
+    stories: Vec<Story>,
+}
+
+impl Texts {
+    fn new(flows: &[EnrichedFlow], hosts: &HostDirectory, lang: Lang) -> Self {
+        Self {
+            explanations: flows.iter().map(|f| explain_in(f, hosts, lang)).collect(),
+            stories: stories_in(flows, hosts, lang),
+        }
+    }
+}
+
 /// Captura analizada y lista para la interfaz.
 pub(crate) struct Loaded {
     name: String,
     flows: Vec<EnrichedFlow>,
+    /// En español (el de referencia): siempre, también para los niveles.
     explanations: Vec<Explanation>,
     stories: Vec<Story>,
+    /// En inglés: se calculan la primera vez que la ventana las pide.
+    english: OnceLock<Texts>,
     stats: PipelineStats,
     packets: Arc<RwLock<PacketIndex>>,
     live: Option<LiveInfo>,
@@ -107,9 +131,11 @@ impl Loaded {
         live: Option<LiveInfo>,
         hosts: HostDirectory,
     ) -> Self {
+        let es = Texts::new(&flows, &hosts, Lang::Es);
         Self {
-            explanations: flows.iter().map(|f| explain_with(f, &hosts)).collect(),
-            stories: stories_with(&flows, &hosts),
+            explanations: es.explanations,
+            stories: es.stories,
+            english: OnceLock::new(),
             name,
             flows,
             stats,
@@ -117,6 +143,19 @@ impl Loaded {
             live,
             hosts,
             generation: 0,
+        }
+    }
+
+    /// Frases y historias en el idioma dado (los niveles no cambian).
+    fn texts(&self, lang: Lang) -> (&[Explanation], &[Story]) {
+        match lang {
+            Lang::Es => (&self.explanations, &self.stories),
+            Lang::En => {
+                let t = self
+                    .english
+                    .get_or_init(|| Texts::new(&self.flows, &self.hosts, Lang::En));
+                (&t.explanations, &t.stories)
+            }
         }
     }
 
@@ -213,6 +252,91 @@ fn lock_err() -> Response {
     Response::error(500, "estado interno inconsistente")
 }
 
+/// Idioma que pide la ventana: cabecera `X-Socshark-Lang` o `?lang=`.
+fn req_lang(req: &Request) -> Lang {
+    req.header("x-socshark-lang")
+        .map(str::to_string)
+        .or_else(|| req.query_param("lang"))
+        .map_or(Lang::Es, |c| Lang::from_code(&c))
+}
+
+/// Mensaje de error de la API en el idioma de la ventana.
+fn err_in(status: u16, lang: Lang, es: &str, en: &str) -> Response {
+    Response::error(status, lang.pick(es, en))
+}
+
+/// Los errores del filtro DSL, en inglés si la ventana lo pide. El
+/// analizador los da en español; aquí se traducen sus plantillas.
+fn filter_message_in(message: &str, lang: Lang) -> String {
+    if lang == Lang::Es {
+        return message.to_string();
+    }
+    let fixed = [
+        (
+            "la expresión termina antes de tiempo",
+            "the expression ends too early",
+        ),
+        ("se esperaba ')'", "expected ')'"),
+        (
+            "el lado izquierdo debe ser un campo (p. ej. ip.src)",
+            "the left-hand side must be a field (e.g. ip.src)",
+        ),
+        (
+            "se esperaba '&&' (un solo '&' no es válido)",
+            "expected '&&' (a single '&' is not valid)",
+        ),
+        (
+            "se esperaba '||' (un solo '|' no es válido)",
+            "expected '||' (a single '|' is not valid)",
+        ),
+        (
+            "escape incompleto al final de la cadena",
+            "incomplete escape at the end of the string",
+        ),
+        ("cadena sin cerrar", "unterminated string"),
+    ];
+    if let Some((_, en)) = fixed.iter().find(|(es, _)| *es == message) {
+        return en.to_string();
+    }
+    let templates = [
+        (
+            "expresión demasiado larga (máximo ",
+            "expression too long (maximum ",
+        ),
+        ("token inesperado ", "unexpected token "),
+        (
+            "anidamiento demasiado profundo (máximo ",
+            "nesting too deep (maximum ",
+        ),
+        (
+            "se esperaba un campo, encontrado ",
+            "expected a field, found ",
+        ),
+        (
+            "se esperaba un valor, encontrado ",
+            "expected a value, found ",
+        ),
+        ("el valor ", "the value "),
+        ("carácter inesperado ", "unexpected character "),
+    ];
+    for (es, en) in templates {
+        if let Some(rest) = message.strip_prefix(es) {
+            let rest = rest
+                .replace(" niveles)", " levels)")
+                .replace(
+                    " tras el final de la expresión",
+                    " after the end of the expression",
+                )
+                .replace(
+                    " no es una expresión válida por sí sola",
+                    " is not a valid expression on its own",
+                );
+            return format!("{en}{rest}");
+        }
+    }
+    message.to_string()
+}
+
 impl Server {
     fn new(port: u16, cfg: PipelineConfig) -> Self {
         Self {
@@ -268,7 +392,7 @@ impl Server {
             .query_param("key")
             .and_then(|k| HostDirectory::valid_key(&k))
         else {
-            return Response::error(400, "equipo no válido");
+            return err_in(400, req_lang(req), "equipo no válido", "invalid device");
         };
         let nickname = clean_nickname(&req.query_param("name").unwrap_or_default());
         let saved = match self.nicknames.lock() {
@@ -345,24 +469,30 @@ impl Server {
                     INDEX_HTML.replace("__SOCSHARK_TOKEN__", &self.token),
                 ),
                 ("GET", "/app.js") => Response::new(200, "text/javascript; charset=utf-8", APP_JS),
+                ("GET", "/i18n.js") => {
+                    Response::new(200, "text/javascript; charset=utf-8", I18N_JS)
+                }
                 ("GET", "/app.css") => Response::new(200, "text/css; charset=utf-8", APP_CSS),
                 _ => Response::error(404, "no existe"),
             };
         }
 
         let parts: Vec<&str> = path.trim_start_matches("/api/").split('/').collect();
+        let lang = req_lang(req);
         match (req.method.as_str(), parts.as_slice()) {
             ("GET", ["session"]) => self.with_session(|s| Response::json(200, &session_json(s))),
-            ("GET", ["stories"]) => self.with_loaded(|l| {
+            ("GET", ["stories"]) => self.with_loaded(lang, |l| {
                 Response::json(
                     200,
-                    &serde_json::to_value(&l.stories).unwrap_or(Value::Null),
+                    &serde_json::to_value(l.texts(lang).1).unwrap_or(Value::Null),
                 )
             }),
-            ("GET", ["flows"]) => self.with_loaded(|l| flows_json(l, req.query_param("filter"))),
-            ("GET", ["flows", i, what @ ("packets" | "stream")]) => self.with_loaded(|l| {
+            ("GET", ["flows"]) => {
+                self.with_loaded(lang, |l| flows_json(l, req.query_param("filter"), lang))
+            }
+            ("GET", ["flows", i, what @ ("packets" | "stream")]) => self.with_loaded(lang, |l| {
                 let Some(flow) = i.parse::<usize>().ok().and_then(|i| l.flows.get(i)) else {
-                    return Response::error(404, "flujo inexistente");
+                    return err_in(404, lang, "flujo inexistente", "no such conversation");
                 };
                 let Ok(idx) = l.packets.read() else {
                     return lock_err();
@@ -373,58 +503,65 @@ impl Server {
                         &serde_json::to_value(idx.stream(flow)).unwrap_or(Value::Null),
                     );
                 }
-                let (rows, more) = idx.list(flow);
+                let (rows, more) = idx.list(flow, lang);
                 Response::json(
                     200,
                     &json!({ "packets": rows, "more": more, "truncated": idx.truncated }),
                 )
             }),
-            ("GET", ["packets"]) => self.with_loaded(|l| packets_page(l, req)),
-            ("GET", ["stats"]) => self.with_loaded(|l| stats_json(l, req)),
-            ("GET", ["map"]) => self.with_loaded(|l| map_json(l, req)),
-            ("GET", ["report.html"]) => self.with_loaded(|l| {
+            ("GET", ["packets"]) => self.with_loaded(lang, |l| packets_page(l, req, lang)),
+            ("GET", ["stats"]) => self.with_loaded(lang, |l| stats_json(l, req, lang)),
+            ("GET", ["map"]) => self.with_loaded(lang, |l| map_json(l, req, lang)),
+            ("GET", ["report.html"]) => self.with_loaded(lang, |l| {
                 // La ventana dice su zona horaria (minutos respecto a UTC).
                 let tz = req
                     .query_param("tz")
                     .and_then(|v| v.parse::<i32>().ok())
                     .filter(|m| m.abs() <= 14 * 60)
                     .unwrap_or(0);
+                let (explanations, stories) = l.texts(lang);
                 let html = crate::report::render(&crate::report::ReportInput {
                     name: &l.name,
                     flows: &l.flows,
-                    explanations: &l.explanations,
-                    stories: &l.stories,
+                    explanations,
+                    stories,
                     hosts: &l.hosts,
                     packets: l.stats.total_packets,
                     tz_offset_minutes: tz,
                     generated_micros: live::now_micros(),
+                    lang,
                 });
                 let base = save_name(l).trim_end_matches(".pcap").to_string();
                 Response::download(
-                    &format!("informe-{base}.html"),
+                    &format!("{}-{base}.html", lang.pick("informe", "report")),
                     "text/html; charset=utf-8",
                     html.into_bytes(),
                 )
             }),
-            ("GET", ["hosts"]) => self.with_loaded(|l| {
+            ("GET", ["hosts"]) => self.with_loaded(lang, |l| {
                 Response::json(
                     200,
-                    &json!(l.hosts.hosts().iter().map(host_json).collect::<Vec<_>>()),
+                    &json!(l
+                        .hosts
+                        .hosts()
+                        .iter()
+                        .map(|h| host_json(h, lang))
+                        .collect::<Vec<_>>()),
                 )
             }),
             ("POST", ["hosts", "nick"]) => self.set_nickname(req),
-            ("GET", ["packets", n]) => self.with_loaded(|l| {
+            ("GET", ["packets", n]) => self.with_loaded(lang, |l| {
                 let Ok(idx) = l.packets.read() else {
                     return lock_err();
                 };
-                match n.parse::<usize>().ok().and_then(|n| idx.detail(n)) {
+                match n.parse::<usize>().ok().and_then(|n| idx.detail(n, lang)) {
                     Some(d) => Response::json(200, &serde_json::to_value(d).unwrap_or(Value::Null)),
-                    None => Response::error(404, "paquete inexistente"),
+                    None => err_in(404, lang, "paquete inexistente", "no such packet"),
                 }
             }),
             ("GET", ["timeline"]) => {
-                self.with_loaded(|l| {
-                    let sel = match ViewFilter::from_request(l, req) {
+                self.with_loaded(lang, |l| {
+                    let sel = match ViewFilter::from_request(l, req, lang) {
                         Ok(f) => f,
                         Err(resp) => return resp,
                     };
@@ -442,7 +579,7 @@ impl Server {
                     }
                 })
             }
-            ("GET", ["save.pcap"]) => self.with_loaded(|l| match l.packets.read() {
+            ("GET", ["save.pcap"]) => self.with_loaded(lang, |l| match l.packets.read() {
                 Ok(idx) => {
                     Response::download(&save_name(l), "application/vnd.tcpdump.pcap", idx.to_pcap())
                 }
@@ -476,8 +613,8 @@ impl Server {
                 _,
                 ["session" | "stories" | "flows" | "packets" | "stats" | "map" | "hosts"
                 | "timeline" | "save.pcap" | "report.html" | "live" | "open", ..],
-            ) => Response::error(405, "método no permitido"),
-            _ => Response::error(404, "no existe"),
+            ) => err_in(405, lang, "método no permitido", "method not allowed"),
+            _ => err_in(404, lang, "no existe", "not found"),
         }
     }
 
@@ -488,23 +625,34 @@ impl Server {
         }
     }
 
-    fn with_loaded(&self, f: impl FnOnce(&Loaded) -> Response) -> Response {
+    fn with_loaded(&self, lang: Lang, f: impl FnOnce(&Loaded) -> Response) -> Response {
         self.with_session(|s| match s {
             Some(l) => f(l),
-            None => Response::error(404, "no hay ninguna captura abierta"),
+            None => err_in(
+                404,
+                lang,
+                "no hay ninguna captura abierta",
+                "no capture is open",
+            ),
         })
     }
 
     /// Empieza a capturar en vivo de una interfaz (detiene la anterior).
     fn start_live(self: &Arc<Self>, req: &Request) -> Response {
+        let lang = req_lang(req);
         let Some(iface) = req.query_param("iface").filter(|i| !i.trim().is_empty()) else {
-            return Response::error(400, "falta la interfaz");
+            return err_in(400, lang, "falta la interfaz", "the interface is missing");
         };
         let bpf = req.query_param("bpf").filter(|b| !b.trim().is_empty());
         if !bpf.as_deref().map(parens_balanced).unwrap_or(true) {
             // `tcp) or (udp` escaparía del paréntesis de `live_bpf` y anularía
             // la exclusión del tráfico de la propia ventana.
-            return Response::error(400, "el filtro BPF tiene paréntesis desequilibrados");
+            return err_in(
+                400,
+                lang,
+                "el filtro BPF tiene paréntesis desequilibrados",
+                "the BPF filter has unbalanced parentheses",
+            );
         }
         self.stop_live();
         let open = |filter: Option<String>| {
@@ -581,7 +729,12 @@ impl Server {
     /// Analiza una captura subida desde la ventana ("Abrir captura…").
     fn open_upload(&self, req: &Request) -> Response {
         if req.body.is_empty() {
-            return Response::error(400, "el archivo está vacío");
+            return err_in(
+                400,
+                req_lang(req),
+                "el archivo está vacío",
+                "the file is empty",
+            );
         }
         self.stop_live();
         let name = display_name(&req.query_param("name").unwrap_or_default());
@@ -704,13 +857,16 @@ fn session_json(s: Option<&Loaded>) -> Value {
 }
 
 /// Filtro DSL ya parseado, o la respuesta 400 que señala el error.
-fn parse_filter(filter: Option<String>) -> Result<Option<socshark_filter::Expr>, Response> {
+fn parse_filter(
+    filter: Option<String>,
+    lang: Lang,
+) -> Result<Option<socshark_filter::Expr>, Response> {
     let filter = filter.filter(|f| !f.trim().is_empty());
     match filter.as_deref().map(socshark_filter::parse).transpose() {
         Ok(e) => Ok(e),
         Err(e) => Err(Response::json(
             400,
-            &json!({ "error": e.message, "pos": e.pos, "filter": filter }),
+            &json!({ "error": filter_message_in(&e.message, lang), "pos": e.pos, "filter": filter }),
         )),
     }
 }
@@ -722,11 +878,12 @@ fn matches(expr: &Option<socshark_filter::Expr>, flow: &EnrichedFlow) -> bool {
     }
 }
 
-fn flows_json(l: &Loaded, filter: Option<String>) -> Response {
-    let expr = match parse_filter(filter) {
+fn flows_json(l: &Loaded, filter: Option<String>, lang: Lang) -> Response {
+    let expr = match parse_filter(filter, lang) {
         Ok(e) => e,
         Err(resp) => return resp,
     };
+    let (explanations, _) = l.texts(lang);
     let matching: Vec<usize> = (0..l.flows.len())
         .filter(|&i| matches(&expr, &l.flows[i]))
         .collect();
@@ -735,14 +892,19 @@ fn flows_json(l: &Loaded, filter: Option<String>) -> Response {
         .take(MAX_FLOWS)
         .map(|&i| {
             let f = &l.flows[i];
-            let short = |ip| l.hosts.get(ip).and_then(|h| h.short());
+            let short = |ip| l.hosts.get(ip).and_then(|h| h.short_in(lang));
+            let mut flow = serde_json::to_value(f).unwrap_or(Value::Null);
+            if lang != Lang::Es {
+                // Solo la vista: el JSONL sigue llevando el resumen en español.
+                flow["human_summary"] = json!(socshark_soc::summarize::summarize_in(f, lang));
+            }
             json!({
                 "idx": i,
                 "proto": proto_name(f),
                 "src_name": short(f.src_ip),
                 "dst_name": short(f.dst_ip),
-                "flow": f,
-                "explain": &l.explanations[i],
+                "flow": flow,
+                "explain": &explanations[i],
             })
         })
         .collect();
@@ -753,12 +915,19 @@ fn flows_json(l: &Loaded, filter: Option<String>) -> Response {
 }
 
 /// Un equipo del directorio para la ventana: lo que se sabe de él, su
-/// nombre corto y la clave con la que se le pone apodo.
-fn host_json(h: &socshark_soc::hosts::HostInfo) -> Value {
+/// nombre corto y la clave con la que se le pone apodo. Las palabras
+/// (a qué suele corresponder la marca, qué es, el sistema) van en el
+/// idioma de la ventana.
+fn host_json(h: &socshark_soc::hosts::HostInfo, lang: Lang) -> Value {
     let mut v = serde_json::to_value(h).unwrap_or(Value::Null);
     v["key"] = json!(h.key());
-    v["short"] = json!(h.short());
+    v["short"] = json!(h.short_in(lang));
     v["scope"] = json!(ip_scope(&h.ip));
+    if lang != Lang::Es {
+        v["vendor_hint"] = json!(h.vendor_hint.map(|t| term_in(t, lang)));
+        v["kind"] = json!(h.kind.map(|t| term_in(t, lang)));
+        v["os"] = json!(h.os.map(|t| term_in(t, lang)));
+    }
     v
 }
 
@@ -799,8 +968,8 @@ fn ip_scope(ip: &IpAddr) -> &'static str {
 /// Estadísticas de lo que pasa el filtro, como los menús de Wireshark
 /// Jerarquía de protocolos, Endpoints y Conversaciones, pero por
 /// conversación: protocolos, equipos que más hablan y servicios usados.
-fn stats_json(l: &Loaded, req: &Request) -> Response {
-    let sel = match ViewFilter::from_request(l, req) {
+fn stats_json(l: &Loaded, req: &Request, lang: Lang) -> Response {
+    let sel = match ViewFilter::from_request(l, req, lang) {
         Ok(f) => f,
         Err(resp) => return resp,
     };
@@ -930,11 +1099,11 @@ fn stats_json(l: &Loaded, req: &Request) -> Response {
                 "ip": ip, "scope": ip_scope(ip), "domain": ep.domain, "flows": ep.flows,
                 "peers": ep.peers.len(), "packets_out": ep.packets_out, "packets_in": ep.packets_in,
                 "bytes_out": ep.bytes_out, "bytes_in": ep.bytes_in, "level": ep.level,
-                "host": l.hosts.get(*ip).map(host_json),
+                "host": l.hosts.get(*ip).map(|h| host_json(h, lang)),
             })).collect::<Vec<_>>(),
             "services_total": services.len(),
             "services": services.iter().take(MAX_STATS_ROWS).map(|((port, tr), s)| {
-                let known = service_by_port(*port, *tr);
+                let known = service_by_port_in(*port, *tr, lang);
                 json!({
                     "port": port, "transport": tr.as_str(), "name": known.map(|k| k.0),
                     "about": known.map(|k| k.1), "flows": s.flows, "bytes": s.bytes, "level": s.level,
@@ -957,7 +1126,7 @@ struct ViewFilter<'a> {
 }
 
 impl<'a> ViewFilter<'a> {
-    fn from_request(l: &'a Loaded, req: &Request) -> Result<Self, Response> {
+    fn from_request(l: &'a Loaded, req: &Request, lang: Lang) -> Result<Self, Response> {
         Ok(Self {
             l,
             by_id: l
@@ -966,7 +1135,7 @@ impl<'a> ViewFilter<'a> {
                 .enumerate()
                 .map(|(i, f)| (f.flow_id.0.as_str(), i))
                 .collect(),
-            expr: parse_filter(req.query_param("filter"))?,
+            expr: parse_filter(req.query_param("filter"), lang)?,
             show_noise: req.query_param("noise").as_deref() != Some("0"),
             important: req.query_param("important").as_deref() == Some("1"),
         })
@@ -1054,8 +1223,8 @@ fn map_icon(h: Option<&socshark_soc::hosts::HostInfo>, ip: &IpAddr) -> &'static 
 
 /// El mapa de la red: equipos de casa, router, sitios de Internet y quién
 /// habla con quién (con los mismos recortes que la ventana).
-fn map_json(l: &Loaded, req: &Request) -> Response {
-    let sel = match ViewFilter::from_request(l, req) {
+fn map_json(l: &Loaded, req: &Request, lang: Lang) -> Response {
+    let sel = match ViewFilter::from_request(l, req, lang) {
         Ok(f) => f,
         Err(resp) => return resp,
     };
@@ -1109,7 +1278,9 @@ fn map_json(l: &Loaded, req: &Request) -> Response {
             L7Protocol::Dns => None,
             _ => f.tls_sni.as_deref().or(f.resolved_domain.as_deref()),
         };
-        if let Some(name) = named.or_else(|| socshark_soc::explain::well_known_name(f.dst_ip)) {
+        if let Some(name) =
+            named.or_else(|| socshark_soc::explain::well_known_name_in(f.dst_ip, lang))
+        {
             labels
                 .entry(f.dst_ip.to_string())
                 .or_insert_with(|| name.to_string());
@@ -1172,11 +1343,26 @@ fn map_json(l: &Loaded, req: &Request) -> Response {
             let ip: Option<IpAddr> = id.parse().ok();
             let host = ip.and_then(|ip| l.hosts.get(ip));
             let (column, label, icon) = match (id.as_str(), ip) {
-                ("grupo", _) => ("group", "Toda la red local".to_string(), "group"),
-                ("internet-otros", _) => {
-                    ("internet", format!("{hidden_ext} sitios más"), "internet")
-                }
-                ("local-otros", _) => ("local", format!("{hidden_local} equipos más"), "device"),
+                ("grupo", _) => (
+                    "group",
+                    lang.pick("Toda la red local", "The whole local network")
+                        .to_string(),
+                    "group",
+                ),
+                ("internet-otros", _) => (
+                    "internet",
+                    socshark_soc::tr!(lang, "{hidden_ext} sitios más", "{hidden_ext} more sites"),
+                    "internet",
+                ),
+                ("local-otros", _) => (
+                    "local",
+                    socshark_soc::tr!(
+                        lang,
+                        "{hidden_local} equipos más",
+                        "{hidden_local} more devices"
+                    ),
+                    "device",
+                ),
                 (_, Some(ip)) if ip_scope(&ip) == "internet" && !ip.is_loopback() => (
                     "internet",
                     labels.get(id).cloned().unwrap_or_else(|| id.clone()),
@@ -1184,9 +1370,9 @@ fn map_json(l: &Loaded, req: &Request) -> Response {
                 ),
                 (_, Some(ip)) => {
                     let icon = map_icon(host, &ip);
-                    let label = host.and_then(|h| h.short()).unwrap_or_else(|| {
+                    let label = host.and_then(|h| h.short_in(lang)).unwrap_or_else(|| {
                         if ip.is_loopback() {
-                            "Este mismo equipo".into()
+                            lang.pick("Este mismo equipo", "This same device").into()
                         } else {
                             id.clone()
                         }
@@ -1206,7 +1392,7 @@ fn map_json(l: &Loaded, req: &Request) -> Response {
             json!({
                 "id": id, "ip": ip, "label": label, "icon": icon, "column": column,
                 "bytes": acc.bytes, "flows": acc.flows, "level": acc.level,
-                "host": host.map(host_json),
+                "host": host.map(|h| host_json(h, lang)),
             })
         })
         .collect();
@@ -1228,8 +1414,8 @@ fn map_json(l: &Loaded, req: &Request) -> Response {
 }
 
 /// Página de la lista global de paquetes.
-fn packets_page(l: &Loaded, req: &Request) -> Response {
-    let sel = match ViewFilter::from_request(l, req) {
+fn packets_page(l: &Loaded, req: &Request, lang: Lang) -> Response {
+    let sel = match ViewFilter::from_request(l, req, lang) {
         Ok(f) => f,
         Err(resp) => return resp,
     };
@@ -1243,6 +1429,7 @@ fn packets_page(l: &Loaded, req: &Request) -> Response {
         offset,
         limit,
         sel.active().then_some(&keep as &dyn Fn(&str) -> bool),
+        lang,
     );
     let rows: Vec<Value> = rows
         .into_iter()
@@ -1822,6 +2009,107 @@ mod tests {
         assert_eq!(get(&s, "/api/flows/9999/packets", Some(&t), h).0, 404);
         assert_eq!(get(&s, "/api/packets/0", Some(&t), h).0, 404);
         assert_eq!(get(&s, "/api/nada", Some(&t), h).0, 404);
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn la_api_habla_ingles_sin_cambiar_los_datos() {
+        let (s, path) = demo_server();
+        let t = s.token.clone();
+        let h = "127.0.0.1:8787";
+        let (_, es) = get(&s, "/api/flows", Some(&t), h);
+        let (_, en) = get(&s, "/api/flows?lang=en", Some(&t), h);
+        let (es, en) = (
+            es["flows"].as_array().unwrap(),
+            en["flows"].as_array().unwrap(),
+        );
+        assert_eq!(es.len(), en.len());
+        for (a, b) in es.iter().zip(en) {
+            // Mismos datos, mismos niveles e ids de alerta; otras frases.
+            assert_eq!(a["flow"]["flow_id"], b["flow"]["flow_id"]);
+            assert_eq!(a["explain"]["level"], b["explain"]["level"]);
+            let ids = |v: &Value| -> Vec<Value> {
+                v["explain"]["alerts"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|x| x["id"].clone())
+                    .collect()
+            };
+            assert_eq!(ids(a), ids(b));
+            assert_ne!(a["explain"]["headline"], b["explain"]["headline"]);
+            assert!(
+                !b["explain"]["headline"].as_str().unwrap().contains('«'),
+                "{b}"
+            );
+        }
+        let tcp = |v: &Value| v["flow"]["transport"] == "Tcp";
+        let es_tcp = es.iter().find(|f| tcp(f)).unwrap();
+        let en_tcp = en.iter().find(|f| tcp(f)).unwrap();
+        assert!(es_tcp["flow"]["human_summary"]
+            .as_str()
+            .unwrap()
+            .contains(" paq "));
+        assert!(en_tcp["flow"]["human_summary"]
+            .as_str()
+            .unwrap()
+            .contains(" pkts "));
+
+        let (_, stories) = get(&s, "/api/stories?lang=en", Some(&t), h);
+        let scan = stories
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["alert_id"] == "PORT-SCAN")
+            .unwrap();
+        assert!(
+            scan["title"].as_str().unwrap().contains(" scanned "),
+            "{scan}"
+        );
+
+        // Paquetes y capas, con la cabecera que manda la ventana.
+        let req = |path: &str| {
+            let (p, q) = path.split_once('?').unwrap_or((path, ""));
+            let r = s.route(&Request {
+                method: "GET".into(),
+                path: p.into(),
+                query: q.into(),
+                headers: vec![
+                    ("Host".into(), h.into()),
+                    ("X-Socshark-Token".into(), t.clone()),
+                    ("X-Socshark-Lang".into(), "en-US".into()),
+                ],
+                body: vec![],
+            });
+            (r.status, r.body)
+        };
+        let tls = en
+            .iter()
+            .find(|f| f["flow"]["l7_protocol"] == "Tls")
+            .unwrap();
+        let (_, body) = req(&format!("/api/flows/{}/packets", tls["idx"]));
+        let pk: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            pk["packets"][0]["summary"],
+            "Asks to open a connection (SYN)"
+        );
+        let (_, body) = req(&format!("/api/packets/{}", pk["packets"][0]["n"]));
+        let det: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(det["layers"][2]["fields"][0]["name"], "Source port");
+        let (st, body) = req("/api/flows?filter=tcp.port+%3D%3D");
+        assert_eq!(st, 400);
+        let err: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(err["error"], "the expression ends too early");
+        let (st, body) = req("/api/report.html?tz=60");
+        assert_eq!(st, 200);
+        let html = String::from_utf8(body).unwrap();
+        assert!(html.contains("<html lang=\"en\">"));
+        assert!(html.contains("What happened") && html.contains("What to do"));
+        assert!(!html.contains("Qué hacer"));
+        // El diccionario de la ventana se sirve como el resto.
+        let r = call(&s, "GET", "/i18n.js", None);
+        assert_eq!(r.status, 200);
+        assert!(String::from_utf8_lossy(&r.body).contains("SOCSHARK_I18N"));
         std::fs::remove_file(path).ok();
     }
 

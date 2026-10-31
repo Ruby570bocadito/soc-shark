@@ -8,6 +8,9 @@
 //! agrupa las alertas en historias: un escaneo de 12 puertos es *una*
 //! historia, no 12 líneas.
 //!
+//! Las frases existen en español (el de referencia) y en inglés: las
+//! funciones `*_in` reciben el [`Lang`]; las de siempre son las españolas.
+//!
 //! Todo el texto es plano (nunca HTML): los nombres de dominio, rutas y
 //! archivos vienen de la captura y los controla quien genera el tráfico,
 //! así que la interfaz que lo muestre debe tratarlo como texto.
@@ -20,7 +23,9 @@ use socshark_core::{EnrichedFlow, L7Protocol, Severity, Transport};
 
 use crate::hosts::HostDirectory;
 use crate::is_failed_connect;
+use crate::risk::{alert_detail_in, alert_name_in};
 use crate::summarize::fmt_bytes;
+use crate::{tr, Lang};
 
 /// Semáforo de un flujo o una historia. Ordenable: `Ok < Raro < Peligro`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
@@ -91,54 +96,159 @@ pub struct Story {
 /// Servicios conocidos por puerto y transporte: (nombre corto, descripción
 /// para personas). UDP tiene su propia tabla: el 8080/udp no es web.
 pub fn service_by_port(port: u16, transport: Transport) -> Option<(&'static str, &'static str)> {
+    service_by_port_in(port, transport, Lang::Es)
+}
+
+/// Como [`service_by_port`], en el idioma dado.
+pub fn service_by_port_in(
+    port: u16,
+    transport: Transport,
+    lang: Lang,
+) -> Option<(&'static str, &'static str)> {
+    let l = |es: &'static str, en: &'static str| lang.pick(es, en);
     if transport == Transport::Udp {
         return Some(match port {
             53 => ("DNS", "DNS"),
-            67 | 68 => ("DHCP", "reparto de direcciones (DHCP)"),
-            123 => ("NTP", "hora (NTP)"),
-            137 | 138 => ("NetBIOS", "red de Windows (NetBIOS)"),
-            161 | 162 => ("SNMP", "gestión de equipos de red (SNMP)"),
-            443 => ("QUIC", "web segura (QUIC/HTTP3)"),
+            67 | 68 => (
+                "DHCP",
+                l("reparto de direcciones (DHCP)", "address assignment (DHCP)"),
+            ),
+            123 => ("NTP", l("hora (NTP)", "time (NTP)")),
+            137 | 138 => (
+                "NetBIOS",
+                l("red de Windows (NetBIOS)", "Windows networking (NetBIOS)"),
+            ),
+            161 | 162 => (
+                "SNMP",
+                l(
+                    "gestión de equipos de red (SNMP)",
+                    "network device management (SNMP)",
+                ),
+            ),
+            443 => (
+                "QUIC",
+                l("web segura (QUIC/HTTP3)", "secure web (QUIC/HTTP3)"),
+            ),
             500 | 4500 => ("IPsec", "VPN (IPsec)"),
-            514 => ("Syslog", "registro de eventos (syslog)"),
-            1900 => ("SSDP", "descubrimiento de dispositivos (SSDP)"),
-            5353 => ("mDNS", "anuncios de la red local (mDNS)"),
+            514 => (
+                "Syslog",
+                l("registro de eventos (syslog)", "event logging (syslog)"),
+            ),
+            1900 => (
+                "SSDP",
+                l(
+                    "descubrimiento de dispositivos (SSDP)",
+                    "device discovery (SSDP)",
+                ),
+            ),
+            5353 => (
+                "mDNS",
+                l(
+                    "anuncios de la red local (mDNS)",
+                    "local network announcements (mDNS)",
+                ),
+            ),
             _ => return None,
         });
     }
     Some(match port {
-        20 | 21 => ("FTP", "transferencia de archivos (FTP)"),
-        22 => ("SSH", "acceso remoto seguro (SSH)"),
-        23 => ("Telnet", "acceso remoto sin cifrar (Telnet)"),
-        25 | 465 | 587 => ("SMTP", "envío de correo (SMTP)"),
+        20 | 21 => (
+            "FTP",
+            l("transferencia de archivos (FTP)", "file transfer (FTP)"),
+        ),
+        22 => (
+            "SSH",
+            l("acceso remoto seguro (SSH)", "secure remote access (SSH)"),
+        ),
+        23 => (
+            "Telnet",
+            l(
+                "acceso remoto sin cifrar (Telnet)",
+                "unencrypted remote access (Telnet)",
+            ),
+        ),
+        25 | 465 | 587 => ("SMTP", l("envío de correo (SMTP)", "sending email (SMTP)")),
         53 => ("DNS", "DNS"),
-        67 | 68 => ("DHCP", "reparto de direcciones (DHCP)"),
-        80 | 8080 => ("HTTP", "web sin cifrar (HTTP)"),
-        110 | 995 => ("POP3", "recogida de correo (POP3)"),
-        123 => ("NTP", "hora (NTP)"),
-        135 => ("RPC", "servicios internos de Windows (RPC)"),
-        137..=139 => ("NetBIOS", "red de Windows (NetBIOS)"),
-        143 | 993 => ("IMAP", "correo (IMAP)"),
-        443 | 8443 => ("HTTPS", "web segura (HTTPS)"),
-        445 => ("SMB", "carpetas compartidas de Windows (SMB)"),
-        1433 => ("SQL Server", "la base de datos SQL Server"),
-        3306 => ("MySQL", "la base de datos MySQL"),
-        3389 => ("RDP", "escritorio remoto (RDP)"),
-        5353 => ("mDNS", "anuncios de la red local (mDNS)"),
-        5432 => ("PostgreSQL", "la base de datos PostgreSQL"),
-        5900 => ("VNC", "escritorio remoto (VNC)"),
-        515 => ("LPD", "el protocolo de impresión LPD"),
-        631 => ("IPP", "el protocolo de impresión IPP"),
-        9100 => ("impresión", "el canal de impresión directa (JetDirect)"),
-        6379 => ("Redis", "la base de datos Redis"),
-        27017 => ("MongoDB", "la base de datos MongoDB"),
+        67 | 68 => (
+            "DHCP",
+            l("reparto de direcciones (DHCP)", "address assignment (DHCP)"),
+        ),
+        80 | 8080 => ("HTTP", l("web sin cifrar (HTTP)", "unencrypted web (HTTP)")),
+        110 | 995 => (
+            "POP3",
+            l("recogida de correo (POP3)", "fetching email (POP3)"),
+        ),
+        123 => ("NTP", l("hora (NTP)", "time (NTP)")),
+        135 => (
+            "RPC",
+            l(
+                "servicios internos de Windows (RPC)",
+                "internal Windows services (RPC)",
+            ),
+        ),
+        137..=139 => (
+            "NetBIOS",
+            l("red de Windows (NetBIOS)", "Windows networking (NetBIOS)"),
+        ),
+        143 | 993 => ("IMAP", l("correo (IMAP)", "email (IMAP)")),
+        443 | 8443 => ("HTTPS", l("web segura (HTTPS)", "secure web (HTTPS)")),
+        445 => (
+            "SMB",
+            l(
+                "carpetas compartidas de Windows (SMB)",
+                "Windows shared folders (SMB)",
+            ),
+        ),
+        1433 => (
+            "SQL Server",
+            l("la base de datos SQL Server", "the SQL Server database"),
+        ),
+        3306 => ("MySQL", l("la base de datos MySQL", "the MySQL database")),
+        3389 => ("RDP", l("escritorio remoto (RDP)", "remote desktop (RDP)")),
+        5353 => (
+            "mDNS",
+            l(
+                "anuncios de la red local (mDNS)",
+                "local network announcements (mDNS)",
+            ),
+        ),
+        5432 => (
+            "PostgreSQL",
+            l("la base de datos PostgreSQL", "the PostgreSQL database"),
+        ),
+        5900 => ("VNC", l("escritorio remoto (VNC)", "remote desktop (VNC)")),
+        515 => (
+            "LPD",
+            l("el protocolo de impresión LPD", "the LPD printing protocol"),
+        ),
+        631 => (
+            "IPP",
+            l("el protocolo de impresión IPP", "the IPP printing protocol"),
+        ),
+        9100 => (
+            l("impresión", "printing"),
+            l(
+                "el canal de impresión directa (JetDirect)",
+                "the direct printing channel (JetDirect)",
+            ),
+        ),
+        6379 => ("Redis", l("la base de datos Redis", "the Redis database")),
+        27017 => (
+            "MongoDB",
+            l("la base de datos MongoDB", "the MongoDB database"),
+        ),
         _ => return None,
     })
 }
 
 /// `22 (SSH)`, o el número solo si el puerto no es conocido.
 pub fn port_label(port: u16, transport: Transport) -> String {
-    match service_by_port(port, transport) {
+    port_label_in(port, transport, Lang::Es)
+}
+
+/// Como [`port_label`], en el idioma dado.
+pub fn port_label_in(port: u16, transport: Transport, lang: Lang) -> String {
+    match service_by_port_in(port, transport, lang) {
         Some((short, _)) => format!("{port} ({short})"),
         None => port.to_string(),
     }
@@ -146,53 +256,81 @@ pub fn port_label(port: u16, transport: Transport) -> String {
 
 /// Servicio del flujo en palabras: por protocolo detectado y, si no, por puerto.
 pub fn service_name(flow: &EnrichedFlow) -> String {
+    service_name_in(flow, Lang::Es)
+}
+
+/// Como [`service_name`], en el idioma dado.
+pub fn service_name_in(flow: &EnrichedFlow, lang: Lang) -> String {
+    let l = |es: &'static str, en: &'static str| lang.pick(es, en);
     let by_l7 = match flow.l7_protocol {
         L7Protocol::Dns => Some("DNS"),
-        L7Protocol::Tls => Some("conexión segura (TLS/HTTPS)"),
-        L7Protocol::Http => Some("web sin cifrar (HTTP)"),
-        L7Protocol::Ssh => Some("acceso remoto seguro (SSH)"),
-        L7Protocol::Ntp => Some("hora (NTP)"),
-        L7Protocol::Dhcp => Some("reparto de direcciones (DHCP)"),
+        L7Protocol::Tls => Some(l(
+            "conexión segura (TLS/HTTPS)",
+            "secure connection (TLS/HTTPS)",
+        )),
+        L7Protocol::Http => Some(l("web sin cifrar (HTTP)", "unencrypted web (HTTP)")),
+        L7Protocol::Ssh => Some(l(
+            "acceso remoto seguro (SSH)",
+            "secure remote access (SSH)",
+        )),
+        L7Protocol::Ntp => Some(l("hora (NTP)", "time (NTP)")),
+        L7Protocol::Dhcp => Some(l(
+            "reparto de direcciones (DHCP)",
+            "address assignment (DHCP)",
+        )),
         L7Protocol::Unknown => None,
     };
     if let Some(s) = by_l7 {
         return s.to_string();
     }
-    match service_by_port(flow.dst_port, flow.transport) {
+    match service_by_port_in(flow.dst_port, flow.transport, lang) {
         Some((_, long)) => long.to_string(),
-        None => format!(
+        None => tr!(
+            lang,
             "el puerto {}/{}",
+            "port {}/{}",
             flow.dst_port,
             flow.transport.as_str().to_ascii_lowercase()
         ),
     }
 }
 
-/// Servicios públicos muy conocidos (resolutores DNS).
-fn well_known_host(ip: IpAddr) -> Option<&'static str> {
+/// Servicios públicos muy conocidos (resolutores DNS), sin artículo.
+fn well_known(ip: IpAddr, lang: Lang) -> Option<&'static str> {
+    let l = |es: &'static str, en: &'static str| lang.pick(es, en);
     Some(match ip.to_string().as_str() {
         "8.8.8.8" | "8.8.4.4" | "2001:4860:4860::8888" | "2001:4860:4860::8844" => {
-            "el DNS de Google"
+            l("DNS de Google", "Google DNS")
         }
         "1.1.1.1" | "1.0.0.1" | "2606:4700:4700::1111" | "2606:4700:4700::1001" => {
-            "el DNS de Cloudflare"
+            l("DNS de Cloudflare", "Cloudflare DNS")
         }
-        "9.9.9.9" | "149.112.112.112" => "el DNS de Quad9",
-        "208.67.222.222" | "208.67.220.220" => "el DNS de OpenDNS",
+        "9.9.9.9" | "149.112.112.112" => l("DNS de Quad9", "Quad9 DNS"),
+        "208.67.222.222" | "208.67.220.220" => l("DNS de OpenDNS", "OpenDNS DNS"),
         _ => return None,
     })
 }
 
 /// Nombre conocido de un servidor público sin artículo («DNS de Google»).
 pub fn well_known_name(ip: IpAddr) -> Option<&'static str> {
-    well_known_host(ip).map(|n| n.strip_prefix("el ").unwrap_or(n))
+    well_known(ip, Lang::Es)
+}
+
+/// Como [`well_known_name`], en el idioma dado («Google DNS»).
+pub fn well_known_name_in(ip: IpAddr, lang: Lang) -> Option<&'static str> {
+    well_known(ip, lang)
 }
 
 /// Una IP contada para personas: «el DNS de Google (8.8.8.8)», «el equipo
 /// 192.168.1.30», «el servidor 93.184.216.34», «la red local (multicast)».
 pub fn host_name(ip: IpAddr) -> String {
-    if let Some(name) = well_known_host(ip) {
-        return format!("{name} ({ip})");
+    host_name_in(ip, Lang::Es)
+}
+
+/// Como [`host_name`], en el idioma dado («the device 192.168.1.30»).
+pub fn host_name_in(ip: IpAddr, lang: Lang) -> String {
+    if let Some(name) = well_known(ip, lang) {
+        return tr!(lang, "el {name} ({ip})", "the {name} ({ip})");
     }
     let (local, multicast, loopback, broadcast) = match ip {
         IpAddr::V4(v4) => (
@@ -212,22 +350,39 @@ pub fn host_name(ip: IpAddr) -> String {
     // x.x.x.255 en una red privada: la difusión de una red /24 (la de casa).
     let subnet_broadcast = matches!(ip, IpAddr::V4(v4) if v4.is_private() && v4.octets()[3] == 255);
     if ip.is_unspecified() {
-        "un equipo que aún no tiene dirección".to_string()
+        lang.pick(
+            "un equipo que aún no tiene dirección",
+            "a device that has no address yet",
+        )
+        .to_string()
     } else if loopback {
-        format!("este mismo equipo ({ip})")
+        tr!(lang, "este mismo equipo ({ip})", "this same device ({ip})")
     } else if broadcast || subnet_broadcast {
-        "toda la red local (difusión)".to_string()
+        lang.pick(
+            "toda la red local (difusión)",
+            "the whole local network (broadcast)",
+        )
+        .to_string()
     } else if multicast {
-        format!("la red local (multicast {ip})")
+        tr!(
+            lang,
+            "la red local (multicast {ip})",
+            "the local network (multicast {ip})"
+        )
     } else if local {
-        format!("el equipo {ip}")
+        tr!(lang, "el equipo {ip}", "the device {ip}")
     } else {
-        format!("el servidor {ip}")
+        tr!(lang, "el servidor {ip}", "the server {ip}")
     }
 }
 
 /// Nombre amable de un programa: `chrome.exe` → «Chrome».
 pub fn program_label(process: &str) -> String {
+    program_label_in(process, Lang::Es)
+}
+
+/// Como [`program_label`], en el idioma dado.
+pub fn program_label_in(process: &str, lang: Lang) -> String {
     let base = process.rsplit(['/', '\\']).next().unwrap_or(process);
     let stem = match base.len().checked_sub(4) {
         Some(cut) if base.is_char_boundary(cut) && base[cut..].eq_ignore_ascii_case(".exe") => {
@@ -253,9 +408,18 @@ pub fn program_label(process: &str) -> String {
         "whatsapp" => "WhatsApp",
         "telegram" => "Telegram",
         "code" => "Visual Studio Code",
-        "svchost" => "un servicio de Windows (svchost)",
-        "msmpeng" => "el antivirus de Windows (Defender)",
-        "systemd-resolved" => "el sistema (resolución de nombres)",
+        "svchost" => lang.pick(
+            "un servicio de Windows (svchost)",
+            "a Windows service (svchost)",
+        ),
+        "msmpeng" => lang.pick(
+            "el antivirus de Windows (Defender)",
+            "the Windows antivirus (Defender)",
+        ),
+        "systemd-resolved" => lang.pick(
+            "el sistema (resolución de nombres)",
+            "the system (name resolution)",
+        ),
         "node" => "Node.js",
         "java" | "javaw" => "Java",
         s if s.starts_with("python") => "Python",
@@ -264,18 +428,25 @@ pub fn program_label(process: &str) -> String {
     known.to_string()
 }
 
+/// «el programa X del equipo Y» / «the program X on the device Y».
+fn program_on(process: &str, host: &str, lang: Lang) -> String {
+    let p = program_label_in(process, lang);
+    match lang {
+        Lang::Es => format!("el programa {p} {}", de(host)),
+        Lang::En => format!("the program {p} on {host}"),
+    }
+}
+
 /// Quién empezó, con el programa si se sabe (solo en vivo y en este
 /// ordenador): «el programa Chrome de este ordenador (192.168.1.23)».
-fn client_name(flow: &EnrichedFlow, names: &HostDirectory) -> String {
+fn client_name(flow: &EnrichedFlow, names: &HostDirectory, lang: Lang) -> String {
     // Aún sin dirección (DHCP): se le reconoce por la MAC si se puede.
     let host = match flow.src_mac.as_deref().and_then(|m| names.by_mac(m)) {
-        Some(h) if flow.src_ip.is_unspecified() => h.noun(),
-        _ => names.host_name(flow.src_ip),
+        Some(h) if flow.src_ip.is_unspecified() => h.noun_in(lang),
+        _ => names.host_name_in(flow.src_ip, lang),
     };
     match &flow.process_name {
-        Some(p) if is_this_computer(flow.src_ip, names) => {
-            format!("el programa {} {}", program_label(p), de(&host))
-        }
+        Some(p) if is_this_computer(flow.src_ip, names) => program_on(p, &host, lang),
         _ => host,
     }
 }
@@ -289,26 +460,22 @@ fn is_this_computer(ip: IpAddr, names: &HostDirectory) -> bool {
 }
 
 /// Destino contado por su nombre si se conoce (dominio o SNI), si no por IP.
-fn server_name(flow: &EnrichedFlow, names: &HostDirectory) -> String {
+fn server_name(flow: &EnrichedFlow, names: &HostDirectory, lang: Lang) -> String {
     // Conexión que llega a un programa de esta máquina desde fuera.
     if let Some(p) = &flow.process_name {
         if is_this_computer(flow.dst_ip, names) && !is_this_computer(flow.src_ip, names) {
-            return format!(
-                "el programa {} {}",
-                program_label(p),
-                de(&names.host_name(flow.dst_ip))
-            );
+            return program_on(p, &names.host_name_in(flow.dst_ip, lang), lang);
         }
     }
     // Un equipo de casa con nombre propio («la impresora «HP…»») gana a su
     // nombre técnico de mDNS (`HP-OfficeJet.local`).
     if let Some(h) = names.get(flow.dst_ip).filter(|h| h.is_identified()) {
-        return h.noun();
+        return h.noun_in(lang);
     }
     let named = flow.tls_sni.as_deref().or(flow.resolved_domain.as_deref());
     match named {
         Some(name) if flow.l7_protocol != L7Protocol::Dns => format!("{name} ({})", flow.dst_ip),
-        _ => names.host_name(flow.dst_ip),
+        _ => names.host_name_in(flow.dst_ip, lang),
     }
 }
 
@@ -348,6 +515,11 @@ fn shorten(s: &str, max: usize) -> String {
     format!("{head}…{tail}")
 }
 
+/// Un nombre que viene de la captura, entre comillas del idioma.
+fn quoted(s: &str, lang: Lang) -> String {
+    tr!(lang, "«{s}»", "“{s}”")
+}
+
 /// Periodo (s) y número de llamadas de un beacon. El detalle de la alerta
 /// manda ("intervalo medio X s ... en N intervalos"): la variante entre
 /// flujos no se refleja en `interval_stats`. Si no se puede leer, se usa la
@@ -379,9 +551,11 @@ fn base_domain(name: &str) -> String {
     crate::domain::registrable_domain(name).to_string()
 }
 
-fn volume(flow: &EnrichedFlow) -> String {
-    format!(
+fn volume(flow: &EnrichedFlow, lang: Lang) -> String {
+    tr!(
+        lang,
         "Envió {} y recibió {}.",
+        "Sent {} and received {}.",
         fmt_bytes(flow.bytes),
         fmt_bytes(flow.bytes_rev)
     )
@@ -390,36 +564,59 @@ fn volume(flow: &EnrichedFlow) -> String {
 // ------------------------------------------------------------ flujos
 
 /// Cómo terminó un intento de conexión que nunca se estableció.
-fn failed_outcome(flow: &EnrichedFlow) -> &'static str {
+fn failed_outcome(flow: &EnrichedFlow, lang: Lang) -> &'static str {
     let f = &flow.tcp_flags;
     if f.ack == 0 {
-        "No hubo respuesta: no hay nada escuchando o un cortafuegos lo bloquea."
+        lang.pick(
+            "No hubo respuesta: no hay nada escuchando o un cortafuegos lo bloquea.",
+            "No answer: nothing is listening or a firewall is blocking it.",
+        )
     } else if f.syn >= 2 {
-        "El servicio respondió, pero quien llamaba cortó antes de usarlo (típico de un escaneo)."
+        lang.pick(
+            "El servicio respondió, pero quien llamaba cortó antes de usarlo (típico de un escaneo).",
+            "The service answered, but the caller hung up before using it (typical of a scan).",
+        )
     } else {
-        "El equipo lo rechazó: no hay ningún servicio en ese puerto."
+        lang.pick(
+            "El equipo lo rechazó: no hay ningún servicio en ese puerto.",
+            "The device refused it: there is no service on that port.",
+        )
     }
 }
 
 /// Título y explicación del flujo, sin contar sus alertas.
-fn describe(flow: &EnrichedFlow, names: &HostDirectory) -> (String, String) {
-    let client = capitalize(&client_name(flow, names));
-    let server = server_name(flow, names);
+fn describe(flow: &EnrichedFlow, names: &HostDirectory, lang: Lang) -> (String, String) {
+    let client = capitalize(&client_name(flow, names, lang));
+    let server = server_name(flow, names, lang);
+    let l = |es: &str, en: &str| lang.pick(es, en).to_string();
 
     if flow.l7_protocol == L7Protocol::Dhcp {
         return if flow.src_port == 67 {
             (
-                format!("{client} dio dirección {}", a(&server)),
-                "El router reparte las direcciones de la red a los equipos que se conectan \
-                 (DHCP). Normal."
-                    .to_string(),
+                match lang {
+                    Lang::Es => format!("{client} dio dirección {}", a(&server)),
+                    Lang::En => format!("{client} gave an address to {server}"),
+                },
+                l(
+                    "El router reparte las direcciones de la red a los equipos que se conectan \
+                     (DHCP). Normal.",
+                    "The router hands out the network's addresses to the devices that connect \
+                     (DHCP). Normal.",
+                ),
             )
         } else {
             (
-                format!("{client} se conectó a la red y pidió una dirección"),
-                "Al conectarse, cada equipo pide una dirección IP para poder hablar (DHCP) y, \
-                 de paso, dice cómo se llama. Normal."
-                    .to_string(),
+                tr!(
+                    lang,
+                    "{client} se conectó a la red y pidió una dirección",
+                    "{client} joined the network and asked for an address"
+                ),
+                l(
+                    "Al conectarse, cada equipo pide una dirección IP para poder hablar (DHCP) y, \
+                     de paso, dice cómo se llama. Normal.",
+                    "When it connects, every device asks for an IP address so it can talk (DHCP) \
+                     and, along the way, says what it is called. Normal.",
+                ),
             )
         };
     }
@@ -427,120 +624,220 @@ fn describe(flow: &EnrichedFlow, names: &HostDirectory) -> (String, String) {
     if flow.is_background_noise {
         return match flow.l7_protocol {
             L7Protocol::Ntp => (
-                format!("{client} sincronizó la hora con {server}"),
-                "Tráfico automático de fondo: los equipos ajustan su reloj solos. Normal."
-                    .to_string(),
+                tr!(
+                    lang,
+                    "{client} sincronizó la hora con {server}",
+                    "{client} synced its clock with {server}"
+                ),
+                l(
+                    "Tráfico automático de fondo: los equipos ajustan su reloj solos. Normal.",
+                    "Automatic background traffic: devices set their clocks on their own. Normal.",
+                ),
             ),
             _ if flow.dst_port == 5353 || flow.src_port == 5353 => (
-                format!("{client} se anunció en la red local"),
-                "Los equipos presentan solos sus servicios (impresoras, móviles, televisores…). Normal."
-                    .to_string(),
+                tr!(
+                    lang,
+                    "{client} se anunció en la red local",
+                    "{client} announced itself on the local network"
+                ),
+                l(
+                    "Los equipos presentan solos sus servicios (impresoras, móviles, televisores…). Normal.",
+                    "Devices advertise their services on their own (printers, phones, TVs…). Normal.",
+                ),
             ),
             _ if flow.dst_port == 137 || flow.src_port == 137 => (
-                format!("{client} dijo su nombre a la red (NetBIOS)"),
-                "Los equipos con Windows anuncian su nombre para compartir carpetas e impresoras. \
-                 Normal en una red de casa u oficina."
-                    .to_string(),
+                tr!(
+                    lang,
+                    "{client} dijo su nombre a la red (NetBIOS)",
+                    "{client} told the network its name (NetBIOS)"
+                ),
+                l(
+                    "Los equipos con Windows anuncian su nombre para compartir carpetas e impresoras. \
+                     Normal en una red de casa u oficina.",
+                    "Windows computers announce their name to share folders and printers. \
+                     Normal on a home or office network.",
+                ),
             ),
             _ if flow.dst_port == 1900 || flow.src_port == 1900 => (
-                format!("{client} buscó o anunció dispositivos (SSDP)"),
-                "Así se encuentran solos los aparatos de casa: teles, routers, altavoces. Normal."
-                    .to_string(),
+                tr!(
+                    lang,
+                    "{client} buscó o anunció dispositivos (SSDP)",
+                    "{client} looked for or announced devices (SSDP)"
+                ),
+                l(
+                    "Así se encuentran solos los aparatos de casa: teles, routers, altavoces. Normal.",
+                    "This is how home devices find each other on their own: TVs, routers, speakers. Normal.",
+                ),
             ),
             _ => (
-                format!("{client} generó tráfico automático hacia {server}"),
-                "Tráfico de mantenimiento que los equipos envían solos. Normal.".to_string(),
+                tr!(
+                    lang,
+                    "{client} generó tráfico automático hacia {server}",
+                    "{client} sent automatic traffic to {server}"
+                ),
+                l(
+                    "Tráfico de mantenimiento que los equipos envían solos. Normal.",
+                    "Maintenance traffic that devices send on their own. Normal.",
+                ),
             ),
         };
     }
 
     match flow.l7_protocol {
-        L7Protocol::Dns => describe_dns(flow, &client, names),
+        L7Protocol::Dns => describe_dns(flow, &client, names, lang),
         L7Protocol::Tls => (
-            format!("{client} abrió una conexión segura con {server}"),
-            format!(
+            tr!(
+                lang,
+                "{client} abrió una conexión segura con {server}",
+                "{client} opened a secure connection with {server}"
+            ),
+            tr!(
+                lang,
                 "La conexión va cifrada (HTTPS/TLS): se sabe con quién habla, pero no qué dice. {}",
-                volume(flow)
+                "The connection is encrypted (HTTPS/TLS): you can see who it talks to, but not what it says. {}",
+                volume(flow, lang)
             ),
         ),
         L7Protocol::Http => {
-            let mut story = format!(
+            let mut story = tr!(
+                lang,
                 "Es web sin cifrar (HTTP): cualquiera en la red puede leer lo que se envía. {}",
-                volume(flow)
+                "This is unencrypted web (HTTP): anyone on the network can read what is sent. {}",
+                volume(flow, lang)
             );
             for f in &flow.extracted_files {
-                story.push_str(&format!(
-                    " Descargó «{}» ({}).",
-                    shorten(&f.name, 60),
+                story.push_str(&tr!(
+                    lang,
+                    " Descargó {} ({}).",
+                    " Downloaded {} ({}).",
+                    quoted(&shorten(&f.name, 60), lang),
                     fmt_bytes(f.size)
                 ));
             }
-            (format!("{client} navegó sin cifrar {}", a(&server)), story)
+            let title = match lang {
+                Lang::Es => format!("{client} navegó sin cifrar {}", a(&server)),
+                Lang::En => format!("{client} browsed {server} without encryption"),
+            };
+            (title, story)
         }
         L7Protocol::Ssh => (
-            format!("{client} entró por acceso remoto seguro (SSH) en {server}"),
-            format!(
+            tr!(
+                lang,
+                "{client} entró por acceso remoto seguro (SSH) en {server}",
+                "{client} logged in with secure remote access (SSH) on {server}"
+            ),
+            tr!(
+                lang,
                 "SSH sirve para administrar equipos a distancia y va cifrado. Normal si lo usa alguien de IT. {}",
-                volume(flow)
+                "SSH is used to manage computers remotely and is encrypted. Normal if someone from IT uses it. {}",
+                volume(flow, lang)
             ),
         ),
         L7Protocol::Dhcp => (
-            format!("{client} pidió una dirección a la red (DHCP)"),
-            "Así consigue un equipo su dirección IP al conectarse. Normal.".to_string(),
+            tr!(
+                lang,
+                "{client} pidió una dirección a la red (DHCP)",
+                "{client} asked the network for an address (DHCP)"
+            ),
+            l(
+                "Así consigue un equipo su dirección IP al conectarse. Normal.",
+                "This is how a device gets its IP address when it connects. Normal.",
+            ),
         ),
         _ if is_failed_connect(flow) => (
-            format!(
-                "{client} intentó conectar con {} {}",
-                service_name(flow),
-                de(&server)
-            ),
-            failed_outcome(flow).to_string(),
+            match lang {
+                Lang::Es => format!(
+                    "{client} intentó conectar con {} {}",
+                    service_name_in(flow, lang),
+                    de(&server)
+                ),
+                Lang::En => format!(
+                    "{client} tried to connect to {} on {server}",
+                    service_name_in(flow, lang)
+                ),
+            },
+            failed_outcome(flow, lang).to_string(),
         ),
         _ => match flow.transport {
             Transport::Udp if flow.packets_rev == 0 => (
-                format!(
-                    "{client} envió datos {} por {}",
-                    a(&server),
-                    service_name(flow)
-                ),
-                format!(
+                match lang {
+                    Lang::Es => format!(
+                        "{client} envió datos {} por {}",
+                        a(&server),
+                        service_name_in(flow, lang)
+                    ),
+                    Lang::En => format!(
+                        "{client} sent data to {server} over {}",
+                        service_name_in(flow, lang)
+                    ),
+                },
+                tr!(
+                    lang,
                     "{} paquetes ({}) sin respuesta.",
+                    "{} packets ({}) with no reply.",
                     flow.packets,
                     fmt_bytes(flow.bytes)
                 ),
             ),
             Transport::Icmp => (
-                format!("{client} envió mensajes de control (ICMP) {}", a(&server)),
-                "ICMP se usa para comprobar si un equipo responde (ping) y avisar de errores."
-                    .to_string(),
+                match lang {
+                    Lang::Es => {
+                        format!("{client} envió mensajes de control (ICMP) {}", a(&server))
+                    }
+                    Lang::En => format!("{client} sent control messages (ICMP) to {server}"),
+                },
+                l(
+                    "ICMP se usa para comprobar si un equipo responde (ping) y avisar de errores.",
+                    "ICMP is used to check whether a device answers (ping) and to report errors.",
+                ),
             ),
             _ => (
-                format!("{client} habló con {server} por {}", service_name(flow)),
-                format!(
+                tr!(
+                    lang,
+                    "{client} habló con {server} por {}",
+                    "{client} talked to {server} over {}",
+                    service_name_in(flow, lang)
+                ),
+                tr!(
+                    lang,
                     "{} paquetes en total. {}",
+                    "{} packets in total. {}",
                     flow.packets + flow.packets_rev,
-                    volume(flow)
+                    volume(flow, lang)
                 ),
             ),
         },
     }
 }
 
-fn describe_dns(flow: &EnrichedFlow, client: &str, names: &HostDirectory) -> (String, String) {
-    let server = names.host_name(flow.dst_ip);
+fn describe_dns(
+    flow: &EnrichedFlow,
+    client: &str,
+    names: &HostDirectory,
+    lang: Lang,
+) -> (String, String) {
+    let server = names.host_name_in(flow.dst_ip, lang);
+    let guide = lang.pick(
+        "El DNS es la guía telefónica de Internet: traduce nombres en direcciones.",
+        "DNS is the phone book of the Internet: it turns names into addresses.",
+    );
     let Some(dns) = &flow.dns else {
-        return (
-            format!("{client} usó el DNS {}", de(&server)),
-            "El DNS es la guía telefónica de Internet: traduce nombres en direcciones.".into(),
-        );
+        let title = match lang {
+            Lang::Es => format!("{client} usó el DNS {}", de(&server)),
+            Lang::En => format!("{client} used DNS on {server}"),
+        };
+        return (title, guide.into());
     };
     let qname = dns
         .queries
         .first()
-        .map(|q| shorten(&q.name, 48))
-        .unwrap_or_else(|| "un nombre".into());
-    let title = format!("{client} preguntó por «{qname}»");
-    let guide = "El DNS es la guía telefónica de Internet: traduce nombres en direcciones.";
+        .map(|q| quoted(&shorten(&q.name, 48), lang))
+        .unwrap_or_else(|| quoted(lang.pick("un nombre", "a name"), lang));
+    let title = tr!(
+        lang,
+        "{client} preguntó por {qname}",
+        "{client} asked for {qname}"
+    );
     let addrs: Vec<String> = dns
         .answers
         .iter()
@@ -550,19 +847,30 @@ fn describe_dns(flow: &EnrichedFlow, client: &str, names: &HostDirectory) -> (St
                 .or_else(|| a.target.clone())
         })
         .collect();
+    let server = capitalize(&server);
     let story = if !dns.is_response {
-        format!("{} no respondió. {guide}", capitalize(&server))
+        tr!(
+            lang,
+            "{server} no respondió. {guide}",
+            "{server} did not answer. {guide}"
+        )
     } else if dns.rcode == Some(3) {
-        format!(
-            "{} respondió que ese nombre no existe. {guide}",
-            capitalize(&server)
+        tr!(
+            lang,
+            "{server} respondió que ese nombre no existe. {guide}",
+            "{server} answered that the name does not exist. {guide}"
         )
     } else if addrs.is_empty() {
-        format!("{} respondió sin direcciones. {guide}", capitalize(&server))
+        tr!(
+            lang,
+            "{server} respondió sin direcciones. {guide}",
+            "{server} answered without addresses. {guide}"
+        )
     } else {
-        format!(
-            "{} respondió: {}. {guide} Normal.",
-            capitalize(&server),
+        tr!(
+            lang,
+            "{server} respondió: {}. {guide} Normal.",
+            "{server} answered: {}. {guide} Normal.",
             addrs.join(", ")
         )
     };
@@ -574,9 +882,10 @@ fn explain_alert(
     flow: &EnrichedFlow,
     alert: &socshark_core::Alert,
     names: &HostDirectory,
+    lang: Lang,
 ) -> AlertExplanation {
-    let src = names.host_name(flow.src_ip);
-    let dst = names.host_name(flow.dst_ip);
+    let src = names.host_name_in(flow.src_ip, lang);
+    let dst = names.host_name_in(flow.dst_ip, lang);
     // R7 pone delante del detalle la IP listada: si es el origen (conexión
     // entrante desde el C2 o la salida Tor), las frases se dan la vuelta.
     let (listed, local) = match alert.detail.split_whitespace().next() {
@@ -588,6 +897,9 @@ fn explain_alert(
         }
         _ => (dst.clone(), src.clone()),
     };
+    let (src_c, listed_c) = (capitalize(&src), capitalize(&listed));
+    let detail = alert_detail_in(alert, lang);
+    let l = |es: &str, en: &str| lang.pick(es, en).to_string();
     let (title, story, action): (String, String, String) = match alert.id.as_str() {
         "DNS-TUNNELING" => {
             let qname = flow
@@ -602,150 +914,237 @@ fn explain_alert(
                 .detail
                 .split_once(" subdominios únicos")
                 .and_then(|(n, _)| n.parse::<u32>().ok());
+            let (base, sample) = (base_domain(&qname), quoted(&shorten(&qname, 40), lang));
             let story = match volume {
-                Some(n) => format!(
-                    "{} preguntó por {n} nombres distintos de {} en pocos minutos (por ejemplo \
-                     «{}»). Un uso normal repite los mismos nombres; tantos distintos de un \
-                     mismo dominio es la forma de sacar datos de la red trocito a trocito.",
-                    capitalize(&src),
-                    base_domain(&qname),
-                    shorten(&qname, 40)
+                Some(n) => tr!(
+                    lang,
+                    "{src_c} preguntó por {n} nombres distintos de {base} en pocos minutos (por \
+                     ejemplo {sample}). Un uso normal repite los mismos nombres; tantos distintos \
+                     de un mismo dominio es la forma de sacar datos de la red trocito a trocito.",
+                    "{src_c} asked for {n} different names under {base} within a few minutes (for \
+                     example {sample}). Normal use repeats the same names; so many different ones \
+                     from a single domain is a way to smuggle data out of the network bit by bit."
                 ),
-                None => format!(
-                    "{} preguntó por un nombre de {} caracteres que parece aleatorio («{}»). \
+                None => tr!(
+                    lang,
+                    "{src_c} preguntó por un nombre de {} caracteres que parece aleatorio ({sample}). \
                      Los programas maliciosos esconden datos dentro de estos nombres para \
                      sacarlos de la red sin que se note.",
-                    capitalize(&src),
-                    qname.chars().count(),
-                    shorten(&qname, 40)
+                    "{src_c} asked for a {}-character name that looks random ({sample}). \
+                     Malicious programs hide data inside names like these to get it out of the \
+                     network unnoticed.",
+                    qname.chars().count()
                 ),
             };
             (
-                "Posible fuga de datos escondida en DNS".into(),
-                story,
-                format!(
-                    "Averigua qué programa {} hace estas consultas y bloquea el dominio {}.",
-                    de(&src),
-                    base_domain(&qname)
+                l(
+                    "Posible fuga de datos escondida en DNS",
+                    "Possible data leak hidden in DNS",
                 ),
+                story,
+                match lang {
+                    Lang::Es => format!(
+                        "Averigua qué programa {} hace estas consultas y bloquea el dominio {base}.",
+                        de(&src)
+                    ),
+                    Lang::En => format!(
+                        "Find out which program on {src} makes these queries and block the domain {base}."
+                    ),
+                },
             )
         }
         "PORT-SCAN" => (
-            "Escaneo de puertos".into(),
-            format!(
-                "{}. Es lo que hace un programa de escaneo (como nmap) para buscar servicios abiertos.",
-                alert.detail
+            l("Escaneo de puertos", "Port scan"),
+            tr!(
+                lang,
+                "{detail}. Es lo que hace un programa de escaneo (como nmap) para buscar servicios abiertos.",
+                "{detail}. That is what a scanning tool (such as nmap) does to look for open services."
             ),
-            format!(
-                "Si nadie de IT ha lanzado un escaneo autorizado, revisa {src}: puede estar comprometido."
+            tr!(
+                lang,
+                "Si nadie de IT ha lanzado un escaneo autorizado, revisa {src}: puede estar comprometido.",
+                "If nobody in IT has run an authorized scan, check {src}: it may be compromised."
             ),
         ),
         "NETWORK-SWEEP" => (
-            "Barrido de red".into(),
-            format!(
-                "{}. Así buscan los atacantes y los gusanos equipos con un servicio concreto abierto.",
-                alert.detail
+            l("Barrido de red", "Network sweep"),
+            tr!(
+                lang,
+                "{detail}. Así buscan los atacantes y los gusanos equipos con un servicio concreto abierto.",
+                "{detail}. This is how attackers and worms look for devices with a particular service open."
             ),
-            format!(
-                "Si no es un inventario autorizado, revisa {src}: puede estar comprometido."
+            tr!(
+                lang,
+                "Si no es un inventario autorizado, revisa {src}: puede estar comprometido.",
+                "If this is not an authorized inventory, check {src}: it may be compromised."
             ),
         ),
         "REPEATED-ATTEMPTS" => (
-            "Intentos de conexión repetidos".into(),
-            format!(
-                "{}. Puede ser un servicio caído, un programa mal configurado o alguien insistiendo.",
-                alert.detail
+            l(
+                "Intentos de conexión repetidos",
+                "Repeated connection attempts",
             ),
-            format!(
-                "Comprueba si {} {} debería estar funcionando y qué programa {} insiste.",
-                service_name(flow),
-                de(&dst),
-                de(&src)
+            tr!(
+                lang,
+                "{detail}. Puede ser un servicio caído, un programa mal configurado o alguien insistiendo.",
+                "{detail}. It may be a service that is down, a misconfigured program or someone being persistent."
             ),
+            match lang {
+                Lang::Es => format!(
+                    "Comprueba si {} {} debería estar funcionando y qué programa {} insiste.",
+                    service_name_in(flow, lang),
+                    de(&dst),
+                    de(&src)
+                ),
+                Lang::En => format!(
+                    "Check whether {} on {dst} should be working and which program on {src} keeps trying.",
+                    service_name_in(flow, lang)
+                ),
+            },
         ),
         "INSECURE-PORT" => (
-            "Acceso remoto sin cifrar (Telnet)".into(),
-            format!(
-                "{} usó Telnet con {dst}. Telnet envía usuario, contraseña y comandos en texto \
-                 claro: cualquiera en la red puede leerlos.",
-                capitalize(&src)
+            l(
+                "Acceso remoto sin cifrar (Telnet)",
+                "Unencrypted remote access (Telnet)",
             ),
-            "Sustituye Telnet por SSH y cambia las contraseñas que se hayan usado.".into(),
+            tr!(
+                lang,
+                "{src_c} usó Telnet con {dst}. Telnet envía usuario, contraseña y comandos en texto \
+                 claro: cualquiera en la red puede leerlos.",
+                "{src_c} used Telnet with {dst}. Telnet sends the username, password and commands \
+                 in plain text: anyone on the network can read them."
+            ),
+            l(
+                "Sustituye Telnet por SSH y cambia las contraseñas que se hayan usado.",
+                "Replace Telnet with SSH and change any passwords that were used.",
+            ),
         ),
         "EXPOSED-DB" => (
-            "Base de datos accesible desde la red".into(),
-            format!(
-                "{} se conectó directamente a {} en {dst}. Una base de datos abierta a la red es \
-                 un objetivo muy buscado.",
-                capitalize(&src),
-                service_name(flow)
+            l(
+                "Base de datos accesible desde la red",
+                "Database reachable from the network",
             ),
-            "Limita con el cortafuegos quién puede conectarse y revisa sus contraseñas.".into(),
+            tr!(
+                lang,
+                "{src_c} se conectó directamente a {} en {dst}. Una base de datos abierta a la red es \
+                 un objetivo muy buscado.",
+                "{src_c} connected directly to {} on {dst}. A database open to the network is a \
+                 much sought-after target.",
+                service_name_in(flow, lang)
+            ),
+            l(
+                "Limita con el cortafuegos quién puede conectarse y revisa sus contraseñas.",
+                "Use the firewall to limit who can connect and review its passwords.",
+            ),
         ),
         "BEACONING" => {
             let (secs, times) = beacon_period(flow, alert);
             // Variante con jitter: el ritmo varía al azar, pero alrededor de
             // un periodo fijo (así se disfrazan los implantes tipo Cobalt Strike).
             let ritmo = if alert.detail.contains("jitter ~") {
-                "con pequeñas variaciones al azar pero alrededor del mismo ritmo"
+                lang.pick(
+                    "con pequeñas variaciones al azar pero alrededor del mismo ritmo",
+                    "with small random variations but around the same rhythm",
+                )
             } else {
-                "siempre al mismo ritmo"
+                lang.pick("siempre al mismo ritmo", "always at the same rhythm")
             };
             (
-                "Comunicación sospechosamente regular".into(),
-                format!(
-                    "{} contacta con {dst} cada {secs:.0} segundos, {ritmo} ({times} \
+                l(
+                    "Comunicación sospechosamente regular",
+                    "Suspiciously regular communication",
+                ),
+                tr!(
+                    lang,
+                    "{src_c} contacta con {dst} cada {secs:.0} segundos, {ritmo} ({times} \
                      veces). Las personas no navegan así; los programas que «llaman a casa» \
                      (como el malware controlado a distancia) sí.",
-                    capitalize(&src)
+                    "{src_c} contacts {dst} every {secs:.0} seconds, {ritmo} ({times} \
+                     times). People don't browse like that; programs that “phone home” \
+                     (such as remotely controlled malware) do."
                 ),
-                format!(
-                    "Identifica qué programa {} abre esta conexión y si debería hacerlo.",
-                    de(&src)
-                ),
+                match lang {
+                    Lang::Es => format!(
+                        "Identifica qué programa {} abre esta conexión y si debería hacerlo.",
+                        de(&src)
+                    ),
+                    Lang::En => format!(
+                        "Identify which program on {src} opens this connection and whether it should."
+                    ),
+                },
             )
         }
         "FILE-MASQUERADING" => {
             let file = flow.extracted_files.iter().find(|f| f.masquerading_suspect);
-            let name = file.map(|f| shorten(&f.name, 60)).unwrap_or_default();
+            let name = quoted(
+                &file.map(|f| shorten(&f.name, 60)).unwrap_or_default(),
+                lang,
+            );
             let magic = file.and_then(|f| f.magic.clone()).unwrap_or_default();
             let sha = file
                 .and_then(|f| f.sha256.as_deref())
-                .map(|h| format!(" Su huella SHA-256 es {h}."))
+                .map(|h| {
+                    tr!(
+                        lang,
+                        " Su huella SHA-256 es {h}.",
+                        " Its SHA-256 fingerprint is {h}."
+                    )
+                })
                 .unwrap_or_default();
             (
-                "Archivo disfrazado".into(),
-                format!(
-                    "{} descargó «{name}», que aparenta ser otra cosa pero en realidad es un \
+                l("Archivo disfrazado", "Disguised file"),
+                tr!(
+                    lang,
+                    "{src_c} descargó {name}, que aparenta ser otra cosa pero en realidad es un \
                      programa ejecutable ({magic}). Es un truco habitual para colar malware.{sha}",
-                    capitalize(&src)
+                    "{src_c} downloaded {name}, which looks like something else but is actually an \
+                     executable program ({magic}). It is a common trick to sneak in malware.{sha}"
                 ),
-                "No abras el archivo y analízalo con un antivirus o en VirusTotal (por su SHA-256)."
-                    .into(),
+                l(
+                    "No abras el archivo y analízalo con un antivirus o en VirusTotal (por su SHA-256).",
+                    "Don't open the file; scan it with an antivirus or on VirusTotal (by its SHA-256).",
+                ),
             )
         }
         "THREAT-INTEL-FEODO" => (
-            "Conexión con un servidor de malware conocido".into(),
-            format!(
-                "{} aparece en la lista Feodo Tracker de servidores que controlan malware \
-                 (Emotet, Dridex, TrickBot…), y {local} se comunicó con él.",
-                capitalize(&listed)
+            l(
+                "Conexión con un servidor de malware conocido",
+                "Connection to a known malware server",
             ),
-            format!("Desconecta {local} de la red y revísalo con tu equipo de seguridad."),
+            tr!(
+                lang,
+                "{listed_c} aparece en la lista Feodo Tracker de servidores que controlan malware \
+                 (Emotet, Dridex, TrickBot…), y {local} se comunicó con él.",
+                "{listed_c} is on the Feodo Tracker list of servers that control malware \
+                 (Emotet, Dridex, TrickBot…), and {local} communicated with it."
+            ),
+            tr!(
+                lang,
+                "Desconecta {local} de la red y revísalo con tu equipo de seguridad.",
+                "Disconnect {local} from the network and have your security team check it."
+            ),
         ),
         "TOR-USAGE" => (
-            "Uso de la red Tor".into(),
-            format!(
-                "{} es una salida de Tor, una red que oculta quién habla con quién. Puede ser \
+            l("Uso de la red Tor", "Use of the Tor network"),
+            tr!(
+                lang,
+                "{listed_c} es una salida de Tor, una red que oculta quién habla con quién. Puede ser \
                  privacidad legítima o una forma de esconder actividad.",
-                capitalize(&listed)
+                "{listed_c} is a Tor exit, a network that hides who talks to whom. It may be \
+                 legitimate privacy or a way to hide activity."
             ),
-            "Comprueba si el uso de Tor está permitido en tu organización.".into(),
+            l(
+                "Comprueba si el uso de Tor está permitido en tu organización.",
+                "Check whether Tor is allowed in your organization.",
+            ),
         ),
         _ => (
-            alert.name.clone(),
-            alert.detail.clone(),
-            "Revisa esta conversación con más detalle.".into(),
+            alert_name_in(alert, lang),
+            detail,
+            l(
+                "Revisa esta conversación con más detalle.",
+                "Review this conversation in more detail.",
+            ),
         ),
     };
     AlertExplanation {
@@ -766,11 +1165,16 @@ pub fn explain(flow: &EnrichedFlow) -> Explanation {
 /// Como [`explain`], llamando a cada equipo por su nombre si se conoce
 /// («el equipo «iPhone-de-Ana» (192.168.1.30)», «el router (192.168.1.1)»).
 pub fn explain_with(flow: &EnrichedFlow, names: &HostDirectory) -> Explanation {
-    let (title, story) = describe(flow, names);
+    explain_in(flow, names, Lang::Es)
+}
+
+/// Como [`explain_with`], en el idioma dado.
+pub fn explain_in(flow: &EnrichedFlow, names: &HostDirectory, lang: Lang) -> Explanation {
+    let (title, story) = describe(flow, names, lang);
     let mut alerts: Vec<AlertExplanation> = flow
         .alerts
         .iter()
-        .map(|a| explain_alert(flow, a, names))
+        .map(|a| explain_alert(flow, a, names, lang))
         .collect();
     // Estable: a igual nivel se conserva el orden del motor de reglas.
     alerts.sort_by_key(|a| std::cmp::Reverse(a.level));
@@ -820,6 +1224,11 @@ pub fn stories(flows: &[EnrichedFlow]) -> Vec<Story> {
 
 /// Como [`stories`], con los equipos por su nombre.
 pub fn stories_with(flows: &[EnrichedFlow], names: &HostDirectory) -> Vec<Story> {
+    stories_in(flows, names, Lang::Es)
+}
+
+/// Como [`stories_with`], en el idioma dado.
+pub fn stories_in(flows: &[EnrichedFlow], names: &HostDirectory, lang: Lang) -> Vec<Story> {
     let mut groups: BTreeMap<GroupKey, Vec<(usize, &socshark_core::Alert)>> = BTreeMap::new();
     for (i, flow) in flows.iter().enumerate() {
         for alert in &flow.alerts {
@@ -848,24 +1257,36 @@ pub fn stories_with(flows: &[EnrichedFlow], names: &HostDirectory) -> Vec<Story>
                 .map(|&i| flows[i].first_seen_micros)
                 .min()
                 .unwrap_or(0);
-            let single = explain_alert(&flows[i0], a0, names);
+            let single = explain_alert(&flows[i0], a0, names, lang);
             let (title, story, action) = match key {
-                GroupKey::Scan(src, dst) => scan_story(flows, &idx, src, dst, names),
-                GroupKey::Sweep(src, port) => sweep_story(flows, &idx, src, port, names),
-                GroupKey::Repeat(src, dst, port) => (
-                    format!(
-                        "{} insiste en conectar con {} {}",
-                        capitalize(&names.host_name(src)),
-                        port_label(port, Transport::Tcp),
-                        de(&names.host_name(dst))
-                    ),
-                    format!(
-                        "{} intentos sin llegar a conectar. Puede ser un servicio caído, un \
-                         programa mal configurado o alguien insistiendo.",
-                        idx.len()
-                    ),
-                    single.action,
-                ),
+                GroupKey::Scan(src, dst) => scan_story(flows, &idx, src, dst, names, lang),
+                GroupKey::Sweep(src, port) => sweep_story(flows, &idx, src, port, names, lang),
+                GroupKey::Repeat(src, dst, port) => {
+                    let (src, dst) = (names.host_name_in(src, lang), names.host_name_in(dst, lang));
+                    let port = port_label_in(port, Transport::Tcp, lang);
+                    (
+                        match lang {
+                            Lang::Es => format!(
+                                "{} insiste en conectar con {port} {}",
+                                capitalize(&src),
+                                de(&dst)
+                            ),
+                            Lang::En => format!(
+                                "{} keeps trying to connect to {port} on {dst}",
+                                capitalize(&src)
+                            ),
+                        },
+                        tr!(
+                            lang,
+                            "{} intentos sin llegar a conectar. Puede ser un servicio caído, un \
+                             programa mal configurado o alguien insistiendo.",
+                            "{} attempts without ever connecting. It may be a service that is \
+                             down, a misconfigured program or someone being persistent.",
+                            idx.len()
+                        ),
+                        single.action,
+                    )
+                }
                 GroupKey::Single(..) => (single.title, single.story, single.action),
             };
             Story {
@@ -894,6 +1315,7 @@ fn scan_story(
     src: IpAddr,
     dst: IpAddr,
     names: &HostDirectory,
+    lang: Lang,
 ) -> (String, String, String) {
     let mut open = Vec::new();
     let mut closed = Vec::new();
@@ -910,38 +1332,57 @@ fn scan_story(
         if f.tcp_flags.ack == 0 {
             silent += 1;
         } else if f.tcp_flags.syn >= 2 {
-            open.push(port_label(p, Transport::Tcp));
+            open.push(port_label_in(p, Transport::Tcp, lang));
         } else {
-            closed.push(port_label(p, Transport::Tcp));
+            closed.push(port_label_in(p, Transport::Tcp, lang));
         }
     }
-    let mut story = format!(
-        "Probó {} puertos {} sin llegar a conectar.",
-        ports.len(),
-        de(&names.host_name(dst))
-    );
+    let (src, dst) = (names.host_name_in(src, lang), names.host_name_in(dst, lang));
+    let mut story = match lang {
+        Lang::Es => format!(
+            "Probó {} puertos {} sin llegar a conectar.",
+            ports.len(),
+            de(&dst)
+        ),
+        Lang::En => format!(
+            "Tried {} ports on {dst} without ever connecting.",
+            ports.len()
+        ),
+    };
     if !open.is_empty() {
-        story.push_str(&format!(" Respondieron (abiertos): {}.", open.join(", ")));
+        story.push_str(&tr!(
+            lang,
+            " Respondieron (abiertos): {}.",
+            " Answered (open): {}.",
+            open.join(", ")
+        ));
     }
     if !closed.is_empty() {
-        story.push_str(&format!(" Rechazaron (cerrados): {}.", closed.join(", ")));
+        story.push_str(&tr!(
+            lang,
+            " Rechazaron (cerrados): {}.",
+            " Refused (closed): {}.",
+            closed.join(", ")
+        ));
     }
     if silent > 0 {
-        story.push_str(&format!(" Sin respuesta: {silent}."));
+        story.push_str(&tr!(
+            lang,
+            " Sin respuesta: {silent}.",
+            " No answer: {silent}."
+        ));
     }
-    story.push_str(
+    story.push_str(lang.pick(
         " Es lo que hace un programa de escaneo (como nmap) para buscar servicios abiertos.",
-    );
+        " That is what a scanning tool (such as nmap) does to look for open services.",
+    ));
     (
-        format!(
-            "{} escaneó {}",
-            capitalize(&names.host_name(src)),
-            names.host_name(dst)
-        ),
+        tr!(lang, "{} escaneó {dst}", "{} scanned {dst}", capitalize(&src)),
         story,
-        format!(
-            "Si nadie de IT ha lanzado un escaneo autorizado, revisa {}: puede estar comprometido.",
-            names.host_name(src)
+        tr!(
+            lang,
+            "Si nadie de IT ha lanzado un escaneo autorizado, revisa {src}: puede estar comprometido.",
+            "If nobody in IT has run an authorized scan, check {src}: it may be compromised."
         ),
     )
 }
@@ -952,31 +1393,44 @@ fn sweep_story(
     src: IpAddr,
     port: u16,
     names: &HostDirectory,
+    lang: Lang,
 ) -> (String, String, String) {
     let mut hosts: Vec<IpAddr> = idx.iter().map(|&i| flows[i].dst_ip).collect();
     hosts.sort_unstable();
     hosts.dedup();
     let sample: Vec<String> = hosts.iter().take(5).map(|h| h.to_string()).collect();
     let more = if hosts.len() > sample.len() {
-        format!(" y {} más", hosts.len() - sample.len())
+        tr!(
+            lang,
+            " y {} más",
+            " and {} more",
+            hosts.len() - sample.len()
+        )
     } else {
         String::new()
     };
+    let src = names.host_name_in(src, lang);
     (
-        format!(
+        tr!(
+            lang,
             "{} barrió la red buscando {}",
-            capitalize(&names.host_name(src)),
-            port_label(port, Transport::Tcp)
+            "{} swept the network looking for {}",
+            capitalize(&src),
+            port_label_in(port, Transport::Tcp, lang)
         ),
-        format!(
+        tr!(
+            lang,
             "Probó el mismo servicio en {} equipos ({}{more}) sin llegar a conectar. Así buscan \
              los atacantes y los gusanos equipos con un servicio concreto abierto.",
+            "Tried the same service on {} devices ({}{more}) without ever connecting. This is \
+             how attackers and worms look for devices with a particular service open.",
             hosts.len(),
             sample.join(", ")
         ),
-        format!(
-            "Si no es un inventario autorizado, revisa {}: puede estar comprometido.",
-            names.host_name(src)
+        tr!(
+            lang,
+            "Si no es un inventario autorizado, revisa {src}: puede estar comprometido.",
+            "If this is not an authorized inventory, check {src}: it may be compromised."
         ),
     )
 }
@@ -1229,7 +1683,7 @@ mod tests {
             "intervalo medio 300.0s con jitter ±0.5% en 7 intervalos entre conexiones",
         );
         assert_eq!(beacon_period(&f, &a), (300.0, 8));
-        let e = explain_alert(&f, &a, &HostDirectory::default());
+        let e = explain_alert(&f, &a, &HostDirectory::default(), Lang::Es);
         assert!(e.story.contains("cada 300 segundos"), "{}", e.story);
     }
 
@@ -1242,7 +1696,7 @@ mod tests {
             Severity::High,
             "203.0.113.66 aparece en la lista Feodo cargada (--intel-feodo)",
         );
-        let e = explain_alert(&f, &a, &HostDirectory::default());
+        let e = explain_alert(&f, &a, &HostDirectory::default(), Lang::Es);
         assert!(
             e.story.starts_with("El servidor 203.0.113.66 aparece"),
             "{}",
@@ -1279,6 +1733,7 @@ mod tests {
                 &f,
                 &alerta(id, Severity::Medium, "detalle"),
                 &HostDirectory::default(),
+                Lang::Es,
             );
             assert_ne!(a.title, id, "{id} cae en la explicación genérica");
             assert!(!a.action.is_empty());
@@ -1316,5 +1771,135 @@ mod tests {
         assert!(scan.story.contains("Respondieron (abiertos): 22 (SSH)."));
         assert!(scan.story.contains("Rechazaron (cerrados): 21 (FTP)."));
         assert!(scan.story.contains("Sin respuesta: 1."));
+    }
+
+    /// Palabras que delatan un texto sin traducir.
+    fn suena_a_espanol(s: &str) -> Option<&'static str> {
+        [
+            " el ",
+            " la ",
+            " del ",
+            " de ",
+            " que ",
+            " con ",
+            " por ",
+            " sin ",
+            "«",
+            "»",
+            "equipo",
+            "conexión",
+            "puerto",
+            "preguntó",
+            "respondió",
+        ]
+        .into_iter()
+        .find(|w| s.contains(w))
+    }
+
+    #[test]
+    fn frases_en_ingles_para_la_red_de_casa() {
+        let (flows, names) = red_de_casa();
+        let mut texts = Vec::new();
+        for f in &flows {
+            let e = explain_in(f, &names, Lang::En);
+            texts.extend([e.headline, e.title, e.story]);
+            for a in e.alerts {
+                texts.extend([a.title, a.story, a.action]);
+            }
+        }
+        for st in stories_in(&flows, &names, Lang::En) {
+            texts.extend([st.title, st.story, st.action]);
+        }
+        for t in &texts {
+            assert!(
+                suena_a_espanol(t).is_none(),
+                "{t:?}: {:?}",
+                suena_a_espanol(t)
+            );
+        }
+        let has = |needle: &str| texts.iter().any(|t| t.contains(needle));
+        assert!(
+            has("The device “iPhone-de-Ana” (192.168.1.30)"),
+            "{texts:#?}"
+        );
+        assert!(
+            has("The router (192.168.1.1) gave an address to"),
+            "{texts:#?}"
+        );
+        assert!(has("Unencrypted remote access (Telnet)"), "{texts:#?}");
+        // El español sigue siendo el de siempre.
+        let telnet = flows.iter().find(|f| f.dst_port == 23).unwrap();
+        assert_eq!(
+            explain_in(telnet, &names, Lang::Es),
+            explain_with(telnet, &names)
+        );
+    }
+
+    #[test]
+    fn alertas_y_escaneo_en_ingles() {
+        for id in [
+            "DNS-TUNNELING",
+            "PORT-SCAN",
+            "NETWORK-SWEEP",
+            "REPEATED-ATTEMPTS",
+            "INSECURE-PORT",
+            "EXPOSED-DB",
+            "BEACONING",
+            "FILE-MASQUERADING",
+            "THREAT-INTEL-FEODO",
+            "TOR-USAGE",
+        ] {
+            let f = flujo_basico(6, 40000, 22);
+            let a = explain_alert(
+                &f,
+                &alerta(id, Severity::Medium, "detalle"),
+                &HostDirectory::default(),
+                Lang::En,
+            );
+            for t in [&a.title, &a.action] {
+                assert!(suena_a_espanol(t).is_none(), "{id}: {t}");
+            }
+        }
+        let mut f = flujo_basico(6, 40001, 22);
+        f.src_ip = "192.168.1.30".parse().unwrap();
+        f.dst_ip = "192.168.1.1".parse().unwrap();
+        f.tcp_flags.syn = 2;
+        f.tcp_flags.ack = 1;
+        f.alerts = vec![alerta(
+            "PORT-SCAN",
+            Severity::Medium,
+            "192.168.1.30 probó 1 puertos distintos de 192.168.1.1 sin establecer conexión",
+        )];
+        let s = stories_in(&[f.clone()], &HostDirectory::default(), Lang::En);
+        assert_eq!(
+            s[0].title,
+            "The device 192.168.1.30 scanned the device 192.168.1.1"
+        );
+        assert!(
+            s[0].story
+                .starts_with("Tried 1 ports on the device 192.168.1.1"),
+            "{}",
+            s[0].story
+        );
+        assert!(s[0].story.contains("Answered (open): 22 (SSH)."));
+        let e = explain_in(&f, &HostDirectory::default(), Lang::En);
+        assert!(
+            e.alerts[0]
+                .story
+                .starts_with("192.168.1.30 probed 1 different ports"),
+            "{e:#?}"
+        );
+        assert_eq!(
+            host_name_in("8.8.8.8".parse().unwrap(), Lang::En),
+            "the Google DNS (8.8.8.8)"
+        );
+        assert_eq!(
+            service_name_in(&flujo_basico(17, 1, 8080), Lang::En),
+            "port 8080/udp"
+        );
+        assert_eq!(
+            program_label_in("svchost.exe", Lang::En),
+            "a Windows service (svchost)"
+        );
     }
 }

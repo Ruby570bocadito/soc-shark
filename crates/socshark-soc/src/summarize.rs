@@ -5,23 +5,35 @@
 //! sin abrir el paquete. Las fases posteriores añadirán contextos más ricos
 //! (nombres de proceso de eBPF, dominio geográfico, banners HTTP).
 
-use socshark_core::{dns_rcode_str, dns_type_str, EnrichedFlow, L7Protocol, Transport};
+use socshark_core::{dns_rcode_str, dns_type_str, EnrichedFlow, FlowState, L7Protocol, Transport};
 
-/// Genera el `human_summary` del flujo.
+use crate::{tr, Lang};
+
+/// Genera el `human_summary` del flujo (en español: es el que se exporta).
 pub fn summarize(flow: &EnrichedFlow) -> String {
+    summarize_in(flow, Lang::Es)
+}
+
+/// Como [`summarize`], en el idioma dado (para mostrarlo en la GUI; el
+/// JSONL guarda siempre el español).
+pub fn summarize_in(flow: &EnrichedFlow, lang: Lang) -> String {
     let mut out = String::new();
     if flow.is_background_noise {
-        out.push_str("[ruido] ");
+        out.push_str(lang.pick("[ruido] ", "[noise] "));
     }
 
     match flow.l7_protocol {
-        L7Protocol::Dns => summarize_dns(flow, &mut out),
-        _ => summarize_transport(flow, &mut out),
+        L7Protocol::Dns => summarize_dns(flow, &mut out, lang),
+        _ => summarize_transport(flow, &mut out, lang),
     }
 
     if let Some(domain) = &flow.resolved_domain {
         if flow.l7_protocol != L7Protocol::Dns {
-            out.push_str(&format!(" · destino: {domain}"));
+            out.push_str(&tr!(
+                lang,
+                " · destino: {domain}",
+                " · destination: {domain}"
+            ));
         }
     }
     if !flow.alerts.is_empty() {
@@ -31,16 +43,22 @@ pub fn summarize(flow: &EnrichedFlow) -> String {
             .map(|a| a.severity)
             .max()
             .unwrap_or(Severity::Info);
-        out.push_str(&format!(
+        let worst = match lang {
+            Lang::Es => worst.as_str(),
+            Lang::En => severity_en(worst),
+        };
+        out.push_str(&tr!(
+            lang,
             " · ⚠ {} alerta(s), la peor {}",
+            " · ⚠ {} alert(s), worst {}",
             flow.alerts.len(),
-            worst.as_str()
+            worst
         ));
     }
     out
 }
 
-fn summarize_dns(flow: &EnrichedFlow, out: &mut String) {
+fn summarize_dns(flow: &EnrichedFlow, out: &mut String, lang: Lang) {
     let dir = endpoint_str(flow);
     match flow.dns.as_ref() {
         Some(dns) if dns.is_response && !dns.answers.is_empty() => {
@@ -65,8 +83,10 @@ fn summarize_dns(flow: &EnrichedFlow, out: &mut String) {
         }
         Some(dns) if dns.is_response => {
             let qname = dns.queries.first().map(|q| q.name.as_str()).unwrap_or("?");
-            out.push_str(&format!(
+            out.push_str(&tr!(
+                lang,
                 "DNS {}: {} sin respuesta (rcode {})",
+                "DNS {}: {} no answer (rcode {})",
                 dir,
                 qname,
                 dns.rcode
@@ -78,20 +98,27 @@ fn summarize_dns(flow: &EnrichedFlow, out: &mut String) {
             // Un mensaje con QDCOUNT=0 (malformado pero parseable, visto por
             // el fuzzer) no lleva consultas: se describe sin qname.
             match dns.queries.first() {
-                Some(q) => out.push_str(&format!(
+                Some(q) => out.push_str(&tr!(
+                    lang,
                     "DNS {}: consulta {} ({})",
+                    "DNS {}: query {} ({})",
                     dir,
                     q.name,
                     dns_type_str(q.qtype)
                 )),
-                None => out.push_str(&format!("DNS {}: consulta sin qname", dir)),
+                None => out.push_str(&tr!(
+                    lang,
+                    "DNS {}: consulta sin qname",
+                    "DNS {}: query without qname",
+                    dir
+                )),
             }
         }
         None => out.push_str(&format!("DNS {dir}")),
     }
 }
 
-fn summarize_transport(flow: &EnrichedFlow, out: &mut String) {
+fn summarize_transport(flow: &EnrichedFlow, out: &mut String, lang: Lang) {
     let dir = endpoint_str(flow);
     let proto = match flow.l7_protocol {
         L7Protocol::Unknown => flow.transport.as_str().to_string(),
@@ -99,13 +126,34 @@ fn summarize_transport(flow: &EnrichedFlow, out: &mut String) {
     };
     let volumen = fmt_bytes(flow.bytes + flow.bytes_rev);
     let paquetes = flow.packets + flow.packets_rev;
-    out.push_str(&format!("{proto} {dir} · {paquetes} paq · {volumen}"));
+    out.push_str(&tr!(
+        lang,
+        "{proto} {dir} · {paquetes} paq · {volumen}",
+        "{proto} {dir} · {paquetes} pkts · {volumen}"
+    ));
 
     if flow.transport == Transport::Tcp {
-        out.push_str(&format!(" · {}", flow.state.as_str()));
+        let state = match (lang, flow.state) {
+            (Lang::Es, s) => s.as_str(),
+            (Lang::En, FlowState::Active) => "active",
+            (Lang::En, FlowState::Idle) => "idle",
+            (Lang::En, FlowState::Closed) => "closed",
+        };
+        out.push_str(&format!(" · {state}"));
         if flow.tcp_flags.rst > 0 {
             out.push_str(" (RST)");
         }
+    }
+}
+
+/// Severidad en inglés (la de `Severity::as_str` es la del contrato).
+pub fn severity_en(s: Severity) -> &'static str {
+    match s {
+        Severity::Info => "info",
+        Severity::Low => "low",
+        Severity::Medium => "medium",
+        Severity::High => "high",
+        Severity::Critical => "critical",
     }
 }
 
@@ -170,5 +218,8 @@ mod tests {
         assert!(s.contains("TLS"));
         assert!(s.contains("cerrado"));
         assert!(s.contains("RST"));
+        let en = summarize_in(&f, Lang::En);
+        assert!(en.contains("closed") && en.contains("pkts"), "{en}");
+        assert_eq!(summarize(&f), summarize_in(&f, Lang::Es));
     }
 }

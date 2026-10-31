@@ -402,3 +402,49 @@ nombre; una conexión que se abre y cierra entre dos fotos de la tabla de
 sockets queda sin programa (eBPF lo resolverá, Fase 3); macOS aún no
 atribuye programas; Wine no informa del dueño de los sockets, así que en
 Windows se ha probado la lectura de la tabla pero no la atribución real.
+
+---
+
+## ADR-015 — Interfaz bilingüe: español de referencia e inglés en la GUI
+
+**Estado:** aceptada (amplía ADR-007).
+
+**Contexto.** ADR-007 fijó el español para la documentación, la CLI y los
+textos para personas. El README ya está en inglés y la herramienta se
+presenta fuera de España, pero toda la ventana hablaba español: eso frena
+su uso. A la vez, el JSONL, ECS, Wazuh y los `alert.id` son un contrato
+estable (`schema_version` 1) que no puede depender del idioma de nadie.
+
+**Decisión.**
+- **El español sigue siendo el idioma de referencia**: el `human_summary`,
+  el `name` y el `detail` de cada alerta que se exportan, la TUI, la CLI y
+  `socshark report` no cambian. El inglés es una *vista*.
+- **Motor**: `socshark_soc::Lang` (`Es`/`En`) y la macro `tr!` (una
+  plantilla `format!` por idioma). Cada función de texto tiene su variante
+  `*_in(…, lang)` (`explain_in`, `stories_in`, `summarize_in`,
+  `host_name_in`, `HostInfo::noun_in`, `alert_name_in`,
+  `alert_detail_in`…); la de siempre equivale a `Lang::Es`, así que los
+  golden files no cambian. El nombre y el detalle de las alertas se
+  traducen al mostrarlos reconociendo las plantillas de las reglas; lo
+  guardado sigue en español.
+- **API de la GUI**: la ventana manda su idioma en la cabecera
+  `X-Socshark-Lang` (o `?lang=`). Frases, historias, paquetes y capas,
+  estadísticas, mapa, quién es quién, errores del filtro e informe salen en
+  ese idioma; los datos (flujos, niveles, `alert.id`) son idénticos. Las
+  frases en inglés se calculan la primera vez que se piden.
+- **Frontend**: `i18n.js` es un diccionario cuya clave es el propio texto
+  español (al estilo gettext: el código se lee igual que antes y lo que
+  falte se ve en español, nunca vacío). `t(texto, vars)` rellena huecos
+  `{nombre}` en una sola pasada. Los textos fijos de `index.html` se
+  recogen al arrancar y se reescriben como texto, nunca con `innerHTML`,
+  así que la regla de oro (nada de la captura como HTML) se mantiene. El
+  idioma se recuerda en `localStorage` y, la primera vez, se toma el del
+  navegador si es inglés. Cambiar de idioma no vuelve a abrir la captura.
+- Sin dependencias nuevas (ADR-003).
+
+**Consecuencias.** La GUI y su informe sirven a quien no habla español sin
+tocar el contrato de datos. Coste: cada texto nuevo de la GUI necesita su
+entrada en `i18n.js` (lo que falte se anota en
+`window.socsharkMissingI18n`), y las frases del motor se escriben dos
+veces. La TUI, los mensajes de la CLI, `socshark report` y algunos errores
+del sistema (libpcap, lectura de archivos) siguen en español por ahora.
