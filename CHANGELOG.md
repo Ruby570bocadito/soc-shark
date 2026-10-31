@@ -23,7 +23,7 @@ y [SemVer](https://semver.org/lang/es/).
   siguen en español (`schema_version` 1). La TUI, la CLI y `socshark
   report` también.
 
-## [0.8.0] — 2026-10-31
+## [0.8.0] — 2026-11-01
 
 ### Alcance de la 1.0
 
