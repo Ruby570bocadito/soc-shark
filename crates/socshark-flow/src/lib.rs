@@ -509,6 +509,54 @@ impl FlowAggregator {
         self.budget.used
     }
 
+    /// Presupuesto global de reensamblado (ver [`Self::with_stream_budget`]).
+    pub fn stream_budget(&self) -> u64 {
+        self.budget.limit
+    }
+
+    /// Entrega y libera los streams de las conexiones TCP **terminadas**:
+    /// FIN en las dos direcciones o RST, y al menos `quiet_micros` sin
+    /// paquetes hasta `now_micros`. El flujo sigue en la tabla (contadores,
+    /// estado, JA4 y resto intactos, así que el resultado final no cambia),
+    /// pero deja de recolectar segmentos: su coste vuelve al presupuesto.
+    ///
+    /// Pensado para el *carving* de capturas grandes: tallar lo ya cerrado
+    /// en vez de esperar al final evita que el presupuesto se agote y que
+    /// los streams posteriores lleguen truncados. Quien necesite los streams
+    /// completos al final (`follow`) no debe llamarlo.
+    pub fn release_closed_streams(
+        &mut self,
+        now_micros: u64,
+        quiet_micros: u64,
+    ) -> Vec<(FlowId, L7Protocol, ReassembledStream)> {
+        let mut out = Vec::new();
+        for acc in self.flows.values_mut() {
+            let finished = acc.flags.rst > 0 || acc.flags.fin >= 2;
+            if !finished
+                || acc.streams.is_none()
+                || now_micros.saturating_sub(acc.last_seen) < quiet_micros
+            {
+                continue;
+            }
+            self.budget.used = self.budget.used.saturating_sub(acc.stream_cost());
+            if let Some(sp) = acc.streams.take() {
+                let (client, client_lossy) = sp.fwd.reassemble();
+                let (server, server_lossy) = sp.rev.reassemble();
+                out.push((
+                    acc.key.flow_id(),
+                    acc.l7,
+                    ReassembledStream {
+                        client,
+                        server,
+                        client_lossy,
+                        server_lossy,
+                    },
+                ));
+            }
+        }
+        out
+    }
+
     /// Flujos vivos en la tabla (sin contar los expulsados pendientes).
     pub fn live_flows(&self) -> usize {
         self.flows.len()
@@ -1301,6 +1349,80 @@ mod tests {
         let s = streams.values().next().unwrap();
         assert_eq!(s.client, b"HOLA MUNDO!");
         assert!(!s.client_lossy);
+    }
+
+    fn seg_srv(seq: u32, flags: u8, payload: &[u8]) -> (usize, DissectedPacket<'static>) {
+        dissected(tg::frame_tcp(
+            tg::MAC_ROUTER,
+            tg::MAC_HOST_A,
+            tg::WEB,
+            tg::HOST_A,
+            443,
+            50010,
+            seq,
+            0,
+            flags,
+            payload,
+        ))
+    }
+
+    #[test]
+    fn streams_de_conexiones_cerradas_se_liberan_sin_tocar_el_flujo() {
+        let mut agg = FlowAggregator::new(1000, 120, true);
+        let (len, d) = seg_cli(
+            1000,
+            tg::flags::PSH_ACK,
+            b"GET / HTTP/1.1
+
+",
+        );
+        agg.on_packet(1_000, len, &d);
+        let (len, d) = seg_srv(
+            5000,
+            tg::flags::PSH_ACK,
+            b"HTTP/1.1 200 OK
+
+hola",
+        );
+        agg.on_packet(2_000, len, &d);
+        // Medio cierre: solo un FIN. Aún pueden llegar datos del otro lado.
+        let (len, d) = seg_cli(1018, tg::flags::FIN_ACK, b"");
+        agg.on_packet(3_000, len, &d);
+        assert!(agg.release_closed_streams(60_000_000, 0).is_empty());
+        let (len, d) = seg_srv(5023, tg::flags::FIN_ACK, b"");
+        agg.on_packet(4_000, len, &d);
+        let used = agg.stream_bytes_used();
+        assert!(used > 0);
+
+        // Cerrada, pero sin el silencio pedido: todavía no.
+        assert!(agg.release_closed_streams(5_000, 5_000_000).is_empty());
+        let released = agg.release_closed_streams(10_000_000, 5_000_000);
+        assert_eq!(released.len(), 1);
+        assert_eq!(
+            released[0].2.client,
+            b"GET / HTTP/1.1
+
+"
+        );
+        assert_eq!(
+            released[0].2.server,
+            b"HTTP/1.1 200 OK
+
+hola"
+        );
+        assert_eq!(agg.stream_bytes_used(), 0);
+        // Ya liberado: no se entrega dos veces ni se vuelve a recolectar.
+        assert!(agg.release_closed_streams(20_000_000, 0).is_empty());
+        let (len, d) = seg_srv(5000, tg::flags::PSH_ACK, b"retransmision");
+        agg.on_packet(5_000, len, &d);
+        assert_eq!(agg.stream_bytes_used(), 0);
+
+        // El flujo sigue ahí con todos sus contadores; sin stream al final.
+        let (flows, streams) = agg.finish_with_streams();
+        assert_eq!(flows.len(), 1);
+        assert_eq!(flows[0].packets + flows[0].packets_rev, 5);
+        assert_eq!(flows[0].state, FlowState::Closed);
+        assert!(streams.is_empty());
     }
 
     #[test]

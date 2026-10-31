@@ -55,6 +55,13 @@ y [SemVer](https://semver.org/lang/es/).
   búsqueda de cabeceras HTTP por primer byte (~4,7×) y flujos tallados en
   paralelo (resultado idéntico al secuencial, con test). `dev bench`:
   ~350k → ~450-510k paquetes/s.
+- **Presupuesto de reensamblado configurable** (`--stream-budget-mib` en
+  `capture` y `export`, 256 por defecto) y **tallado temprano**: cuando el
+  presupuesto pasa de la mitad, las conexiones ya cerradas (FIN en las dos
+  direcciones o RST, y 5 s sin paquetes) se tallan y sueltan su memoria.
+  El flujo sigue en la tabla, así que el resultado es el mismo que con un
+  presupuesto infinito (test con 1 MiB, 1 y 4 hilos). Antes, con 1M
+  paquetes se perdía la mitad de los archivos sin avisar.
 
 ### Hoja de ruta 0.8 (primer bloque)
 
