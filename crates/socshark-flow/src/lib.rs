@@ -509,54 +509,6 @@ impl FlowAggregator {
         self.budget.used
     }
 
-    /// Presupuesto global de reensamblado (ver [`Self::with_stream_budget`]).
-    pub fn stream_budget(&self) -> u64 {
-        self.budget.limit
-    }
-
-    /// Entrega y libera los streams de las conexiones TCP **terminadas**:
-    /// FIN en las dos direcciones o RST, y al menos `quiet_micros` sin
-    /// paquetes hasta `now_micros`. El flujo sigue en la tabla (contadores,
-    /// estado, JA4 y resto intactos, así que el resultado final no cambia),
-    /// pero deja de recolectar segmentos: su coste vuelve al presupuesto.
-    ///
-    /// Pensado para el *carving* de capturas grandes: tallar lo ya cerrado
-    /// en vez de esperar al final evita que el presupuesto se agote y que
-    /// los streams posteriores lleguen truncados. Quien necesite los streams
-    /// completos al final (`follow`) no debe llamarlo.
-    pub fn release_closed_streams(
-        &mut self,
-        now_micros: u64,
-        quiet_micros: u64,
-    ) -> Vec<(FlowId, L7Protocol, ReassembledStream)> {
-        let mut out = Vec::new();
-        for acc in self.flows.values_mut() {
-            let finished = acc.flags.rst > 0 || acc.flags.fin >= 2;
-            if !finished
-                || acc.streams.is_none()
-                || now_micros.saturating_sub(acc.last_seen) < quiet_micros
-            {
-                continue;
-            }
-            self.budget.used = self.budget.used.saturating_sub(acc.stream_cost());
-            if let Some(sp) = acc.streams.take() {
-                let (client, client_lossy) = sp.fwd.reassemble();
-                let (server, server_lossy) = sp.rev.reassemble();
-                out.push((
-                    acc.key.flow_id(),
-                    acc.l7,
-                    ReassembledStream {
-                        client,
-                        server,
-                        client_lossy,
-                        server_lossy,
-                    },
-                ));
-            }
-        }
-        out
-    }
-
     /// Flujos vivos en la tabla (sin contar los expulsados pendientes).
     pub fn live_flows(&self) -> usize {
         self.flows.len()
