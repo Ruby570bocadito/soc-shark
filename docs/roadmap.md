@@ -104,8 +104,11 @@ son ideas buenas, no requisitos para llamar «terminado» al producto.
       `PORT-SCAN`, `INSECURE-PORT` y `NON-DNS-ON-53`, y destaparon dos
       falsos positivos más, corregidos: búsquedas inversas IPv6 tomadas por
       «no DNS» y beacon sobre la Optimización de distribución de Windows.
-      *Pendiente:* `FILE-MASQUERADING` (descarga real de malware
-      disfrazado), `NETWORK-SWEEP`, `REPEATED-ATTEMPTS` y `EXPOSED-DB`
+      *Tercer bloque:* dos sesiones de bases de datos del wiki, que
+      resultaron ser del propio equipo (no son exposición a la red) y
+      destaparon que `EXPOSED-DB` saltaba con ellas; corregido. *Pendiente:*
+      `FILE-MASQUERADING` (descarga real de malware disfrazado),
+      `NETWORK-SWEEP`, `REPEATED-ATTEMPTS` y `EXPOSED-DB`
 - [ ] `local_rules.xml` probado contra un manager de laboratorio en Docker
       (`wazuh-logtest`)
 

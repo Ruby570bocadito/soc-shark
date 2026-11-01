@@ -5,6 +5,20 @@ y [SemVer](https://semver.org/lang/es/).
 
 ## [Sin publicar]
 
+### Corregido (encontrado por el corpus real)
+
+- **Falso positivo medio de `EXPOSED-DB` (y de `INSECURE-PORT`) con el
+  equipo hablando consigo mismo**: una base de datos usada solo desde el
+  propio equipo (misma dirección en los dos extremos o loopback) saltaba
+  como «base de datos expuesta», aunque ese tráfico no sale a la red.
+  Pasaba con las sesiones de MySQL y PostgreSQL del wiki de Wireshark.
+
+### Añadido
+
+- 2 capturas más en el corpus (sesiones de MySQL y PostgreSQL del propio
+  equipo), con la verdad de campo corregida tras verificarlas con un lector
+  propio y antes de pasarlas por soc-shark.
+
 ## [0.9.1] — 2026-11-01
 
 **Actualización recomendada para quien use la 0.9.0 en una red con IPv6**

@@ -66,10 +66,11 @@ del mini-IDS tiene al menos un verdadero positivo **real** (no sintético).
 La tabla que imprime el test (`VP reales` / `VP sintéticos` /
 `FP prohibidos` por regla) y la lista de fallos conocidos muestran qué falta.
 
-**Estado (noviembre de 2026).** 21 capturas reales (≈ 13,4 MB) con la verdad
+**Estado (noviembre de 2026).** 23 capturas reales (≈ 13,4 MB) con la verdad
 de campo escrita *antes* de pasarlas por soc-shark:
 
-- 12 del wiki de Wireshark (tráfico legítimo, Telnet y shells remotas);
+- 14 del wiki de Wireshark (tráfico legítimo, Telnet, shells remotas y dos
+  sesiones de bases de datos del propio equipo);
 - 3 de Chris Sanders: un escaneo SYN real de nmap (1000 puertos contra un
   equipo) y DNS legítimo sobre TCP (consulta de 35 KB y transferencia de
   zona), verificadas con un lector propio antes de usarlas;
@@ -96,11 +97,17 @@ de campo escrita *antes* de pasarlas por soc-shark:
   («no es DNS») en cualquier red con IPv6 (dnscat2);
 - `BEACONING` medio sobre la Optimización de distribución de Windows
   (TCP/7680 entre equipos de la red, cada ~40 s): ahora es ruido de fondo
-  solo si los dos extremos son de la red local.
+  solo si los dos extremos son de la red local;
+- `EXPOSED-DB` medio con bases de datos usadas desde el propio equipo
+  (MySQL de 192.168.0.254 consigo mismo, PostgreSQL por loopback): no están
+  expuestas a la red. Se habían registrado como verdaderos positivos; el
+  lector propio mostró que eran locales y la verdad de campo se corrigió
+  antes de pasarlas por soc-shark.
 
 **Fallo conocido**: la shell en TCP/80 de `dns-remoteshell.pcap`.
 
-**Sin verdadero positivo real todavía**: `FILE-MASQUERADING` (hace falta
-una descarga real de malware disfrazado), `NETWORK-SWEEP`,
-`REPEATED-ATTEMPTS` y `EXPOSED-DB`. Las de threat intel necesitan además
+**Sin verdadero positivo real todavía**: `FILE-MASQUERADING` (hay
+candidata, pero con malware vivo), `NETWORK-SWEEP`, `REPEATED-ATTEMPTS` y
+`EXPOSED-DB` (las dos sesiones del wiki resultaron ser locales); no se
+encontraron capturas públicas pequeñas de las tres últimas. Las de threat intel necesitan además
 las listas.
