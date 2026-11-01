@@ -9,6 +9,9 @@
 //! Atajos: `j/k` o flechas mueven, `Enter` expande el flujo, `/` abre la
 //! línea de filtro (DSL completo), `Enter` aplica, `Esc` cancela, `q` sale.
 
+use std::cell::Cell;
+use std::ops::Range;
+
 use crate::output::sanitize_terminal;
 use socshark_core::EnrichedFlow;
 use socshark_filter::{eval, parse};
@@ -44,6 +47,13 @@ pub struct TuiApp {
     expr: Option<String>,
     error: Option<String>,
     quit: bool,
+    /// Líneas del panel de alertas de la vista actual. Solo cambian con el
+    /// filtro, así que se calculan en [`Self::refresh`] y no en cada
+    /// fotograma (con miles de alertas, rehacerlas costaba ~40 ms por tecla).
+    alerts: Vec<(String, String)>,
+    /// Primera fila visible de la lista. `Cell` porque la ajusta el dibujo
+    /// (que solo conoce la altura) sin necesitar `&mut`.
+    scroll: Cell<usize>,
 }
 
 impl TuiApp {
@@ -58,9 +68,33 @@ impl TuiApp {
             expr: None,
             error: None,
             quit: false,
+            alerts: Vec::new(),
+            scroll: Cell::new(0),
         };
         app.refresh();
         app
+    }
+
+    /// Filas de la vista que caben en `height` líneas, siguiendo a la
+    /// selección como una lista normal: el desplazamiento solo se mueve
+    /// cuando la selección sale de la ventana. El dibujo solo construye
+    /// estas filas, no las miles que no se ven.
+    pub fn window(&self, height: usize) -> Range<usize> {
+        let len = self.view.len();
+        if height == 0 || len == 0 {
+            self.scroll.set(0);
+            return 0..0;
+        }
+        let mut off = self.scroll.get();
+        if self.selected < off {
+            off = self.selected;
+        } else if self.selected >= off + height {
+            off = self.selected + 1 - height;
+        }
+        // Si la lista encoge (filtro), sin hueco vacío al final.
+        off = off.min(len.saturating_sub(height));
+        self.scroll.set(off);
+        off..(off + height).min(len)
     }
 
     pub fn should_quit(&self) -> bool {
@@ -117,6 +151,7 @@ impl TuiApp {
         if self.selected >= self.view.len() {
             self.selected = self.view.len().saturating_sub(1);
         }
+        self.alerts = self.compute_alert_lines();
     }
 
     /// Procesa una tecla lógica según el modo actual.
@@ -253,8 +288,12 @@ impl TuiApp {
             .collect()
     }
 
-    /// Entradas del panel de alertas: `(flujo, línea)`.
-    pub fn alert_lines(&self) -> Vec<(String, String)> {
+    /// Entradas del panel de alertas de la vista actual: `(flujo, línea)`.
+    pub fn alert_lines(&self) -> &[(String, String)] {
+        &self.alerts
+    }
+
+    fn compute_alert_lines(&self) -> Vec<(String, String)> {
         let mut out = Vec::new();
         for i in 0..self.view.len() {
             if let Some(f) = self.visible(i) {
@@ -335,6 +374,61 @@ mod tests {
             flow("tcp/b-2", 60, false, None),
             flow("udp/c-3", 0, true, None),
         ])
+    }
+
+    #[test]
+    fn la_ventana_sigue_a_la_seleccion_sin_saltos() {
+        let flows: Vec<EnrichedFlow> = (0..100)
+            .map(|i| flow(&format!("tcp/f-{i}"), (i % 7) as u8 * 10, false, None))
+            .collect();
+        let mut a = TuiApp::new(flows);
+        assert_eq!(a.window(10), 0..10);
+        // Bajar dentro de la ventana no la mueve.
+        a.move_down(9);
+        assert_eq!(a.window(10), 0..10);
+        // Salir por abajo la desplaza lo justo: la selección queda al final.
+        a.move_down(1);
+        assert_eq!(a.window(10), 1..11);
+        a.move_down(30);
+        assert_eq!(a.window(10), 31..41);
+        // Subir dentro de la ventana no la mueve; salir por arriba sí.
+        a.move_up(5);
+        assert_eq!(a.window(10), 31..41);
+        a.move_up(10);
+        assert_eq!(a.window(10), 25..35);
+        // Al final no queda hueco vacío.
+        a.move_down(1000);
+        assert_eq!(a.window(10), 90..100);
+        // Si un filtro encoge la lista, la ventana se recoloca sin hueco.
+        a.preset_filter("flow.risk >= 60");
+        let n = a.view_len();
+        assert!(n > 0 && n < 100);
+        let w = a.window(10);
+        assert!(w.contains(&a.selected()), "{w:?} sel {}", a.selected());
+        assert_eq!(w.end, n.min(w.start + 10));
+        assert!(w.end - w.start == n.min(10));
+        // Altura cero o vista vacía: nada que pintar.
+        assert_eq!(a.window(0), 0..0);
+        a.preset_filter("flow.risk >= 255");
+        assert_eq!(a.window(10), 0..0);
+    }
+
+    #[test]
+    fn el_panel_de_alertas_sigue_al_filtro() {
+        let mut con = flow("tcp/x-1", 60, false, None);
+        con.alerts.push(socshark_core::Alert {
+            id: "PORT-SCAN".into(),
+            name: "x".into(),
+            severity: socshark_core::Severity::Medium,
+            detail: "d".into(),
+            mitre: None,
+        });
+        let mut a = TuiApp::new(vec![con, flow("tcp/y-2", 0, false, None)]);
+        assert_eq!(a.alert_lines().len(), 1);
+        a.preset_filter("flow.risk == 0");
+        assert!(a.alert_lines().is_empty());
+        a.preset_filter("");
+        assert_eq!(a.alert_lines().len(), 1);
     }
 
     #[test]
@@ -436,7 +530,11 @@ mod tests {
         let todo: Vec<String> = a
             .detail_lines()
             .into_iter()
-            .chain(a.alert_lines().into_iter().flat_map(|(x, y)| [x, y]))
+            .chain(
+                a.alert_lines()
+                    .iter()
+                    .flat_map(|(x, y)| [x.clone(), y.clone()]),
+            )
             .collect();
         for l in &todo {
             assert!(
@@ -619,15 +717,18 @@ pub mod term {
             render_flows(f, app, left);
         }
 
-        // Panel de alertas (derecha).
+        // Panel de alertas (derecha): solo las que caben (dos líneas cada
+        // una, sin contar el borde); el título lleva el total.
+        let fits = usize::from(right.height.saturating_sub(2)) / 2;
         let alert_items: Vec<ListItem> = app
             .alert_lines()
-            .into_iter()
+            .iter()
+            .take(fits)
             .map(|(flow_id, line)| {
                 ListItem::new(vec![
-                    Line::from(truncate(&line, 40)),
+                    Line::from(truncate(line, 40)),
                     Line::from(Span::styled(
-                        truncate(&flow_id, 40),
+                        truncate(flow_id, 40),
                         Style::default().fg(Color::DarkGray),
                     )),
                 ])
@@ -660,7 +761,10 @@ pub mod term {
     }
 
     fn render_flows(f: &mut Frame, app: &TuiApp, area: Rect) {
-        let items: Vec<ListItem> = (0..app.view_len())
+        // Solo las filas que caben dentro del borde.
+        let rows = app.window(usize::from(area.height.saturating_sub(2)));
+        let first = rows.start;
+        let items: Vec<ListItem> = rows
             .map(|i| {
                 let flow = app.visible(i).expect("índice válido");
                 let alerts = if flow.alerts.is_empty() {
@@ -702,7 +806,7 @@ pub mod term {
             .highlight_symbol("▸ ");
         let mut state = ListState::default();
         if app.view_len() > 0 {
-            state.select(Some(app.selected()));
+            state.select(Some(app.selected() - first));
         }
         f.render_stateful_widget(list, area, &mut state);
     }

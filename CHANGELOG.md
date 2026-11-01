@@ -13,6 +13,11 @@ y [SemVer](https://semver.org/lang/es/).
   memorizado (las flechas ya no reordenan 10 000 filas en cada pulsación).
   Volver a ver las 10 000 tras un filtro: 726 → 409 ms hasta la última
   fila y el bloqueo más largo de la ventana de 190 a 77 ms.
+- **TUI fluida con 10 000 conversaciones**: cada fotograma construía las
+  10 000 líneas y el panel de alertas (dos veces). Ahora solo las filas
+  que caben, con un desplazamiento que sigue a la selección, y las alertas
+  se calculan al aplicar el filtro: 7,4 → 0,4 ms por fotograma, y de 50 a
+  0,4 ms con 20 000 alertas (antes, mantener pulsada `j` daba tirones).
 
 ## [0.8.0] — 2026-11-01
 
