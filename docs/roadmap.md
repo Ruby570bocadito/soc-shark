@@ -92,9 +92,11 @@ son ideas buenas, no requisitos para llamar «terminado» al producto.
       de Wireshark con la verdad de campo escrita antes de pasarlas. Dieron
       2 falsos positivos High (DNS-TUNNELING con el localizador de AD,
       FILE-MASQUERADING con HTML comprimido), ya corregidos; INSECURE-PORT
-      tiene 3 verdaderos positivos reales; y 1 fallo conocido documentado
-      (shell remota en el puerto 53, sin regla). *Pendiente:* capturas de
-      ataques reales para el resto de reglas (escaneo, túnel, beacon, T1036)
+      tiene 3 verdaderos positivos reales; y la shell remota en el puerto
+      53, que no detectaba nada, dio lugar a la regla `NON-DNS-ON-53`
+      (T1571; 1 VP real, 0 FP). Sigue como fallo conocido la shell en el
+      puerto 80. *Pendiente:* capturas de ataques reales para el resto de
+      reglas (escaneo, túnel, beacon, T1036)
 - [ ] `local_rules.xml` probado contra un manager de laboratorio en Docker
       (`wazuh-logtest`)
 

@@ -67,6 +67,7 @@ regla suma a `risk_score` (tope 100) y emite alerta al superar su umbral.
 | `REPEATED-ATTEMPTS` | ≥ 4 intentos fallidos al mismo host:puerto sin llegar a escaneo | servicio caído, C2 muerto o sondeo insistente (severidad baja) | +10 | **implementado** |
 | `INSECURE-PORT` | conexión a telnet 23/tcp que no es una sonda fallida | credenciales y comandos en texto claro | +35 | **implementado** |
 | `EXPOSED-DB` | conexión a 3306/5432/1433/6379/27017 que no es una sonda fallida | base de datos alcanzable desde la red observada | +25 | **implementado** |
+| `NON-DNS-ON-53` (T1571) | flujo por el puerto 53 que transporta datos (TCP con `PSH`; UDP siempre) sin **ningún** mensaje DNS válido | shell remota, VPN o control remoto colado por el agujero que los cortafuegos dejan al DNS. El DNS sobre TCP se reconoce (prefijo de 2 bytes); las comprobaciones de salud (conectar y cerrar), las sondas rechazadas, mDNS (5353) y LLMNR (5355) no cuentan | +40 | **implementado (0.8)** |
 
 Una **sonda fallida** es un flujo TCP con SYN que nunca transportó datos
 ni se cerró con FIN: sin respuesta (puerto filtrado), RST/ACK (cerrado) o

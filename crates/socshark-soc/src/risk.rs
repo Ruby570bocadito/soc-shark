@@ -80,6 +80,55 @@ pub fn shannon_entropy(s: &str) -> f64 {
 /// exfiltración encapsulados en consultas DNS).
 pub const MITRE_DNS_TUNNEL: &str = "T1071.004";
 
+/// Non-Standard Port: un protocolo en un puerto que no le corresponde
+/// (aquí, cualquier cosa que no sea DNS en el 53).
+pub const MITRE_NON_STANDARD_PORT: &str = "T1571";
+
+/// R8: ¿usa el flujo el puerto 53 sin hablar DNS? Devuelve el detalle de la
+/// alerta.
+///
+/// Los cortafuegos dejan pasar el 53 para que funcione el DNS, así que meter
+/// ahí otra cosa (una shell remota, una VPN, un programa de control a
+/// distancia) es un truco clásico para saltárselos. El caso real del corpus
+/// es una shell de `cmd.exe` escuchando en TCP/53 (`dns-remoteshell.pcap`),
+/// que antes no saltaba con nada.
+///
+/// Solo cuenta si viajó contenido y **ningún** paquete del flujo fue un
+/// mensaje DNS válido:
+/// - en TCP, con datos (`PSH`): las comprobaciones de salud que conectan y
+///   cierran no cuentan, ni las sondas rechazadas (eso es R2);
+/// - el DNS sobre TCP se reconoce (prefijo de longitud de 2 bytes), y
+///   cualquier paquete DNS válido deja `flow.dns` puesto;
+/// - solo el 53: mDNS (5353) y LLMNR (5355) van por su cuenta.
+pub fn non_dns_on_port_53(flow: &EnrichedFlow) -> Option<String> {
+    if flow.src_port != 53 && flow.dst_port != 53 {
+        return None;
+    }
+    let carried = match flow.transport {
+        Transport::Tcp => flow.tcp_flags.psh > 0,
+        Transport::Udp => flow.packets + flow.packets_rev > 0,
+        _ => false,
+    };
+    if !carried || flow.dns.is_some() || flow.l7_protocol == L7Protocol::Dns {
+        return None;
+    }
+    // Quien escucha en el 53 es el servidor (si la captura empezó a mitad,
+    // el primer paquete pudo ser suyo).
+    let (client, server) = if flow.dst_port == 53 {
+        (flow.src_ip, flow.dst_ip)
+    } else {
+        (flow.dst_ip, flow.src_ip)
+    };
+    let content = match flow.l7_protocol {
+        L7Protocol::Http | L7Protocol::Tls | L7Protocol::Ssh => flow.l7_protocol.as_str(),
+        _ => "desconocido",
+    };
+    Some(format!(
+        "{} {client} → {server}:53 sin ningún mensaje DNS válido (contenido: {content})",
+        flow.transport.as_str()
+    ))
+}
+
 /// Longitud mínima de la etiqueta más larga del subdominio para sospechar
 /// de datos codificados (base32/hex/base64 suelen ir en etiquetas de 30-63).
 const TUNNEL_MIN_LABEL: usize = 24;
@@ -475,6 +524,18 @@ pub fn assess_with_intel(
         });
     }
 
+    // R8: otra cosa en el puerto 53 — MITRE T1571.
+    if let Some(detail) = non_dns_on_port_53(flow) {
+        score += 40;
+        flow.alerts.push(Alert {
+            id: "NON-DNS-ON-53".into(),
+            name: "Tráfico que no es DNS en el puerto 53".into(),
+            severity: Severity::High,
+            detail,
+            mitre: Some(MITRE_NON_STANDARD_PORT.into()),
+        });
+    }
+
     // R5: beaconing por regularidad de intervalos — MITRE T1071.
     // Solo tráfico no-ruido (NTP/mDNS son regulares por diseño) y con los
     // umbrales configurables: ventana de intervalo y regularidad (CV).
@@ -614,6 +675,7 @@ pub fn alert_name_in(alert: &Alert, lang: Lang) -> String {
         "REPEATED-ATTEMPTS" => "Repeated connection attempts",
         "INSECURE-PORT" => "Cleartext Telnet",
         "EXPOSED-DB" => "Exposed database",
+        "NON-DNS-ON-53" => "Non-DNS traffic on port 53",
         "BEACONING" if jitter => "Periodic communication with jitter (beacon)",
         "BEACONING" => "Periodic communication (beacon)",
         "FILE-MASQUERADING" => "File transferred with a forged identity",
@@ -685,6 +747,16 @@ fn detail_en(id: &str, d: &str) -> Option<String> {
             let rest = d.strip_prefix("conexión directa a puerto de base de datos (")?;
             let (port, ip) = rest.split_once(") en ")?;
             format!("direct connection to a database port ({port}) on {ip}")
+        }
+        "NON-DNS-ON-53" => {
+            let (route, content) = d.split_once(" sin ningún mensaje DNS válido (contenido: ")?;
+            let content = content.strip_suffix(')')?;
+            let content = if content == "desconocido" {
+                "unknown"
+            } else {
+                content
+            };
+            format!("{route} with no valid DNS message (content: {content})")
         }
         "BEACONING" => {
             let rest = d.strip_prefix("intervalo medio ")?;
@@ -804,6 +876,86 @@ mod tests {
         ] {
             assert!(dns_tunnel_suspect(name, &cfg).is_some(), "{name}");
         }
+    }
+
+    #[test]
+    fn otra_cosa_en_el_puerto_53_dispara_r8() {
+        let cfg = PipelineConfig::default();
+        // Shell en TCP/53 (caso real del corpus, dns-remoteshell.pcap): con
+        // datos y sin un solo mensaje DNS.
+        let mut shell = flujo_basico(6, 1396, 53);
+        shell.tcp_flags.syn = 2;
+        shell.tcp_flags.ack = 11;
+        shell.tcp_flags.psh = 5;
+        shell.tcp_flags.rst = 1;
+        assess(&mut shell, ScanSignals::default(), &cfg);
+        let a = shell
+            .alerts
+            .iter()
+            .find(|a| a.id == "NON-DNS-ON-53")
+            .expect("debe saltar");
+        assert_eq!(a.severity, Severity::High);
+        assert_eq!(a.mitre.as_deref(), Some(MITRE_NON_STANDARD_PORT));
+        assert_eq!(
+            a.detail,
+            "TCP 10.0.0.5 → 10.0.0.99:53 sin ningún mensaje DNS válido (contenido: desconocido)"
+        );
+        assert!(shell.risk_score >= 40);
+        assert_eq!(alert_name_in(a, Lang::En), "Non-DNS traffic on port 53");
+        assert_eq!(
+            alert_detail_in(a, Lang::En),
+            "TCP 10.0.0.5 → 10.0.0.99:53 with no valid DNS message (content: unknown)"
+        );
+
+        // Captura empezada a mitad: el primer paquete es del servidor, que
+        // sigue siendo quien escucha en el 53.
+        let mut rev = flujo_basico(6, 53, 50000);
+        rev.tcp_flags.psh = 1;
+        rev.l7_protocol = L7Protocol::Tls;
+        assert_eq!(
+            non_dns_on_port_53(&rev).as_deref(),
+            Some("TCP 10.0.0.99 → 10.0.0.5:53 sin ningún mensaje DNS válido (contenido: TLS)")
+        );
+
+        // UDP/53 sin DNS (una VPN por el 53, por ejemplo).
+        assert!(non_dns_on_port_53(&flujo_basico(17, 50001, 53)).is_some());
+    }
+
+    #[test]
+    fn el_dns_de_verdad_y_lo_que_no_lleva_datos_no_dispara_r8() {
+        // DNS por UDP y por TCP: cualquier mensaje válido deja `flow.dns`.
+        let mut udp = flujo_basico(17, 50001, 53);
+        udp.l7_protocol = L7Protocol::Dns;
+        udp.dns = Some(qname_dns("example.com"));
+        assert!(non_dns_on_port_53(&udp).is_none());
+        let mut tcp = flujo_basico(6, 50002, 53);
+        tcp.tcp_flags.psh = 2;
+        tcp.l7_protocol = L7Protocol::Dns;
+        tcp.dns = Some(qname_dns("example.com"));
+        assert!(non_dns_on_port_53(&tcp).is_none());
+
+        // Comprobación de salud: conecta y cierra sin enviar nada.
+        let mut health = flujo_basico(6, 50003, 53);
+        health.tcp_flags.syn = 2;
+        health.tcp_flags.ack = 3;
+        health.tcp_flags.fin = 2;
+        assert!(non_dns_on_port_53(&health).is_none());
+
+        // Sonda rechazada: eso es cosa de R2 (escaneo).
+        let mut probe = flujo_basico(6, 50004, 53);
+        probe.tcp_flags.syn = 1;
+        probe.tcp_flags.rst = 1;
+        assert!(non_dns_on_port_53(&probe).is_none());
+
+        // mDNS y LLMNR van por su puerto, no por el 53.
+        for port in [5353, 5355] {
+            assert!(non_dns_on_port_53(&flujo_basico(17, port, port)).is_none());
+        }
+
+        // Y cualquier otro puerto, tampoco.
+        let mut web = flujo_basico(6, 50005, 80);
+        web.tcp_flags.psh = 3;
+        assert!(non_dns_on_port_53(&web).is_none());
     }
 
     #[test]

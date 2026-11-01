@@ -77,6 +77,12 @@
     <description>soc-shark: tráfico a través de Tor (T1090.003)</description>
     <mitre><id>T1090.003</id></mitre>
   </rule>
+  <rule id="100227" level="10">
+    <if_sid>100200</if_sid>
+    <field name="rule.mitre.id">T1571</field>
+    <description>soc-shark: otra cosa que no es DNS en el puerto 53 (T1571)</description>
+    <mitre><id>T1571</id></mitre>
+  </rule>
 
   <!-- Severidad sugerida por soc-shark → nivel real de alerta. -->
   <rule id="100201" level="3">

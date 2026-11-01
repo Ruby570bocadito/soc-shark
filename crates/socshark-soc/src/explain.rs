@@ -1037,6 +1037,42 @@ fn explain_alert(
                 "Use the firewall to limit who can connect and review its passwords.",
             ),
         ),
+        "NON-DNS-ON-53" => {
+            // Quien escucha en el 53 es el servidor (la captura pudo empezar
+            // con un paquete suyo).
+            let (client, server) = if flow.dst_port == 53 {
+                (src.clone(), dst.clone())
+            } else {
+                (dst.clone(), src.clone())
+            };
+            let client_c = capitalize(&client);
+            (
+                l(
+                    "Otra cosa por el puerto del DNS",
+                    "Something else on the DNS port",
+                ),
+                tr!(
+                    lang,
+                    "{client_c} habla con {server} por el puerto 53, el del DNS, pero lo que viaja no \
+                     es DNS. Es un truco clásico para colarse por cortafuegos que dejan pasar el DNS: \
+                     suele ser una shell remota, una VPN o un programa de control a distancia.",
+                    "{client_c} talks to {server} on port 53, the DNS port, but what travels is not \
+                     DNS. It is a classic trick to slip through firewalls that let DNS through: it \
+                     is usually a remote shell, a VPN or a remote-control program."
+                ),
+                match lang {
+                    Lang::Es => format!(
+                        "Mira qué se dijeron (pestaña Contenido) y qué programa escucha en el puerto \
+                         53 {}. Si no es un servidor DNS, trátalo como un equipo comprometido.",
+                        de(&server)
+                    ),
+                    Lang::En => format!(
+                        "Look at what they said (Content tab) and which program listens on port 53 \
+                         on {server}. If it is not a DNS server, treat it as a compromised device."
+                    ),
+                },
+            )
+        }
         "BEACONING" => {
             let (secs, times) = beacon_period(flow, alert);
             // Variante con jitter: el ritmo varía al azar, pero alrededor de
@@ -1723,6 +1759,7 @@ mod tests {
             "REPEATED-ATTEMPTS",
             "INSECURE-PORT",
             "EXPOSED-DB",
+            "NON-DNS-ON-53",
             "BEACONING",
             "FILE-MASQUERADING",
             "THREAT-INTEL-FEODO",
@@ -1844,6 +1881,7 @@ mod tests {
             "REPEATED-ATTEMPTS",
             "INSECURE-PORT",
             "EXPOSED-DB",
+            "NON-DNS-ON-53",
             "BEACONING",
             "FILE-MASQUERADING",
             "THREAT-INTEL-FEODO",

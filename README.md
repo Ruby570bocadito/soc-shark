@@ -106,7 +106,7 @@ scrolling:
 | 🗺️ **Network map** | Your devices, the router and the Internet, and who talks to whom; danger in red; click to filter. |
 | 🔔 **Alerts & report** | System notification when something dangerous or odd shows up; a plain-language HTML report to save, print or send. |
 | 💻 **TUI** | Flow-First terminal interface (Ratatui): one line per conversation, alerts panel, live DSL filter. |
-| 🛡️ **SOC engine** | Mini-IDS: DNS tunnelling, port and network scans, beaconing (T1071), disguised files (T1036), insecure services; JA4 fingerprints and SNI; HTTP file carving with SHA-256; offline threat intel (Feodo, Tor); TCP stream reassembly; full IPv6. |
+| 🛡️ **SOC engine** | Mini-IDS: DNS tunnelling, port and network scans, beaconing (T1071), disguised files (T1036), non-DNS traffic on port 53 (T1571), insecure services; JA4 fingerprints and SNI; HTTP file carving with SHA-256; offline threat intel (Feodo, Tor); TCP stream reassembly; full IPv6. |
 | 📤 **SIEM export** | JSONL, **Elastic ECS 8.x** and **Wazuh**, with MITRE ATT&CK mapping. |
 
 <table>

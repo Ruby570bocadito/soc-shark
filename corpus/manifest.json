@@ -27,7 +27,8 @@
         "DNS-TUNNELING",
         "PORT-SCAN",
         "NETWORK-SWEEP",
-        "BEACONING"
+        "BEACONING",
+        "NON-DNS-ON-53"
       ],
       "max_severity": "High"
     },
@@ -38,7 +39,8 @@
       "carve_files": false,
       "must": [],
       "must_not": [
-        "DNS-TUNNELING"
+        "DNS-TUNNELING",
+        "NON-DNS-ON-53"
       ],
       "max_severity": "Low"
     },
@@ -71,7 +73,8 @@
       "carve_files": false,
       "must": [],
       "must_not": [
-        "BEACONING"
+        "BEACONING",
+        "NON-DNS-ON-53"
       ],
       "max_severity": "Medium"
     },
@@ -91,7 +94,8 @@
         "NETWORK-SWEEP",
         "REPEATED-ATTEMPTS",
         "BEACONING",
-        "FILE-MASQUERADING"
+        "FILE-MASQUERADING",
+        "NON-DNS-ON-53"
       ],
       "max_severity": "High"
     },
@@ -111,7 +115,8 @@
         "NETWORK-SWEEP",
         "REPEATED-ATTEMPTS",
         "BEACONING",
-        "FILE-MASQUERADING"
+        "FILE-MASQUERADING",
+        "NON-DNS-ON-53"
       ],
       "max_severity": "High"
     },
@@ -123,10 +128,11 @@
       "source": "Wireshark SampleCaptures (wiki.wireshark.org): shell de Windows (cmd.exe) escuchando en TCP/53, y también en 21, 23 y 80; el atacante teclea «dir» y recibe el listado. Sin licencia explícita en el wiki: no se redistribuye, se descarga con scripts/fetch_corpus.py.",
       "carve_files": false,
       "must": [
-        "INSECURE-PORT"
+        "INSECURE-PORT",
+        "NON-DNS-ON-53"
       ],
       "must_not": [],
-      "known_miss": "La shell remota no se detecta: no hay regla de «tráfico que no es DNS en el puerto 53» (ni para shells en 21 y 80). Solo salta INSECURE-PORT por la sesión en el 23. Al principio se esperaba DNS-TUNNELING, pero no es un túnel: es otra aplicación en el puerto DNS."
+      "known_miss": "La shell de TCP/80 no se detecta: no hay regla de «tráfico que no es HTTP en el puerto 80». La de TCP/53 la caza NON-DNS-ON-53 y la del 23, INSECURE-PORT; los intentos al 21 fueron rechazados. Al principio se esperaba DNS-TUNNELING, pero no es un túnel: es otra aplicación en el puerto DNS."
     },
     {
       "name": "wireshark-http",
@@ -142,7 +148,8 @@
         "NETWORK-SWEEP",
         "REPEATED-ATTEMPTS",
         "BEACONING",
-        "FILE-MASQUERADING"
+        "FILE-MASQUERADING",
+        "NON-DNS-ON-53"
       ],
       "max_severity": "Medium"
     },
@@ -160,7 +167,8 @@
         "NETWORK-SWEEP",
         "REPEATED-ATTEMPTS",
         "BEACONING",
-        "FILE-MASQUERADING"
+        "FILE-MASQUERADING",
+        "NON-DNS-ON-53"
       ],
       "max_severity": "Medium"
     },
@@ -179,7 +187,8 @@
         "NETWORK-SWEEP",
         "REPEATED-ATTEMPTS",
         "BEACONING",
-        "FILE-MASQUERADING"
+        "FILE-MASQUERADING",
+        "NON-DNS-ON-53"
       ],
       "max_severity": "Medium"
     },
@@ -197,7 +206,8 @@
         "NETWORK-SWEEP",
         "REPEATED-ATTEMPTS",
         "BEACONING",
-        "FILE-MASQUERADING"
+        "FILE-MASQUERADING",
+        "NON-DNS-ON-53"
       ],
       "max_severity": "Medium"
     },
@@ -215,7 +225,8 @@
         "NETWORK-SWEEP",
         "REPEATED-ATTEMPTS",
         "BEACONING",
-        "FILE-MASQUERADING"
+        "FILE-MASQUERADING",
+        "NON-DNS-ON-53"
       ],
       "max_severity": "Medium"
     },
@@ -233,7 +244,8 @@
         "NETWORK-SWEEP",
         "REPEATED-ATTEMPTS",
         "BEACONING",
-        "FILE-MASQUERADING"
+        "FILE-MASQUERADING",
+        "NON-DNS-ON-53"
       ],
       "max_severity": "Medium"
     },
@@ -251,7 +263,8 @@
         "NETWORK-SWEEP",
         "REPEATED-ATTEMPTS",
         "BEACONING",
-        "FILE-MASQUERADING"
+        "FILE-MASQUERADING",
+        "NON-DNS-ON-53"
       ],
       "max_severity": "Medium"
     },
@@ -269,7 +282,8 @@
         "NETWORK-SWEEP",
         "REPEATED-ATTEMPTS",
         "BEACONING",
-        "FILE-MASQUERADING"
+        "FILE-MASQUERADING",
+        "NON-DNS-ON-53"
       ],
       "max_severity": "Medium"
     },
@@ -287,7 +301,8 @@
         "NETWORK-SWEEP",
         "REPEATED-ATTEMPTS",
         "BEACONING",
-        "FILE-MASQUERADING"
+        "FILE-MASQUERADING",
+        "NON-DNS-ON-53"
       ],
       "max_severity": "Medium"
     }
