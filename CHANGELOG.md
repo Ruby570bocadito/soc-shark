@@ -5,6 +5,18 @@ y [SemVer](https://semver.org/lang/es/).
 
 ## [Sin publicar]
 
+### Añadido (detección)
+
+- **Regla `NON-HTTP-ON-80` (T1571, media, +30)**: una conversación TCP/80
+  vista desde el principio que lleva datos sin ninguna petición ni respuesta
+  HTTP (una shell, un túnel o un control remoto por el puerto que casi todos
+  los cortafuegos dejan pasar). Cierra el último fallo conocido del corpus,
+  la shell de `cmd.exe` en TCP/80. Medida antes de escribirla: de los 317
+  flujos TCP/80 del corpus real, solo esa shell llevaba datos sin ser HTTP.
+- **HTTP se reconoce mejor**: cualquier método con línea de petición
+  completa (PATCH de las API REST, los de WebDAV…), las respuestas
+  `HTTP/1.x` y el prefacio de HTTP/2 en claro. Antes solo seis métodos.
+
 ### Corregido (encontrado por el corpus real)
 
 - **Falso positivo medio de `EXPOSED-DB` (y de `INSECURE-PORT`) con el

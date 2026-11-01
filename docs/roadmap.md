@@ -108,7 +108,8 @@ son ideas buenas, no requisitos para llamar «terminado» al producto.
       resultaron ser del propio equipo (no son exposición a la red) y
       destaparon que `EXPOSED-DB` saltaba con ellas; corregido. *Pendiente:*
       `FILE-MASQUERADING` (descarga real de malware disfrazado),
-      `NETWORK-SWEEP`, `REPEATED-ATTEMPTS` y `EXPOSED-DB`
+      `NETWORK-SWEEP`, `REPEATED-ATTEMPTS` y `EXPOSED-DB`. El último fallo
+      conocido (la shell en TCP/80) lo cubre la regla `NON-HTTP-ON-80`
 - [ ] `local_rules.xml` probado contra un manager de laboratorio en Docker
       (`wazuh-logtest`)
 

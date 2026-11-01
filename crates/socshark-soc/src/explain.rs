@@ -1044,6 +1044,32 @@ fn explain_alert(
                 "Use the firewall to limit who can connect and review its passwords.",
             ),
         ),
+        "NON-HTTP-ON-80" => (
+            l(
+                "Otra cosa por el puerto de la web",
+                "Something else on the web port",
+            ),
+            tr!(
+                lang,
+                "{src_c} habla con {dst} por el puerto 80, el de la web, pero lo que viaja no es \
+                 HTTP. Casi todos los cortafuegos dejan pasar el 80, así que es un truco habitual \
+                 para colar una shell remota, un túnel o un programa de control a distancia.",
+                "{src_c} talks to {dst} on port 80, the web port, but what travels is not HTTP. \
+                 Almost every firewall lets port 80 through, so it is a common trick to slip in \
+                 a remote shell, a tunnel or a remote-control program."
+            ),
+            match lang {
+                Lang::Es => format!(
+                    "Mira qué se dijeron (pestaña Contenido) y qué programa escucha en el puerto \
+                     80 {}. Si no es un servidor web, trátalo como un equipo comprometido.",
+                    de(&dst)
+                ),
+                Lang::En => format!(
+                    "Look at what they said (Content tab) and which program listens on port 80 \
+                     on {dst}. If it is not a web server, treat it as a compromised device."
+                ),
+            },
+        ),
         "NON-DNS-ON-53" => {
             // Quien escucha en el 53 es el servidor (la captura pudo empezar
             // con un paquete suyo).
@@ -1767,6 +1793,7 @@ mod tests {
             "INSECURE-PORT",
             "EXPOSED-DB",
             "NON-DNS-ON-53",
+            "NON-HTTP-ON-80",
             "BEACONING",
             "FILE-MASQUERADING",
             "THREAT-INTEL-FEODO",
@@ -1889,6 +1916,7 @@ mod tests {
             "INSECURE-PORT",
             "EXPOSED-DB",
             "NON-DNS-ON-53",
+            "NON-HTTP-ON-80",
             "BEACONING",
             "FILE-MASQUERADING",
             "THREAT-INTEL-FEODO",

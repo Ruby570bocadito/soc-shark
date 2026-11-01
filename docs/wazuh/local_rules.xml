@@ -80,7 +80,7 @@
   <rule id="100227" level="10">
     <if_sid>100200</if_sid>
     <field name="rule.mitre.id">T1571</field>
-    <description>soc-shark: otra cosa que no es DNS en el puerto 53 (T1571)</description>
+    <description>soc-shark: otro protocolo en un puerto que no le corresponde, 53 o 80 (T1571)</description>
     <mitre><id>T1571</id></mitre>
   </rule>
 

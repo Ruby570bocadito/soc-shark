@@ -307,26 +307,65 @@ pub fn detect_l7(transport: Transport, sport: u16, dport: u16, payload: &[u8]) -
 
     // Sniffing independiente del puerto (solo TCP con payload).
     if transport == Transport::Tcp && !payload.is_empty() {
-        const METHODS: [&[u8]; 6] = [
-            b"GET ",
-            b"POST ",
-            b"HEAD ",
-            b"PUT ",
-            b"DELETE ",
-            b"OPTIONS ",
-        ];
         if payload.starts_with(b"SSH-") {
             return L7Protocol::Ssh;
-        }
-        if METHODS.iter().any(|m| payload.starts_with(m)) {
-            return L7Protocol::Http;
         }
         // Registro TLS: content type 0x16 (handshake) con versión >= 3.0.
         if payload.len() >= 3 && payload[0] == 0x16 && payload[1] == 0x03 {
             return L7Protocol::Tls;
         }
+        if looks_like_http(payload) {
+            return L7Protocol::Http;
+        }
     }
     L7Protocol::Unknown
+}
+
+/// ¿Empieza el payload como HTTP? La regla `NON-HTTP-ON-80` depende de no
+/// confundir HTTP legítimo con «otra cosa», así que no basta con los seis
+/// métodos de siempre:
+/// - petición con uno de los métodos habituales (aunque la línea llegue
+///   partida en varios segmentos);
+/// - línea de petición completa `MÉTODO destino HTTP/x.y` con **cualquier**
+///   método en mayúsculas (PATCH de las API REST, los de WebDAV…) y el
+///   prefacio de HTTP/2 en claro (`PRI * HTTP/2.0`);
+/// - respuesta `HTTP/1.x` (la captura pudo empezar después de la petición).
+///
+/// La línea solo se examina si el primer byte es una mayúscula: el tráfico
+/// binario y TLS no paga la búsqueda.
+fn looks_like_http(payload: &[u8]) -> bool {
+    const METHODS: [&[u8]; 9] = [
+        b"GET ",
+        b"POST ",
+        b"HEAD ",
+        b"PUT ",
+        b"DELETE ",
+        b"OPTIONS ",
+        b"PATCH ",
+        b"CONNECT ",
+        b"TRACE ",
+    ];
+    if METHODS.iter().any(|m| payload.starts_with(m)) || payload.starts_with(b"HTTP/1.") {
+        return true;
+    }
+    if !payload[0].is_ascii_uppercase() {
+        return false;
+    }
+    let head = &payload[..payload.len().min(2048)];
+    let Some(end) = head.iter().position(|&b| b == b'\n') else {
+        return false;
+    };
+    let line = head[..end].strip_suffix(b"\r").unwrap_or(&head[..end]);
+    let mut parts = line.split(|&b| b == b' ');
+    let (Some(method), Some(target), Some(version), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return false;
+    };
+    (3..=16).contains(&method.len())
+        && method.iter().all(|b| b.is_ascii_uppercase() || *b == b'-')
+        && !target.is_empty()
+        && version.starts_with(b"HTTP/")
 }
 
 #[cfg(test)]
@@ -345,6 +384,50 @@ mod tests {
         DissectorPipeline::new()
             .dissect(raw, LinkType::Ethernet)
             .expect("la trama del testgen debe diseccionarse")
+    }
+
+    #[test]
+    fn http_se_reconoce_con_cualquier_metodo_y_por_la_respuesta() {
+        let http = |p: &[u8]| detect_l7(Transport::Tcp, 50000, 80, p) == L7Protocol::Http;
+        // Los de siempre y los que faltaban (API REST, proxies).
+        for p in [
+            &b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"[..],
+            b"PATCH /api/v1/items/7 HTTP/1.1\r\n",
+            b"CONNECT example.com:443 HTTP/1.1\r\n",
+            // Línea partida en varios segmentos: basta el método.
+            b"POST /subir",
+        ] {
+            assert!(http(p), "{:?}", String::from_utf8_lossy(p));
+        }
+        // Cualquier método en mayúsculas con línea completa (WebDAV) y el
+        // prefacio de HTTP/2 en claro.
+        assert!(http(b"PROPFIND /dav/ HTTP/1.1\r\nDepth: 1\r\n"));
+        assert!(http(b"MKCOL /dav/nueva HTTP/1.1\n"));
+        // Un método desconocido con línea válida también es HTTP (la gramática
+        // admite cualquier token).
+        assert!(http(b"GETX / HTTP/1.1\r\n"));
+        assert!(http(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"));
+        // Respuesta (la captura empezó después de la petición).
+        assert!(http(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"));
+
+        // Lo que no es HTTP: la shell de cmd.exe del corpus, binario, TLS,
+        // texto que se le parece pero no es una línea de petición.
+        for p in [
+            &b"Microsoft Windows XP [Version 5.1.2600]\r\n"[..],
+            b"dir\n",
+            b"\x00\x01\x02\x03",
+            b"HELLO WORLD\r\n",
+            b"get / http/1.1\r\n",
+            b"FOO /x SPDY/3\r\n",
+            b"GET/x\r\n",
+            b"QUIT\r\n",
+        ] {
+            assert!(!http(p), "{:?}", String::from_utf8_lossy(p));
+        }
+        assert_eq!(
+            detect_l7(Transport::Tcp, 50000, 80, &[0x16, 0x03, 0x01, 0x00]),
+            L7Protocol::Tls
+        );
     }
 
     #[test]

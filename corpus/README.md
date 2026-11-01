@@ -86,6 +86,7 @@ de campo escrita *antes* de pasarlas por soc-shark:
 | `DNS-TUNNELING` | 1 (dnscat2) | 0 |
 | `PORT-SCAN` | 1 (nmap) | 0 |
 | `NON-DNS-ON-53` | 1 (shell en TCP/53) | 0 |
+| `NON-HTTP-ON-80` | 1 (shell en TCP/80) | 0 |
 
 **Lo que encontró y se corrigió** (todo con test de regresión):
 
@@ -104,7 +105,8 @@ de campo escrita *antes* de pasarlas por soc-shark:
   lector propio mostró que eran locales y la verdad de campo se corrigió
   antes de pasarlas por soc-shark.
 
-**Fallo conocido**: la shell en TCP/80 de `dns-remoteshell.pcap`.
+**Fallos conocidos**: ninguno. La shell en TCP/80 de `dns-remoteshell.pcap`
+la caza `NON-HTTP-ON-80`.
 
 **Sin verdadero positivo real todavía**: `FILE-MASQUERADING` (hay
 candidata, pero con malware vivo), `NETWORK-SWEEP`, `REPEATED-ATTEMPTS` y
