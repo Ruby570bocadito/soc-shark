@@ -5,24 +5,12 @@ y [SemVer](https://semver.org/lang/es/).
 
 ## [Sin publicar]
 
-### Añadido
+## [0.9.2] — 2026-11-01
 
-- **`socshark report --lang en`**: el informe en lenguaje claro en inglés
-  desde la consola, el mismo que la ventana ya descargaba en inglés. Sin
-  `-o`, el archivo se llama `report.html` (o `informe.html` en español). El
-  README en inglés lo usa en su ejemplo.
-
-### Añadido (detección)
-
-- **Regla `NON-HTTP-ON-80` (T1571, media, +30)**: una conversación TCP/80
-  vista desde el principio que lleva datos sin ninguna petición ni respuesta
-  HTTP (una shell, un túnel o un control remoto por el puerto que casi todos
-  los cortafuegos dejan pasar). Cierra el último fallo conocido del corpus,
-  la shell de `cmd.exe` en TCP/80. Medida antes de escribirla: de los 317
-  flujos TCP/80 del corpus real, solo esa shell llevaba datos sin ser HTTP.
-- **HTTP se reconoce mejor**: cualquier método con línea de petición
-  completa (PATCH de las API REST, los de WebDAV…), las respuestas
-  `HTTP/1.x` y el prefacio de HTTP/2 en claro. Antes solo seis métodos.
+Detecta shells y túneles colados por el puerto 80, deja de marcar como
+«base de datos expuesta» las que solo se usan desde el propio equipo,
+reconoce HTTP con cualquier método y permite el informe en inglés desde la
+consola (`socshark report --lang en`).
 
 ### Corregido (encontrado por el corpus real)
 
@@ -34,6 +22,19 @@ y [SemVer](https://semver.org/lang/es/).
 
 ### Añadido
 
+- **Regla `NON-HTTP-ON-80` (T1571, media, +30)**: una conversación TCP/80
+  vista desde el principio que lleva datos sin ninguna petición ni respuesta
+  HTTP (una shell, un túnel o un control remoto por el puerto que casi todos
+  los cortafuegos dejan pasar). Cierra el último fallo conocido del corpus,
+  la shell de `cmd.exe` en TCP/80. Medida antes de escribirla: de los 317
+  flujos TCP/80 del corpus real, solo esa shell llevaba datos sin ser HTTP.
+- **HTTP se reconoce mejor**: cualquier método con línea de petición
+  completa (PATCH de las API REST, los de WebDAV…), las respuestas
+  `HTTP/1.x` y el prefacio de HTTP/2 en claro. Antes solo seis métodos.
+- **`socshark report --lang en`**: el informe en lenguaje claro en inglés
+  desde la consola, el mismo que la ventana ya descargaba en inglés. Sin
+  `-o`, el archivo se llama `report.html` (o `informe.html` en español). El
+  README en inglés lo usa en su ejemplo.
 - 2 capturas más en el corpus (sesiones de MySQL y PostgreSQL del propio
   equipo), con la verdad de campo corregida tras verificarlas con un lector
   propio y antes de pasarlas por soc-shark.

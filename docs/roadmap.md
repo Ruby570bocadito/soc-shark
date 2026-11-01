@@ -4,17 +4,17 @@ La regla del proyecto: **una fase no se da por cerrada si su criterio falla**,
 aunque el código exista. Cada hito tiene criterios de aceptación verificables
 y el estado se mantiene en este documento, en el README y en el CHANGELOG.
 
-## Dónde estamos (0.9.1)
+## Dónde estamos (0.9.2)
 
 | Área | Estado |
 |---|---|
 | Lectura pcap/pcapng, disectores (Ethernet/VLAN/QinQ, SLL, IPv4/IPv6, TCP, UDP, DNS, TLS) | ✅ estable |
 | Flujos, reensamblado TCP (presupuesto configurable), *Follow stream* | ✅ estable |
-| Motor SOC: túnel DNS, escaneos, beaconing, T1036, `NON-DNS-ON-53`, threat intel offline | ✅ estable; contrastado con 21 capturas reales, sin falsos positivos tras la 0.9.1 |
+| Motor SOC: túnel DNS, escaneos, beaconing, T1036, `NON-DNS-ON-53`, `NON-HTTP-ON-80`, threat intel offline | ✅ estable; contrastado con 23 capturas reales, sin falsos positivos ni fallos conocidos tras la 0.9.2 |
 | CLI, informe HTML, export ECS/Wazuh | ✅ estable; ECS validado contra el esquema oficial, Wazuh con test de contrato |
 | GUI local y TUI | ✅ estables y fluidas con 10 000 conversaciones; GUI en español e inglés |
 | Captura en vivo (libpcap/Npcap) | 🟡 funciona; probado Windows sin Npcap (mensaje claro). Falta probarla capturando en hardware real |
-| Corpus de capturas reales | 🟡 21 capturas: legítimas, shells, escaneo nmap, túnel dnscat2 y 5 C2. Faltan T1036, barrido, intentos repetidos y BD expuesta |
+| Corpus de capturas reales | 🟡 23 capturas: legítimas, shells, escaneo nmap, túnel dnscat2, 5 C2 y bases de datos locales. Faltan T1036, barrido, intentos repetidos y BD expuesta |
 | Atribución de proceso por eBPF | ⏭️ después de la 1.0 (hoy: tabla de sockets) |
 | Tauri, plugins WASM, DuckDB | ⏭️ después de la 1.0 |
 
@@ -29,7 +29,7 @@ fallos reproducidos:
 - endurecimiento de instaladores y CI.
 
 Los tests pasaron de 209 a 281 (304 tras el primer bloque de la 0.8, 327
-en la 0.9.0 y 329 en la 0.9.1).
+en la 0.9.0, 329 en la 0.9.1 y 335 en la 0.9.2).
 
 ---
 

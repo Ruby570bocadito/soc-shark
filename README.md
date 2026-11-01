@@ -71,7 +71,7 @@ socshark gui
 - **No binary for your system, or it fails to start?** The installer builds
   from source instead, installing what that needs (Git, Rust, a C linker; on
   Windows, the Visual Studio C++ Build Tools).
-- Options (environment variables): `SOCSHARK_VERSION` (e.g. `0.9.1`; default:
+- Options (environment variables): `SOCSHARK_VERSION` (e.g. `0.9.2`; default:
   the latest), `SOCSHARK_FROM_SOURCE=1` (build instead of downloading),
   `SOCSHARK_BIN` (Linux/macOS install folder), `SOCSHARK_NO_SETCAP=1`.
 
