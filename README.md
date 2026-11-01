@@ -71,7 +71,7 @@ socshark gui
 - **No binary for your system, or it fails to start?** The installer builds
   from source instead, installing what that needs (Git, Rust, a C linker; on
   Windows, the Visual Studio C++ Build Tools).
-- Options (environment variables): `SOCSHARK_VERSION` (e.g. `0.8.0`; default:
+- Options (environment variables): `SOCSHARK_VERSION` (e.g. `0.9.0`; default:
   the latest), `SOCSHARK_FROM_SOURCE=1` (build instead of downloading),
   `SOCSHARK_BIN` (Linux/macOS install folder), `SOCSHARK_NO_SETCAP=1`.
 
@@ -193,7 +193,8 @@ it with `sudo`.
 | Transparent TLS 1.3 decryption (uprobes on `SSL_read/SSL_write`) | 🔵 Planned |
 | Sandboxed WASM plugins · CyberChef-style decoder · GeoIP/ASN · TheHive | 🔵 Planned — [roadmap.md](docs/roadmap.md) |
 
-Quality: 200+ unit and integration tests, deterministic fuzzing in CI,
+Quality: 300+ unit and integration tests, a corpus of real captures with
+expected results, deterministic and coverage-guided fuzzing in CI,
 `clippy -D warnings` and `rustfmt` with no exceptions, panic-free parsers
 (malformed or hostile packets yield `None`, never a crash) and a minimal set
 of dependencies.
