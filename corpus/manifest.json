@@ -6,7 +6,12 @@
       "synthetic": "sample",
       "source": "socshark-testgen: escenario demo (DNS, TLS, túnel DNS, escaneo, SSH, HTTP con descarga encubierta, beacon UDP)",
       "carve_files": true,
-      "must": ["DNS-TUNNELING", "PORT-SCAN", "FILE-MASQUERADING", "BEACONING"],
+      "must": [
+        "DNS-TUNNELING",
+        "PORT-SCAN",
+        "FILE-MASQUERADING",
+        "BEACONING"
+      ],
       "must_not": [],
       "max_severity": "Critical"
     },
@@ -15,8 +20,15 @@
       "synthetic": "home",
       "source": "socshark-testgen: red doméstica (DHCP, mDNS, NetBIOS, navegación normal y un Telnet al router)",
       "carve_files": false,
-      "must": ["INSECURE-PORT"],
-      "must_not": ["DNS-TUNNELING", "PORT-SCAN", "NETWORK-SWEEP", "BEACONING"],
+      "must": [
+        "INSECURE-PORT"
+      ],
+      "must_not": [
+        "DNS-TUNNELING",
+        "PORT-SCAN",
+        "NETWORK-SWEEP",
+        "BEACONING"
+      ],
       "max_severity": "High"
     },
     {
@@ -25,7 +37,9 @@
       "source": "socshark-testgen: DNS legítimo con nombres largos (CDN, telemetría)",
       "carve_files": false,
       "must": [],
-      "must_not": ["DNS-TUNNELING"],
+      "must_not": [
+        "DNS-TUNNELING"
+      ],
       "max_severity": "Low"
     },
     {
@@ -33,7 +47,9 @@
       "synthetic": "dns_low_entropy_tunnel",
       "source": "socshark-testgen: túnel DNS de baja entropía (estilo dnscat2/iodine), detectado por volumen",
       "carve_files": false,
-      "must": ["DNS-TUNNELING"],
+      "must": [
+        "DNS-TUNNELING"
+      ],
       "must_not": [],
       "max_severity": "Critical"
     },
@@ -42,7 +58,9 @@
       "synthetic": "jittered_beacon",
       "source": "socshark-testgen: beacon TCP con jitter aleatorio (semilla 7)",
       "carve_files": false,
-      "must": ["BEACONING"],
+      "must": [
+        "BEACONING"
+      ],
       "must_not": [],
       "max_severity": "Critical"
     },
@@ -52,7 +70,225 @@
       "source": "socshark-testgen: sesiones interactivas legítimas que no deben parecer beacons",
       "carve_files": false,
       "must": [],
-      "must_not": ["BEACONING"],
+      "must_not": [
+        "BEACONING"
+      ],
+      "max_severity": "Medium"
+    },
+    {
+      "name": "wireshark-telnet-raw",
+      "file": "captures/wireshark/telnet-raw.pcap",
+      "url": "https://wiki.wireshark.org/uploads/__moin_import__/attachments/SampleCaptures/telnet-raw.pcap",
+      "sha256": "7a2fdd843b401fb945b0604b9d760424541b045dac6424361f14d276db2b05a3",
+      "source": "Wireshark SampleCaptures (wiki.wireshark.org): sesión Telnet en modo raw (carácter a carácter). Sin licencia explícita en el wiki: no se redistribuye, se descarga con scripts/fetch_corpus.py.",
+      "carve_files": false,
+      "must": [
+        "INSECURE-PORT"
+      ],
+      "must_not": [
+        "DNS-TUNNELING",
+        "PORT-SCAN",
+        "NETWORK-SWEEP",
+        "REPEATED-ATTEMPTS",
+        "BEACONING",
+        "FILE-MASQUERADING"
+      ],
+      "max_severity": "High"
+    },
+    {
+      "name": "wireshark-telnet-cooked",
+      "file": "captures/wireshark/telnet-cooked.pcap",
+      "url": "https://wiki.wireshark.org/uploads/__moin_import__/attachments/SampleCaptures/telnet-cooked.pcap",
+      "sha256": "ae870805f1e5f6a2621b1f6e1e0229b47cc96d917f42c215acbcfcd46f9d72fc",
+      "source": "Wireshark SampleCaptures (wiki.wireshark.org): sesión Telnet en modo cooked (línea a línea). Sin licencia explícita en el wiki: no se redistribuye, se descarga con scripts/fetch_corpus.py.",
+      "carve_files": false,
+      "must": [
+        "INSECURE-PORT"
+      ],
+      "must_not": [
+        "DNS-TUNNELING",
+        "PORT-SCAN",
+        "NETWORK-SWEEP",
+        "REPEATED-ATTEMPTS",
+        "BEACONING",
+        "FILE-MASQUERADING"
+      ],
+      "max_severity": "High"
+    },
+    {
+      "name": "wireshark-dns-remoteshell",
+      "file": "captures/wireshark/dns-remoteshell.pcap",
+      "url": "https://wiki.wireshark.org/uploads/__moin_import__/attachments/SampleCaptures/dns-remoteshell.pcap",
+      "sha256": "8c89c0d2d5b91695a03d05a451897f583a99d2379afac0822af0d8f390163d95",
+      "source": "Wireshark SampleCaptures (wiki.wireshark.org): shell de Windows (cmd.exe) escuchando en TCP/53, y también en 21, 23 y 80; el atacante teclea «dir» y recibe el listado. Sin licencia explícita en el wiki: no se redistribuye, se descarga con scripts/fetch_corpus.py.",
+      "carve_files": false,
+      "must": [
+        "INSECURE-PORT"
+      ],
+      "must_not": [],
+      "known_miss": "La shell remota no se detecta: no hay regla de «tráfico que no es DNS en el puerto 53» (ni para shells en 21 y 80). Solo salta INSECURE-PORT por la sesión en el 23. Al principio se esperaba DNS-TUNNELING, pero no es un túnel: es otra aplicación en el puerto DNS."
+    },
+    {
+      "name": "wireshark-http",
+      "file": "captures/wireshark/http.cap",
+      "url": "https://wiki.wireshark.org/uploads/27707187aeb30df68e70c8fb9d614981/http.cap",
+      "sha256": "25a72bdf10339f2c29916920c8b9501d294923108de8f29b19aba7cc001ab60d",
+      "source": "Wireshark SampleCaptures (wiki.wireshark.org): una petición y respuesta HTTP sencillas. Sin licencia explícita en el wiki: no se redistribuye, se descarga con scripts/fetch_corpus.py.",
+      "carve_files": true,
+      "must": [],
+      "must_not": [
+        "DNS-TUNNELING",
+        "PORT-SCAN",
+        "NETWORK-SWEEP",
+        "REPEATED-ATTEMPTS",
+        "BEACONING",
+        "FILE-MASQUERADING"
+      ],
+      "max_severity": "Medium"
+    },
+    {
+      "name": "wireshark-http-chunked-gzip",
+      "file": "captures/wireshark/http-chunked-gzip.pcap",
+      "url": "https://wiki.wireshark.org/uploads/__moin_import__/attachments/SampleCaptures/http-chunked-gzip.pcap",
+      "sha256": "0a9df2fa7fc8bcda8d336b3ebbf1f6b215a55734721ffbe3ff67a4fa7a4dd703",
+      "source": "Wireshark SampleCaptures (wiki.wireshark.org): HTTP con respuesta gzip y chunked (www.wireshark.org vía socat). Sin licencia explícita en el wiki: no se redistribuye, se descarga con scripts/fetch_corpus.py.",
+      "carve_files": true,
+      "must": [],
+      "must_not": [
+        "DNS-TUNNELING",
+        "PORT-SCAN",
+        "NETWORK-SWEEP",
+        "REPEATED-ATTEMPTS",
+        "BEACONING",
+        "FILE-MASQUERADING"
+      ],
+      "max_severity": "Medium"
+    },
+    {
+      "name": "wireshark-http-jpegs",
+      "file": "captures/wireshark/http_with_jpegs.cap",
+      "url": "https://wiki.wireshark.org/uploads/__moin_import__/attachments/SampleCaptures/http_with_jpegs.cap.gz",
+      "sha256": "b562d12dbd1b5b5fc0e7af67a0185d0c537dcbc7d5d82c7a3f30f7ec60ab0d0d",
+      "gunzip": true,
+      "source": "Wireshark SampleCaptures (wiki.wireshark.org): descarga HTTP de varias imágenes JPEG reales. Sin licencia explícita en el wiki: no se redistribuye, se descarga con scripts/fetch_corpus.py.",
+      "carve_files": true,
+      "must": [],
+      "must_not": [
+        "DNS-TUNNELING",
+        "PORT-SCAN",
+        "NETWORK-SWEEP",
+        "REPEATED-ATTEMPTS",
+        "BEACONING",
+        "FILE-MASQUERADING"
+      ],
+      "max_severity": "Medium"
+    },
+    {
+      "name": "wireshark-dns",
+      "file": "captures/wireshark/dns.cap",
+      "url": "https://wiki.wireshark.org/uploads/__moin_import__/attachments/SampleCaptures/dns.cap",
+      "sha256": "041eeb6f98bb398f1ee8b09651b5b5a84f6a62639f95bf226f9e7b77355d9f28",
+      "source": "Wireshark SampleCaptures (wiki.wireshark.org): consultas DNS variadas. Sin licencia explícita en el wiki: no se redistribuye, se descarga con scripts/fetch_corpus.py.",
+      "carve_files": false,
+      "must": [],
+      "must_not": [
+        "DNS-TUNNELING",
+        "PORT-SCAN",
+        "NETWORK-SWEEP",
+        "REPEATED-ATTEMPTS",
+        "BEACONING",
+        "FILE-MASQUERADING"
+      ],
+      "max_severity": "Medium"
+    },
+    {
+      "name": "wireshark-dhcp",
+      "file": "captures/wireshark/dhcp.pcap",
+      "url": "https://wiki.wireshark.org/uploads/__moin_import__/attachments/SampleCaptures/dhcp.pcap",
+      "sha256": "2471b5420bdac826eecf8f61a2bbb4a3eb20dbfab7c02ff2be502f349f368214",
+      "source": "Wireshark SampleCaptures (wiki.wireshark.org): intercambio DHCP. Sin licencia explícita en el wiki: no se redistribuye, se descarga con scripts/fetch_corpus.py.",
+      "carve_files": false,
+      "must": [],
+      "must_not": [
+        "DNS-TUNNELING",
+        "PORT-SCAN",
+        "NETWORK-SWEEP",
+        "REPEATED-ATTEMPTS",
+        "BEACONING",
+        "FILE-MASQUERADING"
+      ],
+      "max_severity": "Medium"
+    },
+    {
+      "name": "wireshark-nb6-startup",
+      "file": "captures/wireshark/nb6-startup.pcap",
+      "url": "https://wiki.wireshark.org/uploads/__moin_import__/attachments/SampleCaptures/nb6-startup.pcap",
+      "sha256": "26d0db62efbe96bfd884168ab2520aba9808693f27206f476c9b7f2ac996cd96",
+      "source": "Wireshark SampleCaptures (wiki.wireshark.org): arranque de un router doméstico (IPv4 e IPv6, configuración, VoIP). Sin licencia explícita en el wiki: no se redistribuye, se descarga con scripts/fetch_corpus.py.",
+      "carve_files": true,
+      "must": [],
+      "must_not": [
+        "DNS-TUNNELING",
+        "PORT-SCAN",
+        "NETWORK-SWEEP",
+        "REPEATED-ATTEMPTS",
+        "BEACONING",
+        "FILE-MASQUERADING"
+      ],
+      "max_severity": "Medium"
+    },
+    {
+      "name": "wireshark-smb-win10",
+      "file": "captures/wireshark/smb-on-windows-10.pcapng",
+      "url": "https://wiki.wireshark.org/uploads/__moin_import__/attachments/SampleCaptures/smb-on-windows-10.pcapng",
+      "sha256": "b9fc2686ca634fed3d52b423625b719bc3be709aab1745557a10d41b450c7fe7",
+      "source": "Wireshark SampleCaptures (wiki.wireshark.org): negociación SMB3 entre dos Windows 10 (pcapng). Sin licencia explícita en el wiki: no se redistribuye, se descarga con scripts/fetch_corpus.py.",
+      "carve_files": false,
+      "must": [],
+      "must_not": [
+        "DNS-TUNNELING",
+        "PORT-SCAN",
+        "NETWORK-SWEEP",
+        "REPEATED-ATTEMPTS",
+        "BEACONING",
+        "FILE-MASQUERADING"
+      ],
+      "max_severity": "Medium"
+    },
+    {
+      "name": "wireshark-http2-tls",
+      "file": "captures/wireshark/http2-16-ssl.pcapng",
+      "url": "https://wiki.wireshark.org/uploads/__moin_import__/attachments/SampleCaptures/http2-16-ssl.pcapng",
+      "sha256": "3a53d7b87e80bc3a00e9851274f7661a5c51fceffd046cdeda2642d28797e084",
+      "source": "Wireshark SampleCaptures (wiki.wireshark.org): HTTP/2 sobre TLS con ALPN h2-16 (pcapng). Sin licencia explícita en el wiki: no se redistribuye, se descarga con scripts/fetch_corpus.py.",
+      "carve_files": false,
+      "must": [],
+      "must_not": [
+        "DNS-TUNNELING",
+        "PORT-SCAN",
+        "NETWORK-SWEEP",
+        "REPEATED-ATTEMPTS",
+        "BEACONING",
+        "FILE-MASQUERADING"
+      ],
+      "max_severity": "Medium"
+    },
+    {
+      "name": "wireshark-ntp-sync",
+      "file": "captures/wireshark/NTP_sync.pcap",
+      "url": "https://wiki.wireshark.org/uploads/__moin_import__/attachments/SampleCaptures/NTP_sync.pcap",
+      "sha256": "227c60c42b80e646e7f425b46f5fb1cb3d48ba5be6924c3d55fab67adf258684",
+      "source": "Wireshark SampleCaptures (wiki.wireshark.org): sincronización NTP contra varios servidores de pool.ntp.org. Sin licencia explícita en el wiki: no se redistribuye, se descarga con scripts/fetch_corpus.py.",
+      "carve_files": false,
+      "must": [],
+      "must_not": [
+        "DNS-TUNNELING",
+        "PORT-SCAN",
+        "NETWORK-SWEEP",
+        "REPEATED-ATTEMPTS",
+        "BEACONING",
+        "FILE-MASQUERADING"
+      ],
       "max_severity": "Medium"
     }
   ]

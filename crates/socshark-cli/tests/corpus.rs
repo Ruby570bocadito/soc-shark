@@ -139,8 +139,10 @@ fn corpus_cumple_verdad_de_campo_y_golden() {
             .expect("corpus/manifest.json no es JSON válido");
     let bless = env_on("SOCSHARK_BLESS");
     let mut failures: Vec<String> = Vec::new();
-    // regla → (capturas donde era esperada y saltó, capturas donde estaba prohibida y saltó)
-    let mut tally: BTreeMap<String, (u32, u32)> = BTreeMap::new();
+    // regla → [VP en capturas reales, VP en sintéticas, FP]: el criterio de
+    // la 0.8 pide verdaderos positivos *reales*, así que se cuentan aparte.
+    let mut tally: BTreeMap<String, [u32; 3]> = BTreeMap::new();
+    let mut known_misses: Vec<String> = Vec::new();
 
     for entry in manifest["captures"].as_array().expect("falta `captures`") {
         let name = entry["name"]
@@ -151,17 +153,21 @@ fn corpus_cumple_verdad_de_campo_y_golden() {
         };
 
         // ---- Verdad de campo ----
+        let real = entry.get("file").is_some();
+        if let Some(miss) = entry["known_miss"].as_str() {
+            known_misses.push(format!("{name}: {miss}"));
+        }
         let fired = |rule: &str| flows.iter().any(|f| f.alerts.iter().any(|a| a.id == rule));
         for rule in strings(entry, "must") {
             if fired(&rule) {
-                tally.entry(rule).or_default().0 += 1;
+                tally.entry(rule).or_default()[if real { 0 } else { 1 }] += 1;
             } else {
                 failures.push(format!("{name}: la regla {rule} debía saltar y no saltó"));
             }
         }
         for rule in strings(entry, "must_not") {
             if fired(&rule) {
-                tally.entry(rule.clone()).or_default().1 += 1;
+                tally.entry(rule.clone()).or_default()[2] += 1;
                 failures.push(format!("{name}: falso positivo de {rule}"));
             }
         }
@@ -204,9 +210,15 @@ fn corpus_cumple_verdad_de_campo_y_golden() {
         }
     }
 
-    eprintln!("\nregla                      VP esperados  FP prohibidos");
-    for (rule, (tp, fp)) in &tally {
-        eprintln!("{rule:<26} {tp:>12}  {fp:>13}");
+    eprintln!("\nregla                      VP reales  VP sintéticos  FP prohibidos");
+    for (rule, [real, synth, fp]) in &tally {
+        eprintln!("{rule:<26} {real:>9}  {synth:>13}  {fp:>13}");
+    }
+    if !known_misses.is_empty() {
+        eprintln!("\nfallos conocidos (sin regla todavía):");
+        for m in &known_misses {
+            eprintln!("  - {m}");
+        }
     }
     assert!(failures.is_empty(), "\n{}", failures.join("\n"));
 }

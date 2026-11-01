@@ -88,7 +88,13 @@ son ideas buenas, no requisitos para llamar «terminado» al producto.
 - [ ] **Capturas reales en el corpus** (públicas y sin datos personales:
       ejemplos de Wireshark, Malware-Traffic-Analysis, CICIDS). Ver
       [corpus/README.md](../corpus/README.md). Al menos un verdadero
-      positivo real por regla
+      positivo real por regla. *Primer bloque hecho:* 12 capturas del wiki
+      de Wireshark con la verdad de campo escrita antes de pasarlas. Dieron
+      2 falsos positivos High (DNS-TUNNELING con el localizador de AD,
+      FILE-MASQUERADING con HTML comprimido), ya corregidos; INSECURE-PORT
+      tiene 3 verdaderos positivos reales; y 1 fallo conocido documentado
+      (shell remota en el puerto 53, sin regla). *Pendiente:* capturas de
+      ataques reales para el resto de reglas (escaneo, túnel, beacon, T1036)
 - [ ] `local_rules.xml` probado contra un manager de laboratorio en Docker
       (`wazuh-logtest`)
 

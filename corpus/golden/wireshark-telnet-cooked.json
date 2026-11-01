@@ -1,0 +1,15 @@
+{
+  "alerted_flows": [
+    {
+      "alerts": [
+        "INSECURE-PORT"
+      ],
+      "flow_id": "tcp/192.168.0.1:23-192.168.0.2:1550",
+      "risk_score": 35
+    }
+  ],
+  "alerts_by_rule": {
+    "INSECURE-PORT": 1
+  },
+  "flows": 1
+}

@@ -127,6 +127,16 @@ pub fn carve_http(client: &[u8], server: &[u8]) -> Vec<ExtractedFile> {
         let is_head = request.as_ref().is_some_and(|(m, _)| m == "HEAD");
         let request_path = request.map(|(_, p)| p).unwrap_or_default();
 
+        // Content-Encoding (gzip, br, deflate…) comprime el cuerpo para el
+        // transporte: los primeros bytes son los del compresor, no los del
+        // archivo, así que no dicen su tipo real (una página HTML con gzip
+        // salía como «GZIP disfrazado de .html»). Sin descompresor propio,
+        // esos cuerpos se juzgan solo por nombre y Content-Type.
+        let encoded = headers.iter().any(|(k, v)| {
+            k.eq_ignore_ascii_case("content-encoding")
+                && !v.trim().is_empty()
+                && !v.trim().eq_ignore_ascii_case("identity")
+        });
         let chunked = headers.iter().any(|(k, v)| {
             k.eq_ignore_ascii_case("transfer-encoding")
                 && v.to_ascii_lowercase().contains("chunked")
@@ -176,8 +186,8 @@ pub fn carve_http(client: &[u8], server: &[u8]) -> Vec<ExtractedFile> {
                 .map(|(_, v)| v.as_str())
                 .unwrap_or("");
             let name = file_name(disposition, request_path);
-            if relevant(&name, content_type, &body) {
-                files.push(build_file(&name, &body));
+            if relevant(&name, content_type, &body, encoded) {
+                files.push(build_file(&name, &body, encoded));
             }
         }
 
@@ -411,7 +421,10 @@ fn file_name(disposition: &str, request_path: String) -> String {
             return value;
         }
     }
-    let base = request_path.rsplit('/').next().unwrap_or("").to_string();
+    // Sin query ni fragmento: en `/ads?url=…/download.html&color=…` el
+    // «nombre» no es `ads?…` con extensión `html&color=…`.
+    let path = request_path.split(['?', '#']).next().unwrap_or("");
+    let base = path.rsplit('/').next().unwrap_or("").to_string();
     if base.contains('.') {
         base
     } else {
@@ -580,8 +593,8 @@ pub fn masquerading_suspect(name: &str, magic: Option<&str>) -> bool {
 }
 
 /// Construye el `ExtractedFile` final: hash, magic y veredicto.
-fn build_file(name: &str, body: &[u8]) -> ExtractedFile {
-    let magic = detect_magic(body);
+fn build_file(name: &str, body: &[u8], encoded: bool) -> ExtractedFile {
+    let magic = if encoded { None } else { detect_magic(body) };
     ExtractedFile {
         name: if name.is_empty() {
             "<sin nombre>".into()
@@ -597,9 +610,9 @@ fn build_file(name: &str, body: &[u8]) -> ExtractedFile {
 
 /// Decide si una respuesta merece tallarse (evita llenar el modelo con
 /// páginas HTML y contenido textual rutinario).
-fn relevant(name: &str, content_type: &str, body: &[u8]) -> bool {
+fn relevant(name: &str, content_type: &str, body: &[u8], encoded: bool) -> bool {
     // Firma conocida: siempre interesa, incluso disfrazada (T1036).
-    if detect_magic(body).is_some() {
+    if !encoded && detect_magic(body).is_some() {
         return true;
     }
     let ct = content_type
@@ -958,6 +971,59 @@ mod tests {
         grande[..7].copy_from_slice(b"HTTP/1.");
         let _ = carve_http(b"", &grande);
     }
+    /// Caso real del corpus (http.cap, anuncio de Google): el nombre salía de
+    /// la ruta con su query, y la «extensión» era `html&color_bg=…`.
+    #[test]
+    fn la_query_no_cuenta_para_el_nombre() {
+        let pe = pe_bytes(256);
+        let client = b"GET /pagead/ads?client=x&url=http%3A%2F%2Fa.example%2Fdownload.html&color=1 HTTP/1.1\r\nHost: x\r\n\r\n".to_vec();
+        let srv = response(
+            "Content-Type: application/octet-stream\r\nContent-Length: 256\r\n",
+            &pe,
+        );
+        let files = carve_http(&client, &srv);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].name, "<sin nombre>");
+        assert!(!files[0].masquerading_suspect);
+
+        let client = b"GET /dl/tool.exe?token=abc.def#frag HTTP/1.1\r\nHost: x\r\n\r\n".to_vec();
+        let files = carve_http(&client, &srv);
+        assert_eq!(files[0].name, "tool.exe");
+    }
+
+    /// Content-Encoding comprime para el transporte: sus bytes no son el tipo
+    /// del archivo (caso real: página HTML con gzip acusada de T1036).
+    #[test]
+    fn content_encoding_no_es_el_tipo_del_archivo() {
+        let gz = [0x1f, 0x8b, 0x08, 0, 0, 0, 0, 0, 0, 3, 1, 2, 3, 4];
+        let html = b"GET /index.html HTTP/1.1\r\nHost: x\r\n\r\n".to_vec();
+        let head = format!(
+            "Content-Type: text/html\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\n",
+            gz.len()
+        );
+        // Una página comprimida no se talla ni se acusa.
+        assert!(carve_http(&html, &response(&head, &gz)).is_empty());
+
+        // Una descarga con gzip de transporte sí se talla, sin magic ni T1036.
+        let exe = b"GET /setup.exe HTTP/1.1\r\nHost: x\r\n\r\n".to_vec();
+        let head = format!(
+            "Content-Type: application/octet-stream\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\n",
+            gz.len()
+        );
+        let files = carve_http(&exe, &response(&head, &gz));
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].magic, None);
+        assert!(!files[0].masquerading_suspect);
+
+        // `identity` no comprime: el magic vale.
+        let head = format!(
+            "Content-Type: application/octet-stream\r\nContent-Encoding: identity\r\nContent-Length: {}\r\n",
+            gz.len()
+        );
+        let files = carve_http(&exe, &response(&head, &gz));
+        assert_eq!(files[0].magic.as_deref(), Some("GZIP"));
+    }
+
     #[test]
     fn find_casos_frontera() {
         assert_eq!(find(b"", b"ab"), None);
