@@ -305,6 +305,161 @@
         "NON-DNS-ON-53"
       ],
       "max_severity": "Medium"
+    },
+    {
+      "name": "sanders-synscan",
+      "file": "captures/sanders/synscan.pcapng",
+      "url": "https://raw.githubusercontent.com/chrissanders/packets/master/synscan.pcapng",
+      "sha256": "3ef7a9011bcc2901080d3800d52fd5bb5cbcc1aeb8b5943bed3810868400aa58",
+      "source": "Escaneo SYN con nmap contra un equipo (Practical Packet Analysis, 3.ª ed.). Chris Sanders, github.com/chrissanders/packets (uso libre citándolo; no se redistribuye, se descarga con scripts/fetch_corpus.py).",
+      "carve_files": false,
+      "must": [
+        "PORT-SCAN"
+      ],
+      "must_not": [
+        "DNS-TUNNELING",
+        "BEACONING",
+        "FILE-MASQUERADING",
+        "NON-DNS-ON-53"
+      ]
+    },
+    {
+      "name": "sanders-dns-tcp",
+      "file": "captures/sanders/dns_tcp.pcapng",
+      "url": "https://raw.githubusercontent.com/chrissanders/packets/master/dns_tcp.pcapng",
+      "sha256": "de6d8c7de1b2edf41b3ef442ea58cc0a12e9ffb6ed520df9a0dd0e23af1b76c7",
+      "source": "Consulta y respuesta DNS legítimas sobre TCP/53. Chris Sanders, github.com/chrissanders/packets (uso libre citándolo; no se redistribuye, se descarga con scripts/fetch_corpus.py).",
+      "carve_files": false,
+      "must": [],
+      "must_not": [
+        "NON-DNS-ON-53",
+        "DNS-TUNNELING",
+        "PORT-SCAN",
+        "NETWORK-SWEEP",
+        "BEACONING",
+        "FILE-MASQUERADING"
+      ],
+      "max_severity": "Medium"
+    },
+    {
+      "name": "sanders-dns-axfr",
+      "file": "captures/sanders/dns_axfr.pcapng",
+      "url": "https://raw.githubusercontent.com/chrissanders/packets/master/dns_axfr.pcapng",
+      "sha256": "05e70fef44efc6eacb2f08266b4dd6727e10dd2a53fe9c6166d97f68658b4469",
+      "source": "Transferencia de zona DNS (AXFR) legítima sobre TCP/53, respuesta en varios segmentos. Chris Sanders, github.com/chrissanders/packets (uso libre citándolo; no se redistribuye, se descarga con scripts/fetch_corpus.py).",
+      "carve_files": false,
+      "must": [],
+      "must_not": [
+        "NON-DNS-ON-53",
+        "DNS-TUNNELING",
+        "PORT-SCAN",
+        "NETWORK-SWEEP",
+        "BEACONING",
+        "FILE-MASQUERADING"
+      ],
+      "max_severity": "Medium"
+    },
+    {
+      "name": "acm-dnscat2",
+      "file": "captures/acm/dnscat2_dns_tunneling_1hr.pcap",
+      "url": "https://www.dropbox.com/s/j5le068uz8n69wk/dnscat2_dns_tunneling_1hr.pcap?dl=1",
+      "sha256": "b1056baaa15c441aa9fadd23885818db069f3cc5b560dc4f8a184d3494f3d3bd",
+      "source": "Active Countermeasures, «Malware of the Day» (dnscat2): túnel DNS de 10.20.57.3 al C2 157.230.93.100 con subdominios hexadecimales de cisco-update.com, ~1 consulta/s durante 1 h. https://www.activecountermeasures.com/malware-of-the-day-dnscat2-dns-tunneling/. Según la fuente, no contiene malware real (laboratorio). Copyright de la fuente: no se redistribuye, se descarga con scripts/fetch_corpus.py.",
+      "carve_files": false,
+      "must": [
+        "DNS-TUNNELING"
+      ],
+      "must_not": [
+        "PORT-SCAN",
+        "NETWORK-SWEEP",
+        "FILE-MASQUERADING",
+        "NON-DNS-ON-53"
+      ]
+    },
+    {
+      "name": "acm-evilosx",
+      "file": "captures/acm/evilosx_1hr.pcap",
+      "url": "https://www.dropbox.com/s/fdp1line6hiynqw/evilosx_1hr.pcap?dl=1",
+      "sha256": "964542714ed93132cc2d0430065c239e3277c47d1609bd8a01751fa9be3df85c",
+      "source": "Active Countermeasures, «Malware of the Day» (EvilOSX): C2 por HTTP de 10.0.0.25 a 157.230.93.100, beacon cada 30 s sin jitter, 1 h. https://www.activecountermeasures.com/malware-of-the-day-evilosx/. Según la fuente, no contiene malware real (laboratorio). Copyright de la fuente: no se redistribuye, se descarga con scripts/fetch_corpus.py.",
+      "carve_files": true,
+      "must": [
+        "BEACONING"
+      ],
+      "must_not": [
+        "PORT-SCAN",
+        "NETWORK-SWEEP",
+        "DNS-TUNNELING",
+        "NON-DNS-ON-53"
+      ]
+    },
+    {
+      "name": "acm-octopus",
+      "file": "captures/acm/octopus_1hr.pcap",
+      "url": "https://www.dropbox.com/s/j4f92165gb8lf88/octopus_1hr.pcap?dl=1",
+      "sha256": "7366298d4272df14a45363025fb6927679256b5f166de4ee84fc2ec3460b8d4c",
+      "source": "Active Countermeasures, «Malware of the Day» (Octopus): C2 por HTTPS desde 10.0.0.60, beacon cada 5 s sin jitter, 1 h. https://www.activecountermeasures.com/malware-of-the-day-octopus/. Según la fuente, no contiene malware real (laboratorio). Copyright de la fuente: no se redistribuye, se descarga con scripts/fetch_corpus.py.",
+      "carve_files": false,
+      "must": [
+        "BEACONING"
+      ],
+      "must_not": [
+        "PORT-SCAN",
+        "NETWORK-SWEEP",
+        "DNS-TUNNELING",
+        "NON-DNS-ON-53"
+      ]
+    },
+    {
+      "name": "acm-backoff",
+      "file": "captures/acm/backoff_1hr.pcap",
+      "url": "https://www.dropbox.com/s/qg0cjudz4qrqwj6/backoff_1hr.pcap?dl=1",
+      "sha256": "e4c51eadde0d9e0d5b2779dc96350fe8ac4da36bd1dc599dea856a26201be5b9",
+      "source": "Active Countermeasures, «Malware of the Day» (Backoff, perfil maleable de Cobalt Strike): C2 HTTP inverso desde 192.168.99.55, beacon cada 30 s con 10 % de jitter, 1 h. https://www.activecountermeasures.com/malware-of-the-day-backoff/. Según la fuente, no contiene malware real (laboratorio). Copyright de la fuente: no se redistribuye, se descarga con scripts/fetch_corpus.py.",
+      "carve_files": true,
+      "must": [
+        "BEACONING"
+      ],
+      "must_not": [
+        "PORT-SCAN",
+        "NETWORK-SWEEP",
+        "DNS-TUNNELING",
+        "NON-DNS-ON-53"
+      ]
+    },
+    {
+      "name": "acm-asprox",
+      "file": "captures/acm/asprox_1hr.pcap",
+      "url": "https://www.dropbox.com/s/7btopkrfr6f73ev/asprox_1hr.pcap?dl=1",
+      "sha256": "381c6fdcf4ad4d5c59aa628571f4099bd4b7ec6fc6a29bfecc8b28e400d93cb3",
+      "source": "Active Countermeasures, «Malware of the Day» (Asprox, perfil maleable de Cobalt Strike): C2 HTTP inverso, beacon cada 30 s con 20 % de jitter, 1 h. https://www.activecountermeasures.com/malware-of-the-day-asprox/. Según la fuente, no contiene malware real (laboratorio). Copyright de la fuente: no se redistribuye, se descarga con scripts/fetch_corpus.py.",
+      "carve_files": true,
+      "must": [
+        "BEACONING"
+      ],
+      "must_not": [
+        "PORT-SCAN",
+        "NETWORK-SWEEP",
+        "DNS-TUNNELING",
+        "NON-DNS-ON-53"
+      ]
+    },
+    {
+      "name": "acm-asyncrat",
+      "file": "captures/acm/asyncrat_1hr.pcapng",
+      "url": "https://acm-motd.s3.amazonaws.com/asyncrat_1hr.pcapng",
+      "sha256": "d844fc691a40c7eedbcc4775e4760e12a6a25a1c93602acacfc0b9a84c55068d",
+      "source": "Active Countermeasures, «Malware of the Day» (AsyncRAT): C2 TCP con TLS inverso desde 192.168.100.136, beacon cada 6,5 s ± 1,5 s, 1 h. https://www.activecountermeasures.com/malware-of-the-day-asyncrat/. Según la fuente, no contiene malware real (laboratorio). Copyright de la fuente: no se redistribuye, se descarga con scripts/fetch_corpus.py.",
+      "carve_files": false,
+      "must": [
+        "BEACONING"
+      ],
+      "must_not": [
+        "PORT-SCAN",
+        "NETWORK-SWEEP",
+        "DNS-TUNNELING"
+      ],
+      "note": "Además del C2 (172.208.51.75:7707, 540 flujos con BEACONING), salta BEACONING (baja) en 2 de 11 flujos a 143.198.3.13:222 cada ~45 s. La fuente no los menciona: sin confirmar si es parte del laboratorio o un falso positivo."
     }
   ]
 }
