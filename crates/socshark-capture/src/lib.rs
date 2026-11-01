@@ -34,6 +34,14 @@ pub enum CaptureError {
     Live(String),
     #[error("captura en vivo no disponible: {0}")]
     LiveUnavailable(String),
+    /// La biblioteca de captura (Npcap en Windows, libpcap en Linux/macOS)
+    /// no se pudo cargar: falta o está incompleta. Mismo texto que
+    /// [`Self::LiveUnavailable`] para la CLI; variante aparte para que la
+    /// GUI explique en lenguaje claro qué instalar (y no lo diga, por
+    /// ejemplo, en una plataforma sin soporte, donde instalar no arregla
+    /// nada).
+    #[error("captura en vivo no disponible: {0}")]
+    CaptureLibraryMissing(String),
 }
 
 /// Fuente de paquetes: archivo pcap, interfaz en vivo, etc.

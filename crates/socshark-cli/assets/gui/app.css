@@ -253,9 +253,11 @@ small { font-size: 12px; }
   padding: 5px 12px; cursor: pointer; white-space: nowrap; font-weight: 500;
   transition: background-color .12s, border-color .12s;
 }
-.btn:hover { background: var(--panel-3); }
+.btn:hover:not(:disabled) { background: var(--panel-3); }
 .btn.primary { background: var(--accent); color: var(--accent-text); border-color: transparent; font-weight: 600; }
-.btn.primary:hover { background: var(--accent-hover); }
+.btn.primary:hover:not(:disabled) { background: var(--accent-hover); }
+/* Como en la barra: un botón que no se puede pulsar no lo parece. */
+.btn:disabled { opacity: .45; cursor: default; }
 .btn.big { padding: 9px 20px; font-size: 15px; }
 .btn.ghost { border-color: transparent; background: transparent; }
 .btn.ghost:hover { background: var(--panel-3); }

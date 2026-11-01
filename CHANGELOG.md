@@ -5,6 +5,21 @@ y [SemVer](https://semver.org/lang/es/).
 
 ## [Sin publicar]
 
+### Corregido (GUI)
+
+- **«En vivo» en un Windows sin Npcap** (lo primero que encuentra quien
+  prueba la app): la ventana mostraba el mensaje técnico de la CLI
+  («Npcap (wpcap.dll) no encontrada…»), repetido tras «No se puede
+  capturar en vivo…» y, con la interfaz en inglés, a medias en español.
+  Ahora explica en lenguaje claro y en el idioma de la ventana qué instalar
+  (Npcap en Windows, libpcap en Linux y macOS) y enlaza la descarga de
+  Npcap. Nueva variante `CaptureError::CaptureLibraryMissing` para
+  distinguir «falta la biblioteca» de «plataforma sin soporte»; la CLI
+  sigue diciendo lo mismo.
+- Los botones deshabilitados de los diálogos (p. ej. «Empezar» sin
+  interfaces) parecían activos: ahora se ven atenuados, como los de la
+  barra.
+
 ### Añadido (detección)
 
 - **Regla `NON-DNS-ON-53` (T1571, alta, +40)**: un flujo por el puerto 53
