@@ -80,6 +80,16 @@ pub fn shannon_entropy(s: &str) -> f64 {
 /// exfiltración encapsulados en consultas DNS).
 pub const MITRE_DNS_TUNNEL: &str = "T1071.004";
 
+/// ¿Habla el equipo consigo mismo? Misma dirección en los dos extremos o
+/// loopback. Ese tráfico no sale a la red: una base de datos o un Telnet que
+/// solo se usan así no están expuestos, y nadie de la red puede leer sus
+/// credenciales. Falso positivo medio real del corpus: las sesiones de MySQL
+/// (192.168.0.254 consigo mismo) y PostgreSQL (127.0.0.1) del wiki de
+/// Wireshark saltaban como «base de datos expuesta».
+pub fn same_host(flow: &EnrichedFlow) -> bool {
+    flow.src_ip == flow.dst_ip || flow.src_ip.is_loopback() || flow.dst_ip.is_loopback()
+}
+
 /// Non-Standard Port: un protocolo en un puerto que no le corresponde
 /// (aquí, cualquier cosa que no sea DNS en el 53).
 pub const MITRE_NON_STANDARD_PORT: &str = "T1571";
@@ -491,8 +501,12 @@ pub fn assess_with_intel(
         }
     }
 
+    // R3 y R4 hablan de exposición a la red: no cuentan las conexiones del
+    // equipo consigo mismo.
+    let local = same_host(flow);
+
     // R3: administración remota insegura (telnet en texto claro) — T1021.
-    if flow.transport == Transport::Tcp && flow.dst_port == 23 && !failed {
+    if flow.transport == Transport::Tcp && flow.dst_port == 23 && !failed && !local {
         score += 35;
         flow.alerts.push(Alert {
             id: "INSECURE-PORT".into(),
@@ -510,6 +524,7 @@ pub fn assess_with_intel(
     if flow.transport == Transport::Tcp
         && matches!(flow.dst_port, 3306 | 5432 | 1433 | 6379 | 27017)
         && !failed
+        && !local
     {
         score += 25;
         flow.alerts.push(Alert {
@@ -956,6 +971,29 @@ mod tests {
         let mut web = flujo_basico(6, 50005, 80);
         web.tcp_flags.psh = 3;
         assert!(non_dns_on_port_53(&web).is_none());
+    }
+
+    #[test]
+    fn el_equipo_consigo_mismo_no_expone_nada() {
+        let cfg = PipelineConfig::default();
+        let mut casos = Vec::new();
+        // Mismo equipo por su dirección de red (caso real: MySQL en .254).
+        let mut mismo = flujo_basico(6, 56162, 3306);
+        mismo.dst_ip = mismo.src_ip;
+        casos.push(mismo);
+        // Loopback IPv4 (caso real: PostgreSQL en 127.0.0.1) e IPv6.
+        for (ip, port) in [("127.0.0.1", 5432), ("::1", 6379), ("127.0.0.1", 23)] {
+            let mut f = flujo_basico(6, 45930, port);
+            f.src_ip = ip.parse().unwrap();
+            f.dst_ip = ip.parse().unwrap();
+            casos.push(f);
+        }
+        for mut f in casos {
+            assess(&mut f, ScanSignals::default(), &cfg);
+            assert!(f.alerts.is_empty(), "{} {:?}", f.flow_id.0, f.alerts);
+        }
+        // Entre dos equipos sigue saltando (telnet_y_bd_disparan_reglas).
+        assert!(!same_host(&flujo_basico(6, 40000, 3306)));
     }
 
     #[test]

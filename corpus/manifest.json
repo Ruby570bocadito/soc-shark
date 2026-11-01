@@ -460,6 +460,49 @@
         "DNS-TUNNELING"
       ],
       "note": "Además del C2 (172.208.51.75:7707, 540 flujos con BEACONING), salta BEACONING (baja) en 2 de 11 flujos a 143.198.3.13:222 cada ~45 s. La fuente no los menciona: sin confirmar si es parte del laboratorio o un falso positivo."
+    },
+    {
+      "name": "wireshark-mysql",
+      "file": "captures/wireshark/mysql_complete.pcap",
+      "url": "https://wiki.wireshark.org/uploads/__moin_import__/attachments/SampleCaptures/mysql_complete.pcap",
+      "sha256": "597d06e899df5746cd90f6ff387b79d4eefa5fcab27e55c3cc09102dd74e6abc",
+      "source": "Wireshark SampleCaptures (wiki.wireshark.org): sesión MySQL 5.0.54 completa de 192.168.0.254 consigo mismo (cliente y servidor en el mismo equipo; bug 2691). Sin licencia explícita en el wiki: no se redistribuye, se descarga con scripts/fetch_corpus.py.",
+      "carve_files": false,
+      "must": [],
+      "must_not": [
+        "EXPOSED-DB",
+        "DNS-TUNNELING",
+        "PORT-SCAN",
+        "NETWORK-SWEEP",
+        "REPEATED-ATTEMPTS",
+        "BEACONING",
+        "FILE-MASQUERADING",
+        "NON-DNS-ON-53"
+      ],
+      "max_severity": "Medium",
+      "note": "Se registró como verdadero positivo de EXPOSED-DB antes de mirar los paquetes; un lector propio mostró que el cliente y el servidor son el mismo equipo, así que la conexión no prueba que la base de datos sea alcanzable desde la red. Verdad de campo corregida antes de pasarla por soc-shark."
+    },
+    {
+      "name": "wireshark-pgsql",
+      "file": "captures/wireshark/pgsql.cap",
+      "url": "https://wiki.wireshark.org/uploads/__moin_import__/attachments/SampleCaptures/pgsql.cap.gz",
+      "sha256": "8504814dd3f402d09f4fe42c596720fa0c61a341d2e8756dd91e8176cd00c000",
+      "gunzip": true,
+      "source": "Wireshark SampleCaptures (wiki.wireshark.org): dos sesiones breves de PostgreSQL por loopback (127.0.0.1 → 127.0.0.1:5432). Sin licencia explícita en el wiki: no se redistribuye, se descarga con scripts/fetch_corpus.py.",
+      "carve_files": false,
+      "must": [],
+      "must_not": [
+        "EXPOSED-DB",
+        "DNS-TUNNELING",
+        "PORT-SCAN",
+        "NETWORK-SWEEP",
+        "REPEATED-ATTEMPTS",
+        "BEACONING",
+        "FILE-MASQUERADING",
+        "NON-DNS-ON-53"
+      ],
+      "max_severity": "Medium",
+      "note": "Se registró como verdadero positivo de EXPOSED-DB antes de mirar los paquetes; un lector propio mostró que va por loopback: la base de datos solo escucha en el propio equipo. Verdad de campo corregida antes de pasarla por soc-shark."
     }
   ]
 }
