@@ -71,3 +71,33 @@ fn export_con_disco_lleno_no_sale_con_cero() {
     assert!(!out.status.success());
     std::fs::remove_file(&demo).ok();
 }
+
+#[test]
+fn report_en_ingles_sin_salida_escribe_report_html() {
+    // Sin -o, el nombre sigue al idioma: report.html con --lang en.
+    let demo = demo_copia("lang");
+    let dir = std::env::temp_dir().join(format!("socshark-bin-lang-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let out = socshark()
+        .current_dir(&dir)
+        .args(["report", "-r", demo.to_str().unwrap(), "--lang", "en"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let html = std::fs::read_to_string(dir.join("report.html")).unwrap();
+    assert!(html.contains("<html lang=\"en\">") && html.contains("What happened"));
+    assert!(!dir.join("informe.html").exists());
+    // Un idioma que no existe es un error de uso, no un informe en español.
+    let bad = socshark()
+        .current_dir(&dir)
+        .args(["report", "-r", demo.to_str().unwrap(), "--lang", "fr"])
+        .output()
+        .unwrap();
+    assert!(!bad.status.success());
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::remove_file(&demo).ok();
+}

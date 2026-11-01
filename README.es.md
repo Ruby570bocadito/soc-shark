@@ -135,7 +135,8 @@ socshark gui -r captura.pcapng
 # Interfaz de terminal
 socshark tui -r captura.pcap
 
-# Informe en lenguaje claro (un HTML para guardar, imprimir o enviar)
+# Informe en lenguaje claro (un HTML para guardar, imprimir o enviar;
+# en inglés con --lang en)
 socshark report -r captura.pcap -o informe.html
 
 # Tabla resumen, JSONL y el lenguaje de filtros (docs/filter-dsl.md)

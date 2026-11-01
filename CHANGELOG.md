@@ -5,6 +5,13 @@ y [SemVer](https://semver.org/lang/es/).
 
 ## [Sin publicar]
 
+### Añadido
+
+- **`socshark report --lang en`**: el informe en lenguaje claro en inglés
+  desde la consola, el mismo que la ventana ya descargaba en inglés. Sin
+  `-o`, el archivo se llama `report.html` (o `informe.html` en español). El
+  README en inglés lo usa en su ejemplo.
+
 ### Añadido (detección)
 
 - **Regla `NON-HTTP-ON-80` (T1571, media, +30)**: una conversación TCP/80

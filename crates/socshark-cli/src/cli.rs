@@ -85,9 +85,13 @@ pub enum Cmd {
         /// Captura de entrada (pcap o pcapng).
         #[arg(short = 'r', long = "read")]
         read: PathBuf,
-        /// Archivo HTML de salida.
-        #[arg(short, long, default_value = "informe.html")]
-        out: PathBuf,
+        /// Archivo HTML de salida (por defecto informe.html, o report.html
+        /// con --lang en).
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+        /// Idioma del informe: es (español) o en (inglés).
+        #[arg(long, default_value = "es", value_parser = ["es", "en"])]
+        lang: String,
         /// Minutos de diferencia con UTC para las horas (España: 60 en
         /// invierno, 120 en verano).
         #[arg(long = "utc-offset", default_value_t = 0, allow_hyphen_values = true)]
