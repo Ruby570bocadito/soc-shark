@@ -5,6 +5,15 @@ y [SemVer](https://semver.org/lang/es/).
 
 ## [Sin publicar]
 
+## [0.9.1] — 2026-11-01
+
+**Actualización recomendada para quien use la 0.9.0 en una red con IPv6**
+(casi cualquier red actual): la regla nueva `NON-DNS-ON-53` daba una alerta
+alta, «Tráfico que no es DNS en el puerto 53», con las búsquedas inversas
+IPv6 normales que Windows y macOS hacen continuamente. Esta versión lo
+corrige, quita otro falso positivo de beacon en redes Windows y amplía el
+corpus con 9 capturas de ataques reales.
+
 ### Corregido (encontrado por el corpus real)
 
 - **Falso positivo alto de `NON-DNS-ON-53` en cualquier red con IPv6**
