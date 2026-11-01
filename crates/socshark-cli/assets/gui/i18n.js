@@ -16,6 +16,7 @@ window.SOCSHARK_I18N = Object.freeze({
     "Abrir": "Open",
     "Ver la red en tiempo real (Ctrl+E)": "Watch the network in real time (Ctrl+E)",
     "En vivo": "Live",
+    "Descargar Npcap": "Download Npcap",
     "Detener la captura en vivo (Ctrl+E)": "Stop the live capture (Ctrl+E)",
     "Detener": "Stop",
     "Guardar lo capturado como .pcap, para Wireshark o para más tarde (Ctrl+S)":

@@ -266,6 +266,65 @@ fn err_in(status: u16, lang: Lang, es: &str, en: &str) -> Response {
     Response::error(status, lang.pick(es, en))
 }
 
+/// Error de la captura en vivo para la ventana. Si falta la biblioteca de
+/// captura (lo primero que encuentra quien pulsa «En vivo» en un Windows sin
+/// Npcap), en vez del mensaje técnico de la CLI («Npcap (wpcap.dll) no
+/// encontrada…», además siempre en español) se explica en lenguaje claro y
+/// en el idioma de la ventana qué instalar; el enlace va aparte
+/// (`help_url`) para que la ventana lo muestre como enlace.
+fn live_error(status: u16, e: &socshark_capture::CaptureError, lang: Lang) -> Response {
+    match e {
+        socshark_capture::CaptureError::CaptureLibraryMissing(_) => {
+            let (message, help_url) = capture_library_help(lang);
+            Response::json(status, &json!({ "error": message, "help_url": help_url }))
+        }
+        _ => Response::error(status, &e.to_string()),
+    }
+}
+
+/// Qué instalar para capturar en vivo en este sistema, dicho para personas.
+fn capture_library_help(lang: Lang) -> (&'static str, Option<&'static str>) {
+    if cfg!(windows) {
+        (
+            lang.pick(
+                "Para ver la red en vivo, Windows necesita Npcap: es gratuito y es el mismo que \
+                 usa Wireshark (si tienes Wireshark, ya lo tienes). Instálalo dejando marcada la \
+                 opción «WinPcap API-compatible Mode» y vuelve a pulsar «En vivo». Mientras \
+                 tanto, puedes abrir capturas guardadas.",
+                "To watch the network live, Windows needs Npcap: it is free and it is the same one \
+                 Wireshark uses (if you have Wireshark, you already have it). Install it keeping \
+                 the «WinPcap API-compatible Mode» option ticked and press «Live» again. \
+                 Meanwhile, you can open saved captures.",
+            ),
+            Some("https://npcap.com/#download"),
+        )
+    } else if cfg!(target_os = "macos") {
+        (
+            lang.pick(
+                "Para ver la red en vivo hace falta libpcap, que macOS trae de serie y aquí no se \
+                 pudo cargar. Instálala con Homebrew (brew install libpcap) y vuelve a pulsar \
+                 «En vivo». Mientras tanto, puedes abrir capturas guardadas.",
+                "To watch the network live you need libpcap, which macOS ships with and which \
+                 could not be loaded here. Install it with Homebrew (brew install libpcap) and \
+                 press «Live» again. Meanwhile, you can open saved captures.",
+            ),
+            None,
+        )
+    } else {
+        (
+            lang.pick(
+                "Para ver la red en vivo hace falta la biblioteca de captura libpcap. Instálala \
+                 (Debian/Ubuntu: sudo apt install libpcap0.8; Fedora: sudo dnf install libpcap) \
+                 y vuelve a pulsar «En vivo». Mientras tanto, puedes abrir capturas guardadas.",
+                "To watch the network live you need the libpcap capture library. Install it \
+                 (Debian/Ubuntu: sudo apt install libpcap0.8; Fedora: sudo dnf install libpcap) \
+                 and press «Live» again. Meanwhile, you can open saved captures.",
+            ),
+            None,
+        )
+    }
+}
+
 /// Los errores del filtro DSL, en inglés si la ventana lo pide. El
 /// analizador los da en español; aquí se traducen sus plantillas.
 fn filter_message_in(message: &str, lang: Lang) -> String {
@@ -602,7 +661,7 @@ impl Server {
                         }))
                         .collect::<Vec<_>>()),
                 ),
-                Err(e) => Response::error(503, &e.to_string()),
+                Err(e) => live_error(503, &e, lang),
             },
             ("POST", ["live", "start"]) => self.start_live(req),
             ("POST", ["live", "stop"]) => {
@@ -669,7 +728,7 @@ impl Server {
         let source = match open(Some(self.live_bpf(bpf.as_deref()))).or_else(|_| open(bpf.clone()))
         {
             Ok(s) => s,
-            Err(e) => return Response::error(400, &e.to_string()),
+            Err(e) => return live_error(400, &e, lang),
         };
         let index = Arc::new(RwLock::new(PacketIndex::new(source.link_type(), true)));
         // Las direcciones de esta máquina: «este ordenador» y, para su
@@ -2251,6 +2310,44 @@ mod tests {
         assert_eq!(r.attachment.as_deref(), Some("demo-soc-shark.pcap"));
         assert_eq!(&r.body[..4], &0xa1b2_c3d4u32.to_le_bytes());
         std::fs::remove_file(path).ok();
+    }
+
+    /// Sin Npcap/libpcap, la ventana explica qué instalar en su idioma, con
+    /// el enlace aparte; el resto de errores de captura pasan tal cual.
+    #[test]
+    fn sin_biblioteca_de_captura_explica_que_instalar() {
+        use socshark_capture::CaptureError;
+        let missing = CaptureError::CaptureLibraryMissing("Npcap (wpcap.dll) no encontrada".into());
+        for (lang, live, open) in [
+            (Lang::Es, "«En vivo»", "abrir capturas guardadas"),
+            (Lang::En, "«Live»", "open saved captures"),
+        ] {
+            let r = live_error(503, &missing, lang);
+            assert_eq!(r.status, 503);
+            let v: Value = serde_json::from_slice(&r.body).unwrap();
+            let msg = v["error"].as_str().unwrap();
+            assert!(msg.contains(live) && msg.contains(open), "{msg}");
+            // Nada del mensaje técnico de la CLI.
+            assert!(
+                !msg.contains("wpcap.dll") && !msg.contains("no encontrada"),
+                "{msg}"
+            );
+            if cfg!(windows) {
+                assert!(msg.contains("Npcap") && msg.contains("WinPcap API-compatible Mode"));
+                assert_eq!(v["help_url"], "https://npcap.com/#download");
+            } else {
+                assert!(msg.contains("libpcap"));
+                assert!(v["help_url"].is_null());
+            }
+        }
+        // Otros errores (una plataforma sin soporte, permisos…): sin cambios.
+        let other = CaptureError::LiveUnavailable("plataforma sin soporte".into());
+        let v: Value = serde_json::from_slice(&live_error(400, &other, Lang::En).body).unwrap();
+        assert_eq!(
+            v["error"],
+            "captura en vivo no disponible: plataforma sin soporte"
+        );
+        assert!(v.get("help_url").is_none());
     }
 
     #[test]

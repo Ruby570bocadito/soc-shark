@@ -2384,6 +2384,28 @@
     return (i && ifaceTitle(i)) || pref("iface-desc-" + name) || name;
   }
 
+  /**
+   * Muestra un error de la captura en vivo. Si falta la biblioteca de
+   * captura, el servidor ya lo explica en lenguaje claro y trae el enlace
+   * de descarga aparte (`help_url`): se pinta como enlace, y solo si va a
+   * la web de Npcap.
+   */
+  function showLiveError(err, e, fallback) {
+    err.hidden = false;
+    const url = e.body && e.body.help_url;
+    if (typeof url === "string" && /^https:\/\/npcap\.com\//.test(url)) {
+      clear(err).append(
+        e.message,
+        " ",
+        h("a", { href: url, target: "_blank", rel: "noopener noreferrer" }, t("Descargar Npcap")),
+      );
+    } else if (e.body && "help_url" in e.body) {
+      err.textContent = e.message;
+    } else {
+      err.textContent = fallback(e.message);
+    }
+  }
+
   async function openLiveDialog() {
     const dlg = $("#live-dlg");
     const list = clear($("#iface-list"));
@@ -2400,8 +2422,7 @@
       ifaces = await api("/api/live/ifaces");
     } catch (e) {
       clear(list);
-      err.hidden = false;
-      err.textContent = t("No se puede capturar en vivo en este equipo: {error}", { error: e.message });
+      showLiveError(err, e, (m) => t("No se puede capturar en vivo en este equipo: {error}", { error: m }));
       return;
     }
     state.ifaces = ifaces;
@@ -2469,8 +2490,7 @@
     try {
       await api(`/api/live/start?iface=${encodeURIComponent(iface)}${bpf ? `&bpf=${encodeURIComponent(bpf)}` : ""}`, { method: "POST" });
     } catch (e) {
-      err.hidden = false;
-      err.textContent = e.message;
+      showLiveError(err, e, (m) => m);
       $("#live-go").disabled = false;
       return;
     }

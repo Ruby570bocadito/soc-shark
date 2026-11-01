@@ -367,7 +367,7 @@ mod backend {
                     return Ok(LibPcap { handle: h });
                 }
             }
-            Err(CaptureError::LiveUnavailable(format!(
+            Err(CaptureError::CaptureLibraryMissing(format!(
                 "{} no encontrada ({})",
                 dl::LIB_NAME,
                 dl::INSTALL_HINT
@@ -378,7 +378,7 @@ mod backend {
             let cname = CString::new(name).expect("nombre de símbolo sin NUL");
             let p = unsafe { dl::sym(self.handle, cname.as_ptr()) };
             if p.is_null() {
-                return Err(CaptureError::LiveUnavailable(format!(
+                return Err(CaptureError::CaptureLibraryMissing(format!(
                     "{} incompleta: falta el símbolo {name}",
                     dl::LIB_NAME
                 )));

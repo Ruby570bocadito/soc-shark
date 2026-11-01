@@ -125,7 +125,11 @@ al menos un verdadero positivo real.
       panel de alertas se calcula al cambiar el filtro, no en cada
       fotograma. 7,4 → 0,4 ms por fotograma (50 → 0,4 ms con 20 000
       alertas)
-- [ ] Captura en vivo probada a mano en Windows + Npcap, Linux y macOS
+- [ ] Captura en vivo probada a mano en Windows + Npcap, Linux y macOS.
+      *Hecho:* Windows 11 **sin** Npcap (el caso más común al pulsar «En
+      vivo» por primera vez): la CLI y la GUI lo explican y la GUI enlaza
+      la descarga, en español y en inglés. *Pendiente:* capturar de verdad
+      con Npcap instalado, y Linux y macOS
 
 **Criterio:** 10 000 flujos se abren y filtran sin bloqueos perceptibles;
 captura en vivo verificada en los tres sistemas.
