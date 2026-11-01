@@ -4,21 +4,22 @@ La regla del proyecto: **una fase no se da por cerrada si su criterio falla**,
 aunque el código exista. Cada hito tiene criterios de aceptación verificables
 y el estado se mantiene en este documento, en el README y en el CHANGELOG.
 
-## Dónde estamos (0.7.x)
+## Dónde estamos (0.9.0)
 
 | Área | Estado |
 |---|---|
 | Lectura pcap/pcapng, disectores (Ethernet/VLAN/QinQ, SLL, IPv4/IPv6, TCP, UDP, DNS, TLS) | ✅ estable |
-| Flujos, reensamblado TCP, *Follow stream* | ✅ estable |
-| Motor SOC: túnel DNS, escaneos, beaconing, T1036, threat intel offline | ✅ estable |
-| CLI, informe HTML, export ECS/Wazuh | ✅ estable |
-| GUI local y TUI | ✅ estable |
-| Captura en vivo (libpcap/Npcap) | 🟡 funciona; falta medir rendimiento en hardware real |
+| Flujos, reensamblado TCP (presupuesto configurable), *Follow stream* | ✅ estable |
+| Motor SOC: túnel DNS, escaneos, beaconing, T1036, `NON-DNS-ON-53`, threat intel offline | ✅ estable; contrastado con 12 capturas reales (0 falsos positivos altos tras la 0.9.0) |
+| CLI, informe HTML, export ECS/Wazuh | ✅ estable; ECS validado contra el esquema oficial, Wazuh con test de contrato |
+| GUI local y TUI | ✅ estables y fluidas con 10 000 conversaciones; GUI en español e inglés |
+| Captura en vivo (libpcap/Npcap) | 🟡 funciona; probado Windows sin Npcap (mensaje claro). Falta probarla capturando en hardware real |
+| Corpus de capturas reales | 🟡 12 capturas legítimas y con shells; faltan ataques reales (escaneo, túnel, beacon, T1036) |
 | Atribución de proceso por eBPF | ⏭️ después de la 1.0 (hoy: tabla de sockets) |
 | Tauri, plugins WASM, DuckDB | ⏭️ después de la 1.0 |
 
-La **auditoría de octubre de 2026** (ver CHANGELOG, «Sin publicar») cerró
-todos los fallos reproducidos:
+La **auditoría de octubre de 2026** (ver CHANGELOG, 0.8.0) cerró todos los
+fallos reproducidos:
 
 - caídas por capturas o peticiones manipuladas (*carving* chunked, GUI sin
   autenticar, filtros anidados);
@@ -27,7 +28,8 @@ todos los fallos reproducidos:
 - el pool de disección, que no paralelizaba;
 - endurecimiento de instaladores y CI.
 
-Los tests pasaron de 209 a 281 (304 tras el primer bloque de la 0.8).
+Los tests pasaron de 209 a 281 (304 tras el primer bloque de la 0.8 y 327
+en la 0.9.0).
 
 ---
 

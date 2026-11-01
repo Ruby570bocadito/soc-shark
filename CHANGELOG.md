@@ -5,22 +5,44 @@ y [SemVer](https://semver.org/lang/es/).
 
 ## [Sin publicar]
 
-### Corregido (GUI)
+## [0.9.0] — 2026-11-01
 
+**Actualización recomendada si usas la 0.8.0 en una red Windows con
+dominio (Active Directory)**: la 0.8.0 marcaba como «Posible túnel DNS»
+(alta) las consultas normales con las que los equipos buscan su controlador
+de dominio. Esta versión corrige ese y otro falso positivo alto que
+encontraron las primeras capturas reales del corpus, añade una detección
+nueva y hace fluidas la GUI y la TUI con miles de conversaciones.
+
+### Corregido
+
+- **Falso positivo alto de `DNS-TUNNELING` en redes con Active Directory**:
+  el localizador de controladores de dominio pregunta
+  `_ldap._tcp.<GUID>.domains._msdcs.<bosque>`, y el GUID (36 caracteres
+  hexadecimales) parecía datos codificados. Los GUID canónicos y las
+  etiquetas de servicio cortas (`_ldap`, `_tcp`, `_msdcs`…) ya no cuentan
+  para la entropía; la regla de volumen sigue cubriendo túneles con forma
+  de GUID.
+- **Falso positivo alto de `FILE-MASQUERADING` con páginas comprimidas**:
+  el nombre se sacaba de la ruta *con* su query (la «extensión» de
+  `ads?…download.html&color=…` era `html&color=…`) y el gzip de
+  `Content-Encoding` se tomaba por el tipo real del archivo. Ahora el
+  nombre ignora query y fragmento, y los cuerpos con `Content-Encoding` no
+  se juzgan por su firma.
 - **«En vivo» en un Windows sin Npcap** (lo primero que encuentra quien
   prueba la app): la ventana mostraba el mensaje técnico de la CLI
-  («Npcap (wpcap.dll) no encontrada…»), repetido tras «No se puede
-  capturar en vivo…» y, con la interfaz en inglés, a medias en español.
-  Ahora explica en lenguaje claro y en el idioma de la ventana qué instalar
-  (Npcap en Windows, libpcap en Linux y macOS) y enlaza la descarga de
-  Npcap. Nueva variante `CaptureError::CaptureLibraryMissing` para
-  distinguir «falta la biblioteca» de «plataforma sin soporte»; la CLI
-  sigue diciendo lo mismo.
+  («Npcap (wpcap.dll) no encontrada…»), repetido y, con la interfaz en
+  inglés, a medias en español. Ahora explica en lenguaje claro y en el
+  idioma de la ventana qué instalar (Npcap en Windows, libpcap en Linux y
+  macOS) y enlaza la descarga de Npcap. Nueva variante
+  `CaptureError::CaptureLibraryMissing`; la CLI dice lo mismo que antes.
 - Los botones deshabilitados de los diálogos (p. ej. «Empezar» sin
   interfaces) parecían activos: ahora se ven atenuados, como los de la
   barra.
+- `scripts/fetch_corpus.py` fallaba en la consola de Windows al imprimir
+  `←`.
 
-### Añadido (detección)
+### Añadido
 
 - **Regla `NON-DNS-ON-53` (T1571, alta, +40)**: un flujo por el puerto 53
   que lleva datos sin un solo mensaje DNS válido (una shell, una VPN o un
@@ -30,35 +52,14 @@ y [SemVer](https://semver.org/lang/es/).
   reconoce, y no cuentan las comprobaciones de salud, las sondas rechazadas,
   mDNS ni LLMNR. 1 verdadero positivo real y 0 falsos positivos en el resto
   del corpus. Historia y textos en español e inglés, y regla Wazuh 100227.
-
-### Corregido (encontrado por el corpus real)
-
-- **Falso positivo High de `DNS-TUNNELING` en redes con Active Directory**:
-  el localizador de controladores de dominio pregunta
-  `_ldap._tcp.<GUID>.domains._msdcs.<bosque>`, y el GUID (36 caracteres
-  hexadecimales) parecía datos codificados. Los GUID canónicos y las
-  etiquetas de servicio cortas (`_ldap`, `_tcp`, `_msdcs`…) ya no cuentan
-  para la entropía; la regla de volumen sigue cubriendo túneles con forma
-  de GUID.
-- **Falso positivo High de `FILE-MASQUERADING` con páginas comprimidas**:
-  el nombre se sacaba de la ruta *con* su query (la «extensión» de
-  `ads?…download.html&color=…` era `html&color=…`) y el gzip de
-  `Content-Encoding` se tomaba por el tipo real del archivo. Ahora el
-  nombre ignora query y fragmento, y los cuerpos con `Content-Encoding` no
-  se juzgan por su firma.
-- `scripts/fetch_corpus.py` fallaba en la consola de Windows al imprimir
-  `←`.
-
-### Añadido
-
 - **Primeras capturas reales en el corpus**: 12 del wiki de Wireshark
-  (Telnet, shell en el puerto 53, HTTP con chunked/gzip/JPEG, DNS, DHCP,
-  NTP, TLS, SMB3, arranque de un router), con la verdad de campo escrita
-  antes de pasarlas. No se versionan: `scripts/fetch_corpus.py` las baja
-  comprobando su SHA-256, con tope de 5 MB, soporte de `.gz` y respeto de
-  los 429 del servidor.
+  (Telnet, shells remotas, HTTP con chunked/gzip/JPEG, DNS, DHCP, NTP, TLS,
+  SMB3, arranque de un router), con la verdad de campo escrita antes de
+  pasarlas. No se versionan: `scripts/fetch_corpus.py` las baja comprobando
+  su SHA-256, con tope de 5 MB, soporte de `.gz` y respeto de los 429 del
+  servidor.
 - Campo `known_miss` en el manifiesto para lo que soc-shark aún no detecta
-  (hoy: la shell remota en TCP/53), y el resumen del test separa los
+  (hoy: una shell remota en TCP/80), y el resumen del test separa los
   verdaderos positivos reales de los sintéticos.
 
 ### Rendimiento
