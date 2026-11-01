@@ -30,6 +30,7 @@ mod live;
 mod names;
 pub mod packets;
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::io::ErrorKind;
 use std::net::{IpAddr, TcpListener, TcpStream};
@@ -887,31 +888,57 @@ fn flows_json(l: &Loaded, filter: Option<String>, lang: Lang) -> Response {
     let matching: Vec<usize> = (0..l.flows.len())
         .filter(|&i| matches(&expr, &l.flows[i]))
         .collect();
-    let rows: Vec<Value> = matching
+    let rows: Vec<FlowRow> = matching
         .iter()
         .take(MAX_FLOWS)
         .map(|&i| {
             let f = &l.flows[i];
             let short = |ip| l.hosts.get(ip).and_then(|h| h.short_in(lang));
-            let mut flow = serde_json::to_value(f).unwrap_or(Value::Null);
-            if lang != Lang::Es {
+            let flow = if lang == Lang::Es {
+                Cow::Borrowed(f)
+            } else {
                 // Solo la vista: el JSONL sigue llevando el resumen en español.
-                flow["human_summary"] = json!(socshark_soc::summarize::summarize_in(f, lang));
+                let mut copy = f.clone();
+                copy.human_summary = socshark_soc::summarize::summarize_in(f, lang);
+                Cow::Owned(copy)
+            };
+            FlowRow {
+                idx: i,
+                proto: proto_name(f),
+                src_name: short(f.src_ip),
+                dst_name: short(f.dst_ip),
+                flow,
+                explain: &explanations[i],
             }
-            json!({
-                "idx": i,
-                "proto": proto_name(f),
-                "src_name": short(f.src_ip),
-                "dst_name": short(f.dst_ip),
-                "flow": flow,
-                "explain": &explanations[i],
-            })
         })
         .collect();
-    Response::json(
+    Response::json_of(
         200,
-        &json!({ "flows": rows, "total": matching.len(), "truncated": matching.len() > MAX_FLOWS }),
+        &FlowsPage {
+            total: matching.len(),
+            truncated: matching.len() > MAX_FLOWS,
+            flows: rows,
+        },
     )
+}
+
+/// Una fila de `/api/flows`: se serializa tal cual, prestando el flujo y su
+/// explicación (sin copiarlos a un árbol `Value`).
+#[derive(serde::Serialize)]
+struct FlowRow<'a> {
+    idx: usize,
+    proto: &'static str,
+    src_name: Option<String>,
+    dst_name: Option<String>,
+    flow: Cow<'a, EnrichedFlow>,
+    explain: &'a Explanation,
+}
+
+#[derive(serde::Serialize)]
+struct FlowsPage<'a> {
+    flows: Vec<FlowRow<'a>>,
+    total: usize,
+    truncated: bool,
 }
 
 /// Un equipo del directorio para la ventana: lo que se sabe de él, su

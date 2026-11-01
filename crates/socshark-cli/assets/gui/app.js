@@ -674,7 +674,20 @@
     ],
   };
 
+  // Con miles de conversaciones, ordenar cuesta: el resultado se guarda
+  // mientras no cambien la lista, los filtros de la vista ni el orden (las
+  // flechas del teclado lo piden en cada pulsación).
+  let visibleMemo = { key: null, rows: [] };
+
   function visibleFlows() {
+    const key = [state.flows, state.storyFilter, state.showNoise, state.show, state.sort.key, state.sort.dir];
+    if (visibleMemo.key && key.every((v, i) => v === visibleMemo.key[i])) return visibleMemo.rows;
+    const rows = computeVisibleFlows();
+    visibleMemo = { key, rows };
+    return rows;
+  }
+
+  function computeVisibleFlows() {
     let list = state.flows;
     if (state.storyFilter) list = list.filter((r) => state.storyFilter.idx.has(r.idx));
     else {
@@ -764,60 +777,63 @@
     return cols.length;
   }
 
+  function flowRow(r) {
+    const f = r.flow;
+    const cls = [f.is_background_noise ? "noise" : null, r.explain.level !== "ok" ? r.explain.level : null].filter(Boolean).join(" ");
+    return h(
+      "tr",
+      {
+        class: cls || null,
+        "aria-selected": String(flowKey(r) === state.selectedKey),
+        "data-idx": r.idx,
+        tabindex: "-1",
+        onclick: () => select(r.idx),
+        oncontextmenu: (e) => {
+          e.preventDefault();
+          select(r.idx);
+          openMenu(e.clientX, e.clientY, flowMenu(r));
+        },
+      },
+      flowCells(r),
+    );
+  }
+
+  // Filas que se pintan de golpe; el resto, por trozos cediendo el turno
+  // entre uno y otro (clics y teclas pasan delante): con 2 000 filas,
+  // pintarlas todas juntas bloqueaba la ventana ~200 ms (y en vivo, cada
+  // segundo). setTimeout y no requestAnimationFrame: este se detiene con la
+  // ventana oculta y la tabla se quedaría a medias.
+  const TABLE_FIRST = 150;
+  const TABLE_CHUNK = 250;
+  let tableGen = 0;
+
   function renderTable() {
     const ncols = renderHead();
     const body = clear($("#flows-body"));
     const rows = visibleFlows();
-    const frag = document.createDocumentFragment();
-    for (const r of rows.slice(0, state.rowLimit)) {
-      const f = r.flow;
-      const cls = [f.is_background_noise ? "noise" : null, r.explain.level !== "ok" ? r.explain.level : null].filter(Boolean).join(" ");
-      frag.append(
-        h(
-          "tr",
-          {
-            class: cls || null,
-            "aria-selected": String(flowKey(r) === state.selectedKey),
-            "data-idx": r.idx,
-            tabindex: "-1",
-            onclick: () => select(r.idx),
-            oncontextmenu: (e) => {
-              e.preventDefault();
-              select(r.idx);
-              openMenu(e.clientX, e.clientY, flowMenu(r));
-            },
-          },
-          flowCells(r),
-        ),
-      );
+    const limit = Math.min(rows.length, state.rowLimit);
+    const gen = ++tableGen;
+    const paint = (from, to) => {
+      const frag = document.createDocumentFragment();
+      for (let i = from; i < to; i++) frag.append(flowRow(rows[i]));
+      body.append(frag);
+    };
+    paint(0, Math.min(limit, TABLE_FIRST));
+    const more = rows.length > state.rowLimit ? moreRow(ncols, rows.length) : null;
+    if (limit <= TABLE_FIRST) {
+      if (more) body.append(more);
+    } else {
+      let next = TABLE_FIRST;
+      const step = () => {
+        if (gen !== tableGen) return; // otro repintado empezó: este se abandona
+        const end = Math.min(limit, next + TABLE_CHUNK);
+        paint(next, end);
+        next = end;
+        if (next < limit) setTimeout(step, 0);
+        else if (more) body.append(more);
+      };
+      setTimeout(step, 0);
     }
-    if (rows.length > state.rowLimit) {
-      frag.append(
-        h(
-          "tr",
-          { class: "more" },
-          h(
-            "td",
-            { colspan: ncols },
-            t("Se muestran {shown} de {total}. ", { shown: nf.format(state.rowLimit), total: nf.format(rows.length) }),
-            h(
-              "button",
-              {
-                class: "btn small",
-                type: "button",
-                onclick: () => {
-                  state.rowLimit += 2000;
-                  renderTable();
-                },
-              },
-              t("Mostrar más"),
-            ),
-            t(" o usa un filtro para acotar."),
-          ),
-        ),
-      );
-    }
-    body.append(frag);
 
     state.visibleCount = rows.length;
     const total = state.flows.length;
@@ -833,6 +849,31 @@
           : t("Ninguna conversación coincide con el filtro.");
     }
     renderStatus();
+  }
+
+  function moreRow(ncols, total) {
+    return h(
+      "tr",
+      { class: "more" },
+      h(
+        "td",
+        { colspan: ncols },
+        t("Se muestran {shown} de {total}. ", { shown: nf.format(state.rowLimit), total: nf.format(total) }),
+        h(
+          "button",
+          {
+            class: "btn small",
+            type: "button",
+            onclick: () => {
+              state.rowLimit += 2000;
+              renderTable();
+            },
+          },
+          t("Mostrar más"),
+        ),
+        t(" o usa un filtro para acotar."),
+      ),
+    );
   }
 
   const flowKey = (r) => `${r.flow.flow_id}@${r.flow.first_seen_micros}`;

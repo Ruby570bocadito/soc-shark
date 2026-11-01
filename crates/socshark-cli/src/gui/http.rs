@@ -229,6 +229,16 @@ impl Response {
         Self::new(status, "application/json; charset=utf-8", value.to_string())
     }
 
+    /// JSON serializado directamente desde un tipo, sin pasar por un
+    /// árbol `Value` (con 10 000 flujos, construir el árbol costaba más que
+    /// escribir los bytes).
+    pub fn json_of(status: u16, value: &impl serde::Serialize) -> Self {
+        match serde_json::to_vec(value) {
+            Ok(body) => Self::new(status, "application/json; charset=utf-8", body),
+            Err(e) => Self::error(500, &e.to_string()),
+        }
+    }
+
     pub fn error(status: u16, message: &str) -> Self {
         Self::json(status, &serde_json::json!({ "error": message }))
     }

@@ -110,7 +110,10 @@ al menos un verdadero positivo real.
       `dev bench` talla 9 000 archivos en vez de 4 500 (el resto se perdía
       sin avisar). Siguen faltando ~1 000 en ese caso extremo, con 20 000
       conexiones abiertas a la vez
-- [ ] GUI y TUI fluidas con 10 000 flujos (lista virtualizada)
+- [x] GUI fluida con 10 000 flujos: `/api/flows` sin árbol `Value`
+      (~13× más rápido) y tabla pintada por trozos con el orden memorizado;
+      ningún bloqueo de la ventana pasa de ~80 ms (el `JSON.parse`)
+- [ ] TUI con 10 000 flujos (sin medir)
 - [ ] Captura en vivo probada a mano en Windows + Npcap, Linux y macOS
 
 **Criterio:** 10 000 flujos se abren y filtran sin bloqueos perceptibles;
