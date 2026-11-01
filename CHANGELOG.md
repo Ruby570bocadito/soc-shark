@@ -5,7 +5,18 @@ y [SemVer](https://semver.org/lang/es/).
 
 ## [Sin publicar]
 
-### Añadido
+### Rendimiento
+
+- **GUI fluida con 10 000 conversaciones**: `/api/flows` se serializa sin
+  construir un árbol `Value` (~400 ms → ~30 ms para 16 MB) y la tabla se
+  pinta por trozos cediendo el turno entre uno y otro, con el orden
+  memorizado (las flechas ya no reordenan 10 000 filas en cada pulsación).
+  Volver a ver las 10 000 tras un filtro: 726 → 409 ms hasta la última
+  fila y el bloqueo más largo de la ventana de 190 a 77 ms.
+
+## [0.8.0] — 2026-11-01
+
+### Añadido (interfaz bilingüe)
 
 - **GUI en inglés y español** (ADR-015): selector ES/EN en la barra de
   herramientas que cambia toda la ventana sin volver a abrir la captura
@@ -17,13 +28,11 @@ y [SemVer](https://semver.org/lang/es/).
   `alert_name_in`, `alert_detail_in`…). La API de la GUI acepta la
   cabecera `X-Socshark-Lang` (o `?lang=`).
 
-### Sin cambios
+### Sin cambios (interfaz bilingüe)
 
 - El JSONL, ECS, Wazuh, los `alert.id` y el `human_summary` exportado
   siguen en español (`schema_version` 1). La TUI, la CLI y `socshark
   report` también.
-
-## [0.8.0] — 2026-11-01
 
 ### Alcance de la 1.0
 
