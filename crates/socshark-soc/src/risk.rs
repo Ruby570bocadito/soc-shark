@@ -94,6 +94,39 @@ pub fn same_host(flow: &EnrichedFlow) -> bool {
 /// (aquí, cualquier cosa que no sea DNS en el 53).
 pub const MITRE_NON_STANDARD_PORT: &str = "T1571";
 
+/// R9: ¿usa el flujo el puerto 80 sin hablar HTTP? Devuelve el detalle de la
+/// alerta.
+///
+/// Mismo truco que R8 con el otro puerto que casi todos los cortafuegos
+/// dejan pasar: una shell remota, un túnel o un control remoto por el 80. El
+/// caso real del corpus es la shell de `cmd.exe` en TCP/80 de
+/// `dns-remoteshell.pcap`. Medido antes de escribirla: de los 317 flujos
+/// TCP/80 del corpus real (navegación, dos C2 por HTTP, tráfico de Windows,
+/// el arranque de un router…), solo ese llevaba datos sin ser HTTP.
+///
+/// Solo si se vio el principio de la conversación (`SYN`) y viajaron datos
+/// (`PSH`): así, si fuera HTTP, la petición estaría en la captura. HTTP se
+/// reconoce con cualquier método, por la respuesta y en HTTP/2 en claro
+/// (ver `socshark_dissectors::detect_l7`).
+pub fn non_http_on_port_80(flow: &EnrichedFlow) -> Option<String> {
+    if flow.transport != Transport::Tcp
+        || flow.dst_port != 80
+        || flow.tcp_flags.syn == 0
+        || flow.tcp_flags.psh == 0
+        || flow.l7_protocol == L7Protocol::Http
+    {
+        return None;
+    }
+    let content = match flow.l7_protocol {
+        L7Protocol::Tls | L7Protocol::Ssh => flow.l7_protocol.as_str(),
+        _ => "desconocido",
+    };
+    Some(format!(
+        "TCP {} → {}:80 sin ninguna petición ni respuesta HTTP (contenido: {content})",
+        flow.src_ip, flow.dst_ip
+    ))
+}
+
 /// R8: ¿usa el flujo el puerto 53 sin hablar DNS? Devuelve el detalle de la
 /// alerta.
 ///
@@ -551,6 +584,18 @@ pub fn assess_with_intel(
         });
     }
 
+    // R9: otra cosa en el puerto 80 — MITRE T1571.
+    if let Some(detail) = non_http_on_port_80(flow) {
+        score += 30;
+        flow.alerts.push(Alert {
+            id: "NON-HTTP-ON-80".into(),
+            name: "Tráfico que no es HTTP en el puerto 80".into(),
+            severity: Severity::Medium,
+            detail,
+            mitre: Some(MITRE_NON_STANDARD_PORT.into()),
+        });
+    }
+
     // R5: beaconing por regularidad de intervalos — MITRE T1071.
     // Solo tráfico no-ruido (NTP/mDNS son regulares por diseño) y con los
     // umbrales configurables: ventana de intervalo y regularidad (CV).
@@ -691,6 +736,7 @@ pub fn alert_name_in(alert: &Alert, lang: Lang) -> String {
         "INSECURE-PORT" => "Cleartext Telnet",
         "EXPOSED-DB" => "Exposed database",
         "NON-DNS-ON-53" => "Non-DNS traffic on port 53",
+        "NON-HTTP-ON-80" => "Non-HTTP traffic on port 80",
         "BEACONING" if jitter => "Periodic communication with jitter (beacon)",
         "BEACONING" => "Periodic communication (beacon)",
         "FILE-MASQUERADING" => "File transferred with a forged identity",
@@ -762,6 +808,17 @@ fn detail_en(id: &str, d: &str) -> Option<String> {
             let rest = d.strip_prefix("conexión directa a puerto de base de datos (")?;
             let (port, ip) = rest.split_once(") en ")?;
             format!("direct connection to a database port ({port}) on {ip}")
+        }
+        "NON-HTTP-ON-80" => {
+            let (route, content) =
+                d.split_once(" sin ninguna petición ni respuesta HTTP (contenido: ")?;
+            let content = content.strip_suffix(')')?;
+            let content = if content == "desconocido" {
+                "unknown"
+            } else {
+                content
+            };
+            format!("{route} with no HTTP request or response (content: {content})")
         }
         "NON-DNS-ON-53" => {
             let (route, content) = d.split_once(" sin ningún mensaje DNS válido (contenido: ")?;
@@ -891,6 +948,69 @@ mod tests {
         ] {
             assert!(dns_tunnel_suspect(name, &cfg).is_some(), "{name}");
         }
+    }
+
+    #[test]
+    fn otra_cosa_en_el_puerto_80_dispara_r9() {
+        let cfg = PipelineConfig::default();
+        // Shell en TCP/80 (caso real del corpus): conversación completa, con
+        // datos y sin HTTP.
+        let mut shell = flujo_basico(6, 1404, 80);
+        shell.tcp_flags.syn = 2;
+        shell.tcp_flags.ack = 11;
+        shell.tcp_flags.psh = 5;
+        shell.tcp_flags.rst = 1;
+        assess(&mut shell, ScanSignals::default(), &cfg);
+        let a = shell
+            .alerts
+            .iter()
+            .find(|a| a.id == "NON-HTTP-ON-80")
+            .expect("debe saltar");
+        assert_eq!(a.severity, Severity::Medium);
+        assert_eq!(a.mitre.as_deref(), Some(MITRE_NON_STANDARD_PORT));
+        assert_eq!(
+            a.detail,
+            "TCP 10.0.0.5 → 10.0.0.99:80 sin ninguna petición ni respuesta HTTP (contenido: desconocido)"
+        );
+        assert!(shell.risk_score >= 30);
+        assert_eq!(alert_name_in(a, Lang::En), "Non-HTTP traffic on port 80");
+        assert_eq!(
+            alert_detail_in(a, Lang::En),
+            "TCP 10.0.0.5 → 10.0.0.99:80 with no HTTP request or response (content: unknown)"
+        );
+        // TLS por el 80 también es «otra cosa».
+        let mut tls = flujo_basico(6, 50000, 80);
+        tls.tcp_flags.syn = 1;
+        tls.tcp_flags.psh = 1;
+        tls.l7_protocol = L7Protocol::Tls;
+        assert!(non_http_on_port_80(&tls)
+            .unwrap()
+            .ends_with("(contenido: TLS)"));
+    }
+
+    #[test]
+    fn el_http_de_verdad_y_lo_incompleto_no_dispara_r9() {
+        // HTTP reconocido.
+        let mut web = flujo_basico(6, 50000, 80);
+        web.tcp_flags.syn = 2;
+        web.tcp_flags.psh = 4;
+        web.l7_protocol = L7Protocol::Http;
+        assert!(non_http_on_port_80(&web).is_none());
+        // Sin datos: conectar y cerrar, o una sonda.
+        let mut vacio = flujo_basico(6, 50001, 80);
+        vacio.tcp_flags.syn = 2;
+        vacio.tcp_flags.fin = 2;
+        assert!(non_http_on_port_80(&vacio).is_none());
+        // Captura empezada a mitad (sin SYN): la petición pudo quedar fuera.
+        let mut mitad = flujo_basico(6, 50002, 80);
+        mitad.tcp_flags.psh = 3;
+        assert!(non_http_on_port_80(&mitad).is_none());
+        // Otro puerto, u otro transporte.
+        let mut otro = flujo_basico(6, 50003, 8080);
+        otro.tcp_flags.syn = 1;
+        otro.tcp_flags.psh = 1;
+        assert!(non_http_on_port_80(&otro).is_none());
+        assert!(non_http_on_port_80(&flujo_basico(17, 50004, 80)).is_none());
     }
 
     #[test]

@@ -28,7 +28,8 @@
         "PORT-SCAN",
         "NETWORK-SWEEP",
         "BEACONING",
-        "NON-DNS-ON-53"
+        "NON-DNS-ON-53",
+        "NON-HTTP-ON-80"
       ],
       "max_severity": "High"
     },
@@ -40,7 +41,8 @@
       "must": [],
       "must_not": [
         "DNS-TUNNELING",
-        "NON-DNS-ON-53"
+        "NON-DNS-ON-53",
+        "NON-HTTP-ON-80"
       ],
       "max_severity": "Low"
     },
@@ -74,7 +76,8 @@
       "must": [],
       "must_not": [
         "BEACONING",
-        "NON-DNS-ON-53"
+        "NON-DNS-ON-53",
+        "NON-HTTP-ON-80"
       ],
       "max_severity": "Medium"
     },
@@ -95,7 +98,8 @@
         "REPEATED-ATTEMPTS",
         "BEACONING",
         "FILE-MASQUERADING",
-        "NON-DNS-ON-53"
+        "NON-DNS-ON-53",
+        "NON-HTTP-ON-80"
       ],
       "max_severity": "High"
     },
@@ -116,7 +120,8 @@
         "REPEATED-ATTEMPTS",
         "BEACONING",
         "FILE-MASQUERADING",
-        "NON-DNS-ON-53"
+        "NON-DNS-ON-53",
+        "NON-HTTP-ON-80"
       ],
       "max_severity": "High"
     },
@@ -129,10 +134,11 @@
       "carve_files": false,
       "must": [
         "INSECURE-PORT",
-        "NON-DNS-ON-53"
+        "NON-DNS-ON-53",
+        "NON-HTTP-ON-80"
       ],
       "must_not": [],
-      "known_miss": "La shell de TCP/80 no se detecta: no hay regla de «tráfico que no es HTTP en el puerto 80». La de TCP/53 la caza NON-DNS-ON-53 y la del 23, INSECURE-PORT; los intentos al 21 fueron rechazados. Al principio se esperaba DNS-TUNNELING, pero no es un túnel: es otra aplicación en el puerto DNS."
+      "note": "Las shells de TCP/53 y TCP/80 las cazan NON-DNS-ON-53 y NON-HTTP-ON-80, y la del 23 INSECURE-PORT; los intentos al 21 fueron rechazados. Al principio se esperaba DNS-TUNNELING, pero no es un túnel: es otra aplicación en el puerto DNS."
     },
     {
       "name": "wireshark-http",
@@ -149,7 +155,8 @@
         "REPEATED-ATTEMPTS",
         "BEACONING",
         "FILE-MASQUERADING",
-        "NON-DNS-ON-53"
+        "NON-DNS-ON-53",
+        "NON-HTTP-ON-80"
       ],
       "max_severity": "Medium"
     },
@@ -168,7 +175,8 @@
         "REPEATED-ATTEMPTS",
         "BEACONING",
         "FILE-MASQUERADING",
-        "NON-DNS-ON-53"
+        "NON-DNS-ON-53",
+        "NON-HTTP-ON-80"
       ],
       "max_severity": "Medium"
     },
@@ -188,7 +196,8 @@
         "REPEATED-ATTEMPTS",
         "BEACONING",
         "FILE-MASQUERADING",
-        "NON-DNS-ON-53"
+        "NON-DNS-ON-53",
+        "NON-HTTP-ON-80"
       ],
       "max_severity": "Medium"
     },
@@ -207,7 +216,8 @@
         "REPEATED-ATTEMPTS",
         "BEACONING",
         "FILE-MASQUERADING",
-        "NON-DNS-ON-53"
+        "NON-DNS-ON-53",
+        "NON-HTTP-ON-80"
       ],
       "max_severity": "Medium"
     },
@@ -226,7 +236,8 @@
         "REPEATED-ATTEMPTS",
         "BEACONING",
         "FILE-MASQUERADING",
-        "NON-DNS-ON-53"
+        "NON-DNS-ON-53",
+        "NON-HTTP-ON-80"
       ],
       "max_severity": "Medium"
     },
@@ -245,7 +256,8 @@
         "REPEATED-ATTEMPTS",
         "BEACONING",
         "FILE-MASQUERADING",
-        "NON-DNS-ON-53"
+        "NON-DNS-ON-53",
+        "NON-HTTP-ON-80"
       ],
       "max_severity": "Medium"
     },
@@ -264,7 +276,8 @@
         "REPEATED-ATTEMPTS",
         "BEACONING",
         "FILE-MASQUERADING",
-        "NON-DNS-ON-53"
+        "NON-DNS-ON-53",
+        "NON-HTTP-ON-80"
       ],
       "max_severity": "Medium"
     },
@@ -283,7 +296,8 @@
         "REPEATED-ATTEMPTS",
         "BEACONING",
         "FILE-MASQUERADING",
-        "NON-DNS-ON-53"
+        "NON-DNS-ON-53",
+        "NON-HTTP-ON-80"
       ],
       "max_severity": "Medium"
     },
@@ -302,7 +316,8 @@
         "REPEATED-ATTEMPTS",
         "BEACONING",
         "FILE-MASQUERADING",
-        "NON-DNS-ON-53"
+        "NON-DNS-ON-53",
+        "NON-HTTP-ON-80"
       ],
       "max_severity": "Medium"
     },
@@ -337,7 +352,8 @@
         "PORT-SCAN",
         "NETWORK-SWEEP",
         "BEACONING",
-        "FILE-MASQUERADING"
+        "FILE-MASQUERADING",
+        "NON-HTTP-ON-80"
       ],
       "max_severity": "Medium"
     },
@@ -355,7 +371,8 @@
         "PORT-SCAN",
         "NETWORK-SWEEP",
         "BEACONING",
-        "FILE-MASQUERADING"
+        "FILE-MASQUERADING",
+        "NON-HTTP-ON-80"
       ],
       "max_severity": "Medium"
     },
@@ -373,7 +390,8 @@
         "PORT-SCAN",
         "NETWORK-SWEEP",
         "FILE-MASQUERADING",
-        "NON-DNS-ON-53"
+        "NON-DNS-ON-53",
+        "NON-HTTP-ON-80"
       ]
     },
     {
@@ -390,7 +408,8 @@
         "PORT-SCAN",
         "NETWORK-SWEEP",
         "DNS-TUNNELING",
-        "NON-DNS-ON-53"
+        "NON-DNS-ON-53",
+        "NON-HTTP-ON-80"
       ]
     },
     {
@@ -407,7 +426,8 @@
         "PORT-SCAN",
         "NETWORK-SWEEP",
         "DNS-TUNNELING",
-        "NON-DNS-ON-53"
+        "NON-DNS-ON-53",
+        "NON-HTTP-ON-80"
       ]
     },
     {
@@ -424,7 +444,8 @@
         "PORT-SCAN",
         "NETWORK-SWEEP",
         "DNS-TUNNELING",
-        "NON-DNS-ON-53"
+        "NON-DNS-ON-53",
+        "NON-HTTP-ON-80"
       ]
     },
     {
@@ -441,7 +462,8 @@
         "PORT-SCAN",
         "NETWORK-SWEEP",
         "DNS-TUNNELING",
-        "NON-DNS-ON-53"
+        "NON-DNS-ON-53",
+        "NON-HTTP-ON-80"
       ]
     },
     {
@@ -457,7 +479,8 @@
       "must_not": [
         "PORT-SCAN",
         "NETWORK-SWEEP",
-        "DNS-TUNNELING"
+        "DNS-TUNNELING",
+        "NON-HTTP-ON-80"
       ],
       "note": "Además del C2 (172.208.51.75:7707, 540 flujos con BEACONING), salta BEACONING (baja) en 2 de 11 flujos a 143.198.3.13:222 cada ~45 s. La fuente no los menciona: sin confirmar si es parte del laboratorio o un falso positivo."
     },
@@ -477,7 +500,8 @@
         "REPEATED-ATTEMPTS",
         "BEACONING",
         "FILE-MASQUERADING",
-        "NON-DNS-ON-53"
+        "NON-DNS-ON-53",
+        "NON-HTTP-ON-80"
       ],
       "max_severity": "Medium",
       "note": "Se registró como verdadero positivo de EXPOSED-DB antes de mirar los paquetes; un lector propio mostró que el cliente y el servidor son el mismo equipo, así que la conexión no prueba que la base de datos sea alcanzable desde la red. Verdad de campo corregida antes de pasarla por soc-shark."
@@ -499,7 +523,8 @@
         "REPEATED-ATTEMPTS",
         "BEACONING",
         "FILE-MASQUERADING",
-        "NON-DNS-ON-53"
+        "NON-DNS-ON-53",
+        "NON-HTTP-ON-80"
       ],
       "max_severity": "Medium",
       "note": "Se registró como verdadero positivo de EXPOSED-DB antes de mirar los paquetes; un lector propio mostró que va por loopback: la base de datos solo escucha en el propio equipo. Verdad de campo corregida antes de pasarla por soc-shark."
