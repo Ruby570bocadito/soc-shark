@@ -5,6 +5,36 @@ y [SemVer](https://semver.org/lang/es/).
 
 ## [Sin publicar]
 
+### Corregido (encontrado por el corpus real)
+
+- **Falso positivo High de `DNS-TUNNELING` en redes con Active Directory**:
+  el localizador de controladores de dominio pregunta
+  `_ldap._tcp.<GUID>.domains._msdcs.<bosque>`, y el GUID (36 caracteres
+  hexadecimales) parecía datos codificados. Los GUID canónicos y las
+  etiquetas de servicio cortas (`_ldap`, `_tcp`, `_msdcs`…) ya no cuentan
+  para la entropía; la regla de volumen sigue cubriendo túneles con forma
+  de GUID.
+- **Falso positivo High de `FILE-MASQUERADING` con páginas comprimidas**:
+  el nombre se sacaba de la ruta *con* su query (la «extensión» de
+  `ads?…download.html&color=…` era `html&color=…`) y el gzip de
+  `Content-Encoding` se tomaba por el tipo real del archivo. Ahora el
+  nombre ignora query y fragmento, y los cuerpos con `Content-Encoding` no
+  se juzgan por su firma.
+- `scripts/fetch_corpus.py` fallaba en la consola de Windows al imprimir
+  `←`.
+
+### Añadido
+
+- **Primeras capturas reales en el corpus**: 12 del wiki de Wireshark
+  (Telnet, shell en el puerto 53, HTTP con chunked/gzip/JPEG, DNS, DHCP,
+  NTP, TLS, SMB3, arranque de un router), con la verdad de campo escrita
+  antes de pasarlas. No se versionan: `scripts/fetch_corpus.py` las baja
+  comprobando su SHA-256, con tope de 5 MB, soporte de `.gz` y respeto de
+  los 429 del servidor.
+- Campo `known_miss` en el manifiesto para lo que soc-shark aún no detecta
+  (hoy: la shell remota en TCP/53), y el resumen del test separa los
+  verdaderos positivos reales de los sintéticos.
+
 ### Rendimiento
 
 - **GUI fluida con 10 000 conversaciones**: `/api/flows` se serializa sin

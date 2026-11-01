@@ -120,6 +120,30 @@ fn letter_digit_transitions(s: &str) -> usize {
         .count()
 }
 
+/// GUID canónico (`05b5292b-34b8-4fb7-85a3-8beef5fd2069`): 36 caracteres
+/// hexadecimales con guiones en 8-4-4-4-12.
+fn is_guid_label(l: &str) -> bool {
+    l.len() == 36
+        && l.bytes().enumerate().all(|(i, b)| match i {
+            8 | 13 | 18 | 23 => b == b'-',
+            _ => b.is_ascii_hexdigit(),
+        })
+}
+
+/// Etiquetas que no son datos aunque lo parezcan, y por eso no cuentan para
+/// la entropía:
+/// - GUIDs canónicos: el localizador de controladores de dominio de Active
+///   Directory pregunta `_ldap._tcp.<GUID>.domains._msdcs.<bosque>` y
+///   `<GUID>._msdcs.<bosque>` en cualquier red Windows con dominio (falso
+///   positivo High real del corpus, `dns.cap`). Un túnel que codificara en
+///   forma de GUID necesitaría muchos nombres distintos y lo caza la regla
+///   de volumen ([`crate::dns_volume`]);
+/// - etiquetas de servicio cortas de SRV y DNS-SD (`_ldap`, `_tcp`,
+///   `_msdcs`, `_kerberos`, `_services`…).
+fn is_structural_label(l: &str) -> bool {
+    is_guid_label(l) || (l.starts_with('_') && l.len() <= 16)
+}
+
 /// ¿Parece el qname un túnel DNS? La entropía se mide solo sobre la parte a
 /// la izquierda del dominio registrable ([`crate::domain`]): el dominio de
 /// la organización (`microsoft.com`, `cloudflare.net`) no aporta nada y
@@ -136,7 +160,10 @@ pub fn dns_tunnel_suspect(qname: &str, cfg: &PipelineConfig) -> Option<DnsTunnel
         return None;
     }
     let lower = qname.to_ascii_lowercase();
-    let labels = crate::domain::subdomain_labels(&lower);
+    let labels: Vec<&str> = crate::domain::subdomain_labels(&lower)
+        .into_iter()
+        .filter(|l| !is_structural_label(l))
+        .collect();
     let longest = labels.iter().copied().max_by_key(|l| l.len())?;
     let subdomain: String = labels.concat();
     let thr = cfg.dns_entropy_threshold;
@@ -740,6 +767,10 @@ mod tests {
             "ec2-52-14-201-33.us-east-2.compute.amazonaws.com",
             "b.6.5.4.3.2.1.0.0.0.0.0.0.0.0.0.1.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa",
             "_ldap._tcp.dc._msdcs.corp.example.com",
+            // Localizador de DCs de Active Directory con GUID (falso positivo
+            // High real del corpus: wireshark-dns, dns.cap).
+            "_ldap._tcp.05b5292b-34b8-4fb7-85a3-8beef5fd2069.domains._msdcs.utelsystems.local",
+            "e7c6b0a6-1c4f-4c7b-9c2a-3f1b2d4e5f60._msdcs.corp.example.com",
         ] {
             assert!(dns_tunnel_suspect(name, &cfg).is_none(), "{name}");
             let mut f = flujo_basico(17, 53001, 53);
@@ -765,6 +796,11 @@ mod tests {
             "0c415ed7e70cad19461922995d84016e.evil.com",
             // Sufijo de dos niveles: el registrable es evil.co.uk.
             "uc2eyjivhyeofrxsh5rgcsaaf2hcmp.2kh4kpkg3ysq6ugnucbasu4zuzeeu.evil.co.uk",
+            // Un guion bajo delante no basta para pasar por etiqueta de
+            // servicio: solo cuentan las cortas.
+            "_x9f8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c3d2e1f0.evil.com",
+            // Casi-GUID con datos (no es hexadecimal): sigue siendo sospechoso.
+            "zq9xk2vw-7mty-4pln-8rqs-3hgjk5wvz2xb.c2.evil.com",
         ] {
             assert!(dns_tunnel_suspect(name, &cfg).is_some(), "{name}");
         }

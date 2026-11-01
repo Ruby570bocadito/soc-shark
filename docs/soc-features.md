@@ -90,6 +90,16 @@ de alta entropía. Los umbrales de longitud y entropía son configurables en
 `PipelineConfig` (`dns_entropy_threshold`, `dns_tunnel_min_len`) para
 afinar por entorno sin tocar código.
 
+Del subdominio se descartan antes de medir las etiquetas que parecen datos
+pero son estructura: los **GUID canónicos** (`8-4-4-4-12` hexadecimal) y las
+**etiquetas de servicio cortas** de SRV y DNS-SD (`_ldap`, `_tcp`,
+`_msdcs`…). El localizador de controladores de dominio de Active Directory
+pregunta `_ldap._tcp.<GUID>.domains._msdcs.<bosque>` en cualquier red Windows
+con dominio, y el GUID (36 caracteres hexadecimales) disparaba la regla: fue
+el primer falso positivo High que encontró el corpus real (`dns.cap`). Un
+túnel que codificara en forma de GUID necesitaría muchos nombres distintos y
+lo caza la regla de volumen.
+
 **Túnel DNS por volumen (0.8).** Un túnel que codifica con poca entropía o
 en etiquetas cortas (`a0001.t.evil.com`, `a0002.t.evil.com`...) esquiva la
 regla por consulta, pero no su volumen: para mover datos necesita muchos
@@ -147,7 +157,15 @@ respuestas se emparejan con las peticiones del stream del cliente en orden):
 4. **T1036 Masquerading por dos vías**: magic ≠ extensión declarada (un
    `banner.jpg` cuyo contenido es PE32) y **doble extensión ejecutable**
    (`informe.pdf.exe`). El nombre viene de `Content-Disposition` y, si no,
-   del basename de la ruta pedida.
+   del basename de la ruta pedida **sin la query ni el fragmento** (en
+   `/ads?url=…/download.html&color=…` la «extensión» no es
+   `html&color=…`).
+5. **Content-Encoding** (gzip, br, deflate…): los primeros bytes son los del
+   compresor, no los del archivo, así que esos cuerpos no se juzgan por su
+   firma (sin descompresor propio): se tallan solo por nombre o tipo
+   binario, sin `magic` y sin veredicto T1036 por firma (la doble extensión
+   sí cuenta). Una página HTML con gzip salía como «GZIP disfrazado de
+   .html»: segundo falso positivo High del corpus real (`http.cap`).
 
 Selección conservadora: no se talla toda respuesta 200 — solo si hay nombre
 declarado, tipo binario (`application/*`) o firma conocida; las páginas
