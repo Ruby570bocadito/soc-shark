@@ -17,7 +17,7 @@ use socshark_core::config::PipelineConfig;
 use socshark_core::{EnrichedFlow, L7Protocol};
 use socshark_dissectors::DissectorPipeline;
 use socshark_soc::explain::{
-    explain_with, stories_with, well_known_name_in, Explanation, Level, Story,
+    explain_in, stories_in, well_known_name_in, Explanation, Level, Story,
 };
 use socshark_soc::hosts::{term_in, HostBook, HostDirectory};
 use socshark_soc::summarize::fmt_bytes;
@@ -639,17 +639,26 @@ fn learn_hosts(path: &Path) -> Result<HostDirectory> {
     Ok(book.directory())
 }
 
-/// `socshark report`: analiza la captura y escribe el informe.
-pub fn from_file(path: &Path, cfg: &PipelineConfig, tz_offset_minutes: i32) -> Result<String> {
+/// `socshark report`: analiza la captura y escribe el informe en el idioma
+/// pedido (el mismo informe que descarga la ventana).
+pub fn from_file(
+    path: &Path,
+    cfg: &PipelineConfig,
+    tz_offset_minutes: i32,
+    lang: Lang,
+) -> Result<String> {
     let out = run_capture(path, None, true, cfg)?;
     let hosts = learn_hosts(path)?;
-    let explanations: Vec<Explanation> =
-        out.flows.iter().map(|f| explain_with(f, &hosts)).collect();
-    let stories = stories_with(&out.flows, &hosts);
+    let explanations: Vec<Explanation> = out
+        .flows
+        .iter()
+        .map(|f| explain_in(f, &hosts, lang))
+        .collect();
+    let stories = stories_in(&out.flows, &hosts, lang);
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "captura".into());
+        .unwrap_or_else(|| lang.pick("captura", "capture").into());
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_micros() as u64)
@@ -663,7 +672,7 @@ pub fn from_file(path: &Path, cfg: &PipelineConfig, tz_offset_minutes: i32) -> R
         packets: out.stats.total_packets,
         tz_offset_minutes,
         generated_micros: now,
-        lang: Lang::Es,
+        lang,
     }))
 }
 
@@ -671,6 +680,34 @@ pub fn from_file(path: &Path, cfg: &PipelineConfig, tz_offset_minutes: i32) -> R
 mod tests {
     use super::*;
     use socshark_testgen::{home_pcap_packets, sample_pcap_packets, write_pcap};
+
+    /// `socshark report --lang en`: el mismo informe que descarga la ventana
+    /// en inglés, sin restos del español (salvo los datos de la captura).
+    #[test]
+    fn informe_en_ingles_desde_la_cli() {
+        let path =
+            std::env::temp_dir().join(format!("socshark-report-en-{}.pcap", std::process::id()));
+        write_pcap(&path, 1, &sample_pcap_packets()).unwrap();
+        let cfg = PipelineConfig {
+            file_carving: true,
+            ..PipelineConfig::default()
+        };
+        let en = from_file(&path, &cfg, 60, Lang::En).unwrap();
+        let es = from_file(&path, &cfg, 60, Lang::Es).unwrap();
+        std::fs::remove_file(path).ok();
+
+        assert!(en.contains("<html lang=\"en\">"));
+        assert!(en.contains("What happened") && en.contains("What to do"));
+        assert!(en.contains("Possible data leak hidden in DNS"));
+        for es_only in ["Lo que ha pasado", "Qué hacer", "Posible túnel DNS"] {
+            assert!(
+                !en.contains(es_only),
+                "queda «{es_only}» en el informe en inglés"
+            );
+        }
+        // El español sigue siendo el de siempre.
+        assert!(es.contains("<html lang=\"es\">") && es.contains("Lo que ha pasado"));
+    }
 
     fn report_of(packets: &[(u64, Vec<u8>)], name: &str) -> String {
         let path =
@@ -680,7 +717,7 @@ mod tests {
             file_carving: true,
             ..PipelineConfig::default()
         };
-        let html = from_file(&path, &cfg, 60).unwrap();
+        let html = from_file(&path, &cfg, 60, Lang::Es).unwrap();
         std::fs::remove_file(path).ok();
         html
     }

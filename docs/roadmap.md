@@ -156,8 +156,8 @@ captura en vivo verificada en los tres sistemas.
       [data-model.md](data-model.md))
 - [x] **Interfaz en inglés y español**: la GUI con selector de idioma
       (frases, historias, paquetes, estadísticas, mapa e informe), sin
-      tocar el JSONL ni los `alert.id` (ADR-015). La TUI, los mensajes de
-      la CLI y `socshark report` siguen en español por ahora
+      tocar el JSONL ni los `alert.id` (ADR-015). `socshark report` admite
+      `--lang en`; la TUI y los mensajes de la CLI siguen en español
 - [ ] Probar los instaladores en limpio: Windows 11 (PowerShell 5.1),
       Ubuntu, Fedora y macOS
 - [ ] Release desde el flujo de Actions con todo lo anterior

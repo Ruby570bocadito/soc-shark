@@ -136,8 +136,8 @@ socshark gui -r capture.pcapng
 # Terminal interface
 socshark tui -r capture.pcap
 
-# Plain-language report (one HTML file to save, print or send)
-socshark report -r capture.pcap -o report.html
+# Plain-language report in English (one HTML file to save, print or send)
+socshark report -r capture.pcap --lang en
 
 # Summary table, JSONL and the filter language (docs/filter-dsl.md)
 socshark capture -r capture.pcap

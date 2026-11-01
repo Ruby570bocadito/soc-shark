@@ -143,7 +143,7 @@ Al elegir una conversación, abajo:
   tu red (con nombre, marca y sistema), sitios de Internet, tipos de
   tráfico y las conversaciones a mirar. Las horas van en tu zona horaria.
   Desde la consola: `socshark report -r captura.pcapng -o informe.html
-  --utc-offset 120`.
+  --utc-offset 120` (en inglés, `--lang en`).
 
 ![Informe en lenguaje claro](img/gui-informe.png)
 

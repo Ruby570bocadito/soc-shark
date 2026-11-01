@@ -417,8 +417,9 @@ estable (`schema_version` 1) que no puede depender del idioma de nadie.
 
 **Decisión.**
 - **El español sigue siendo el idioma de referencia**: el `human_summary`,
-  el `name` y el `detail` de cada alerta que se exportan, la TUI, la CLI y
-  `socshark report` no cambian. El inglés es una *vista*.
+  el `name` y el `detail` de cada alerta que se exportan, la TUI y la CLI
+  no cambian. El inglés es una *vista* (también `socshark report --lang
+  en`, que escribe el mismo informe que descarga la ventana).
 - **Motor**: `socshark_soc::Lang` (`Es`/`En`) y la macro `tr!` (una
   plantilla `format!` por idioma). Cada función de texto tiene su variante
   `*_in(…, lang)` (`explain_in`, `stories_in`, `summarize_in`,
@@ -446,5 +447,6 @@ estable (`schema_version` 1) que no puede depender del idioma de nadie.
 tocar el contrato de datos. Coste: cada texto nuevo de la GUI necesita su
 entrada en `i18n.js` (lo que falte se anota en
 `window.socsharkMissingI18n`), y las frases del motor se escriben dos
-veces. La TUI, los mensajes de la CLI, `socshark report` y algunos errores
-del sistema (libpcap, lectura de archivos) siguen en español por ahora.
+veces. La TUI, los mensajes de la CLI y algunos errores del sistema
+(libpcap, lectura de archivos) siguen en español por ahora; `socshark
+report` ya admite `--lang en`.

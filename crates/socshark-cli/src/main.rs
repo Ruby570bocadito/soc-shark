@@ -186,10 +186,13 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Cmd::Report {
             read,
             out,
+            lang,
             utc_offset,
             intel_feodo,
             intel_tor,
         } => {
+            let lang = socshark_soc::Lang::from_code(&lang);
+            let out = out.unwrap_or_else(|| lang.pick("informe.html", "report.html").into());
             output::refuse_overwrite(&out, &inputs(&read, &intel_feodo, &intel_tor))?;
             let cfg = PipelineConfig {
                 file_carving: true,
@@ -197,7 +200,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 intel_tor,
                 ..PipelineConfig::default()
             };
-            let html = socshark_cli::report::from_file(&read, &cfg, utc_offset)?;
+            let html = socshark_cli::report::from_file(&read, &cfg, utc_offset, lang)?;
             std::fs::write(&out, html)
                 .map_err(|e| anyhow::anyhow!("no se pudo escribir {}: {e}", out.display()))?;
             eprintln!(
