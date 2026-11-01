@@ -113,7 +113,10 @@ al menos un verdadero positivo real.
 - [x] GUI fluida con 10 000 flujos: `/api/flows` sin árbol `Value`
       (~13× más rápido) y tabla pintada por trozos con el orden memorizado;
       ningún bloqueo de la ventana pasa de ~80 ms (el `JSON.parse`)
-- [ ] TUI con 10 000 flujos (sin medir)
+- [x] TUI con 10 000 flujos: solo se construyen las filas que caben y el
+      panel de alertas se calcula al cambiar el filtro, no en cada
+      fotograma. 7,4 → 0,4 ms por fotograma (50 → 0,4 ms con 20 000
+      alertas)
 - [ ] Captura en vivo probada a mano en Windows + Npcap, Linux y macOS
 
 **Criterio:** 10 000 flujos se abren y filtran sin bloqueos perceptibles;
