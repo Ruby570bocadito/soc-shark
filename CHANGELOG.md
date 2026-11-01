@@ -5,6 +5,17 @@ y [SemVer](https://semver.org/lang/es/).
 
 ## [Sin publicar]
 
+### Añadido (detección)
+
+- **Regla `NON-DNS-ON-53` (T1571, alta, +40)**: un flujo por el puerto 53
+  que lleva datos sin un solo mensaje DNS válido (una shell, una VPN o un
+  control remoto colado por el agujero que los cortafuegos dejan al DNS).
+  Nació del corpus real: la shell de `cmd.exe` en TCP/53 de
+  `dns-remoteshell.pcap` no hacía saltar nada. El DNS sobre TCP se
+  reconoce, y no cuentan las comprobaciones de salud, las sondas rechazadas,
+  mDNS ni LLMNR. 1 verdadero positivo real y 0 falsos positivos en el resto
+  del corpus. Historia y textos en español e inglés, y regla Wazuh 100227.
+
 ### Corregido (encontrado por el corpus real)
 
 - **Falso positivo High de `DNS-TUNNELING` en redes con Active Directory**:

@@ -73,9 +73,11 @@ con la verdad de campo escrita *antes* de pasarlas por soc-shark:
   `FILE-MASQUERADING` con una página HTML comprimida con gzip (`http.cap`).
   Ver `docs/soc-features.md`.
 - **Verdaderos positivos reales**: `INSECURE-PORT` en 3 capturas (dos
-  sesiones Telnet y una shell en el 23).
-- **Fallo conocido**: la shell remota de `dns-remoteshell.pcap` en TCP/53
-  no se detecta (no hay regla de «tráfico que no es DNS en el puerto 53»).
+  sesiones Telnet y una shell en el 23) y `NON-DNS-ON-53` en 1 (la shell de
+  `cmd.exe` en TCP/53 de `dns-remoteshell.pcap`, regla añadida a raíz de
+  este corpus; ningún falso positivo en las otras 17 capturas).
+- **Fallo conocido**: la shell en TCP/80 de esa misma captura no se detecta
+  (no hay regla de «tráfico que no es HTTP en el puerto 80»).
 - **Sin verdadero positivo real todavía**: escaneo, barrido, intentos
   repetidos, túnel DNS, beacon y T1036. Hacen falta capturas de ataques
   reales (Malware-Traffic-Analysis, CIC-IDS2017).

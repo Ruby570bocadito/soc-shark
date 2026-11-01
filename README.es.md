@@ -108,7 +108,7 @@ desplazarse sin fin:
 | 🗺️ **Mapa de la red** | Tus equipos, el router e Internet, y quién habla con quién; lo peligroso en rojo; clic para filtrar. |
 | 🔔 **Avisos e informe** | Notificación del sistema cuando aparece algo peligroso o raro; un informe HTML en lenguaje claro para guardar, imprimir o enviar. |
 | 💻 **TUI** | Interfaz de terminal Flow-First (Ratatui): una línea por conversación, panel de alertas y filtro DSL en vivo. |
-| 🛡️ **Motor SOC** | Mini-IDS: túnel DNS, escaneo de puertos y de red, beaconing (T1071), archivos disfrazados (T1036), servicios inseguros; huellas JA4 y SNI; extracción de archivos HTTP con SHA-256; inteligencia de amenazas sin conexión (Feodo, Tor); reensamblado de TCP; IPv6 completo. |
+| 🛡️ **Motor SOC** | Mini-IDS: túnel DNS, escaneo de puertos y de red, beaconing (T1071), archivos disfrazados (T1036), tráfico que no es DNS en el puerto 53 (T1571), servicios inseguros; huellas JA4 y SNI; extracción de archivos HTTP con SHA-256; inteligencia de amenazas sin conexión (Feodo, Tor); reensamblado de TCP; IPv6 completo. |
 | 📤 **Exportar a SIEM** | JSONL, **Elastic ECS 8.x** y **Wazuh**, con MITRE ATT&CK. |
 
 <table>
