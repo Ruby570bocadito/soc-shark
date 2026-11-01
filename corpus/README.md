@@ -37,6 +37,7 @@ SOCSHARK_CORPUS_STRICT=1 cargo test -p socshark-cli --test corpus  # fallar si f
 | `must_not` | reglas que **no pueden** saltar (falsos positivos conocidos) |
 | `max_severity` | severidad máxima aceptable en toda la captura |
 | `known_miss` | lo que la fuente dice que hay y soc-shark **no** detecta todavía (texto); el test lo lista en su resumen para que no se olvide |
+| `note` | observación sin verificar (p. ej. una alerta que la fuente no explica); no la comprueba el test |
 
 ## Añadir una captura real
 
@@ -65,19 +66,41 @@ del mini-IDS tiene al menos un verdadero positivo **real** (no sintético).
 La tabla que imprime el test (`VP reales` / `VP sintéticos` /
 `FP prohibidos` por regla) y la lista de fallos conocidos muestran qué falta.
 
-**Estado (noviembre de 2026).** 12 capturas del wiki de Wireshark (≈ 685 KB)
-con la verdad de campo escrita *antes* de pasarlas por soc-shark:
+**Estado (noviembre de 2026).** 21 capturas reales (≈ 13,4 MB) con la verdad
+de campo escrita *antes* de pasarlas por soc-shark:
 
-- **2 falsos positivos High encontrados y corregidos**: `DNS-TUNNELING` con
-  una consulta del localizador de Active Directory (`dns.cap`) y
-  `FILE-MASQUERADING` con una página HTML comprimida con gzip (`http.cap`).
-  Ver `docs/soc-features.md`.
-- **Verdaderos positivos reales**: `INSECURE-PORT` en 3 capturas (dos
-  sesiones Telnet y una shell en el 23) y `NON-DNS-ON-53` en 1 (la shell de
-  `cmd.exe` en TCP/53 de `dns-remoteshell.pcap`, regla añadida a raíz de
-  este corpus; ningún falso positivo en las otras 17 capturas).
-- **Fallo conocido**: la shell en TCP/80 de esa misma captura no se detecta
-  (no hay regla de «tráfico que no es HTTP en el puerto 80»).
-- **Sin verdadero positivo real todavía**: escaneo, barrido, intentos
-  repetidos, túnel DNS, beacon y T1036. Hacen falta capturas de ataques
-  reales (Malware-Traffic-Analysis, CIC-IDS2017).
+- 12 del wiki de Wireshark (tráfico legítimo, Telnet y shells remotas);
+- 3 de Chris Sanders: un escaneo SYN real de nmap (1000 puertos contra un
+  equipo) y DNS legítimo sobre TCP (consulta de 35 KB y transferencia de
+  zona), verificadas con un lector propio antes de usarlas;
+- 6 de Active Countermeasures: túnel DNS con dnscat2 y cinco C2 con el ritmo
+  del beacon documentado (EvilOSX 30 s, Octopus 5 s, Backoff 30 s ± 10 %,
+  Asprox 30 s ± 20 %, AsyncRAT 6,5 s ± 1,5 s). Según la fuente, sin malware
+  real.
+
+| Regla | VP reales | FP reales |
+|---|---|---|
+| `BEACONING` | 5 (los cinco C2) | 0 |
+| `INSECURE-PORT` | 3 | 0 |
+| `DNS-TUNNELING` | 1 (dnscat2) | 0 |
+| `PORT-SCAN` | 1 (nmap) | 0 |
+| `NON-DNS-ON-53` | 1 (shell en TCP/53) | 0 |
+
+**Lo que encontró y se corrigió** (todo con test de regresión):
+
+- falso positivo alto de `DNS-TUNNELING` con el localizador de Active
+  Directory (`dns.cap`);
+- falso positivo alto de `FILE-MASQUERADING` con HTML comprimido (`http.cap`);
+- el parser DNS descartaba las búsquedas inversas IPv6 (34 etiquetas, el
+  límite era 32), y con `NON-DNS-ON-53` eso daba un falso positivo alto
+  («no es DNS») en cualquier red con IPv6 (dnscat2);
+- `BEACONING` medio sobre la Optimización de distribución de Windows
+  (TCP/7680 entre equipos de la red, cada ~40 s): ahora es ruido de fondo
+  solo si los dos extremos son de la red local.
+
+**Fallo conocido**: la shell en TCP/80 de `dns-remoteshell.pcap`.
+
+**Sin verdadero positivo real todavía**: `FILE-MASQUERADING` (hace falta
+una descarga real de malware disfrazado), `NETWORK-SWEEP`,
+`REPEATED-ATTEMPTS` y `EXPOSED-DB`. Las de threat intel necesitan además
+las listas.

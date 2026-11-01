@@ -5,6 +5,29 @@ y [SemVer](https://semver.org/lang/es/).
 
 ## [Sin publicar]
 
+### Corregido (encontrado por el corpus real)
+
+- **Falso positivo alto de `NON-DNS-ON-53` en cualquier red con IPv6**
+  (afecta a la 0.9.0): el parser DNS descartaba los nombres de más de 32
+  etiquetas, y una búsqueda inversa IPv6 (`…8.e.f.ip6.arpa`) tiene 34. Esas
+  consultas, que Windows y macOS hacen sin parar, quedaban como «no es DNS».
+  El límite pasa a 127 etiquetas, el máximo que cabe en los 255 bytes de un
+  nombre (RFC 1035).
+- **Falso positivo medio de `BEACONING` con la Optimización de distribución
+  de Windows** (Delivery Optimization): los equipos de la red se buscan por
+  TCP/7680 cada ~40 s. Ahora es ruido de fondo, solo entre dos equipos de la
+  red local; un equipo de Internet en el 7680 se sigue analizando.
+
+### Añadido
+
+- **9 capturas reales más en el corpus**, con la verdad de campo escrita
+  antes de pasarlas: un escaneo SYN real de nmap y DNS legítimo sobre TCP
+  (Chris Sanders; verificadas con un lector propio), un túnel dnscat2 y
+  cinco C2 con el ritmo del beacon documentado (Active Countermeasures, sin
+  malware real). Primeros verdaderos positivos reales de `BEACONING` (5),
+  `DNS-TUNNELING` y `PORT-SCAN`, sin falsos positivos en las 27 capturas.
+- Campo `note` en el manifiesto para observaciones sin verificar.
+
 ## [0.9.0] — 2026-11-01
 
 **Actualización recomendada si usas la 0.8.0 en una red Windows con

@@ -1,0 +1,939 @@
+{
+  "alerted_flows": [
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53109",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53110",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53111",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53113",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53114",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53115",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53116",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53117",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53118",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53119",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53120",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53121",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53122",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53123",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53124",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53125",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53126",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53127",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53128",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53129",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53130",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53132",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53133",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53134",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53135",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53136",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53137",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53138",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53139",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53140",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53141",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53142",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53143",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53144",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53145",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53146",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53148",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53149",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53150",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53151",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53152",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53153",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53154",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53155",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53156",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53157",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53158",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53162",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53163",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53165",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53167",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53168",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53169",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53170",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53171",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53173",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53174",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53175",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53176",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53177",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53178",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53179",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53180",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53181",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53182",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53183",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53184",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53185",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53186",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53187",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53189",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53190",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53191",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53192",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53193",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53194",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53195",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53196",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53197",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53198",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53199",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53200",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53201",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53202",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53203",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53204",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53205",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53206",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53208",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53209",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53210",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53211",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53212",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53213",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53214",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53215",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53216",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53217",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53218",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53219",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53220",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53221",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53222",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53224",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53225",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53226",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53227",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53228",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53229",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53230",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53231",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53232",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53233",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53234",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53235",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53236",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53237",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53238",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53239",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53240",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53241",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53243",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53244",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53245",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53246",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53247",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53249",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53250",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53251",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53252",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53253",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53255",
+      "risk_score": 20
+    },
+    {
+      "alerts": [
+        "BEACONING"
+      ],
+      "flow_id": "tcp/159.65.220.246:80-192.168.99.54:53256",
+      "risk_score": 20
+    }
+  ],
+  "alerts_by_rule": {
+    "BEACONING": 133
+  },
+  "flows": 480
+}

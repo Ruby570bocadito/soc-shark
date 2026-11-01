@@ -48,9 +48,14 @@ gris, colapsado o fuera de la vista por defecto, siempre recuperable con
 
 Puertos clasificados como ruido en Fase 1 (UDP, ambos extremos): NTP 123,
 mDNS 5353, LLMNR 5355, SSDP 1900, NetBIOS 137/138, DHCP 67/68, rpcbind 111,
-SNMP 161, syslog 514. TCP no se marca como ruido todavía (Fase 2 añadirá
-sondeos de broadcast) y ARP se marcará cuando exista su dissector. El
-criterio es conservador: es preferible mostrar de más que ocultar una señal.
+SNMP 161, syslog 514. En TCP, solo la **Optimización de distribución de
+Windows** (Delivery Optimization, TCP/7680) y solo **entre dos equipos de la
+red local**: los equipos se pasan actualizaciones y se buscan entre sí cada
+~40 s, con una regularidad que `BEACONING` tomaba por un C2 (falso positivo
+medio real del corpus). Un equipo de Internet en el 7680 se analiza como
+cualquier otro, para que un C2 no pueda esconderse usando el puerto. ARP se
+marcará cuando exista su dissector. El criterio es conservador: es
+preferible mostrar de más que ocultar una señal.
 
 ## Mini-IDS heurístico (implementado)
 

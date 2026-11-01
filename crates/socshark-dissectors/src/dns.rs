@@ -52,7 +52,14 @@ pub struct DnsInfo {
 /// Límites de seguridad contra paquetes maliciosos o degenerados.
 const MAX_QUESTIONS: usize = 16;
 const MAX_ANSWERS: usize = 64;
-const MAX_NAME_LABELS: usize = 32;
+/// Un nombre ocupa como mucho 255 bytes (RFC 1035 §2.3.4), así que no
+/// puede tener más de 127 etiquetas (de un carácter cada una). Antes eran 32
+/// y se descartaba toda búsqueda inversa IPv6 (`…8.e.f.ip6.arpa`: 32
+/// nibbles + `ip6` + `arpa` = 34 etiquetas), que Windows y macOS hacen sin
+/// parar; desde la regla `NON-DNS-ON-53` eso era además un falso positivo
+/// alto («no es DNS»). Lo encontró el corpus real (dnscat2 de Active
+/// Countermeasures).
+const MAX_NAME_LABELS: usize = 127;
 const MAX_POINTER_JUMPS: usize = 16;
 
 /// Parsea un mensaje DNS. Devuelve `None` si el mensaje está truncado más
@@ -288,6 +295,29 @@ mod tests {
         }
         m.extend_from_slice(&[0, 0, 16, 0, 1]); // fin + TXT/IN
         m
+    }
+
+    #[test]
+    fn busqueda_inversa_ipv6_se_parsea() {
+        // fe80::…: 32 nibbles + ip6 + arpa = 34 etiquetas (caso real).
+        // Las 29 primeras del nombre real; con 8, e, f suman las 32.
+        let nibbles = "e9dbc9d71b0fa2020000000000000";
+        let mut labels: Vec<Vec<u8>> = nibbles.chars().map(|c| vec![c as u8]).collect();
+        labels.push(b"8".to_vec());
+        labels.push(b"e".to_vec());
+        labels.push(b"f".to_vec());
+        labels.push(b"ip6".to_vec());
+        labels.push(b"arpa".to_vec());
+        let refs: Vec<&[u8]> = labels.iter().map(|l| l.as_slice()).collect();
+        let d = parse_dns(&consulta_cruda(&refs)).expect("un PTR de IPv6 es DNS");
+        assert!(d.queries[0].name.ends_with(".8.e.f.ip6.arpa"));
+        assert_eq!(d.queries[0].name.split('.').count(), 34);
+
+        // El límite sigue existiendo: 128 etiquetas no caben en 255 bytes.
+        let demasiadas: Vec<&[u8]> = (0..128).map(|_| &b"a"[..]).collect();
+        assert!(parse_dns(&consulta_cruda(&demasiadas)).is_none());
+        let justas: Vec<&[u8]> = (0..127).map(|_| &b"a"[..]).collect();
+        assert!(parse_dns(&consulta_cruda(&justas)).is_some());
     }
 
     #[test]

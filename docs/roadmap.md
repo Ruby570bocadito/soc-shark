@@ -97,8 +97,15 @@ son ideas buenas, no requisitos para llamar «terminado» al producto.
       tiene 3 verdaderos positivos reales; y la shell remota en el puerto
       53, que no detectaba nada, dio lugar a la regla `NON-DNS-ON-53`
       (T1571; 1 VP real, 0 FP). Sigue como fallo conocido la shell en el
-      puerto 80. *Pendiente:* capturas de ataques reales para el resto de
-      reglas (escaneo, túnel, beacon, T1036)
+      puerto 80. *Segundo bloque hecho:* 9 capturas más (escaneo SYN real
+      de nmap y DNS legítimo sobre TCP de Chris Sanders; túnel dnscat2 y
+      cinco C2 con el ritmo documentado de Active Countermeasures). Ya hay
+      verdadero positivo real de `BEACONING` (5), `DNS-TUNNELING`,
+      `PORT-SCAN`, `INSECURE-PORT` y `NON-DNS-ON-53`, y destaparon dos
+      falsos positivos más, corregidos: búsquedas inversas IPv6 tomadas por
+      «no DNS» y beacon sobre la Optimización de distribución de Windows.
+      *Pendiente:* `FILE-MASQUERADING` (descarga real de malware
+      disfrazado), `NETWORK-SWEEP`, `REPEATED-ATTEMPTS` y `EXPOSED-DB`
 - [ ] `local_rules.xml` probado contra un manager de laboratorio en Docker
       (`wazuh-logtest`)
 

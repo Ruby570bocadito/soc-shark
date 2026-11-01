@@ -205,6 +205,13 @@ pub fn service_by_port_in(
         ),
         3306 => ("MySQL", l("la base de datos MySQL", "the MySQL database")),
         3389 => ("RDP", l("escritorio remoto (RDP)", "remote desktop (RDP)")),
+        7680 => (
+            "Delivery Optimization",
+            l(
+                "actualizaciones de Windows entre equipos (Optimización de distribución)",
+                "Windows updates between devices (Delivery Optimization)",
+            ),
+        ),
         5353 => (
             "mDNS",
             l(
